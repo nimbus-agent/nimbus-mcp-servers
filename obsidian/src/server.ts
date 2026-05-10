@@ -17,7 +17,17 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -365,19 +375,20 @@ function resolveDailyNoteRelativePath(vaultRoot: string, date: Date): string {
   const cfgPath = join(vaultRoot, ".obsidian", "daily-notes.json");
   let folder = "";
   let format = "YYYY-MM-DD";
-  if (existsSync(cfgPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as unknown;
-      if (parsed !== null && typeof parsed === "object") {
-        const obj = parsed as Record<string, unknown>;
-        if (typeof obj["folder"] === "string") folder = obj["folder"] as string;
-        if (typeof obj["format"] === "string" && (obj["format"] as string) !== "") {
-          format = obj["format"] as string;
-        }
+  // Try to read the config; missing file or parse failure → defaults.
+  // No `existsSync` precheck — a missing-file `ENOENT` is caught here too,
+  // and skipping the precheck closes a TOCTOU window.
+  try {
+    const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj["folder"] === "string") folder = obj["folder"] as string;
+      if (typeof obj["format"] === "string" && (obj["format"] as string) !== "") {
+        format = obj["format"] as string;
       }
-    } catch {
-      // fall through to defaults
     }
+  } catch {
+    // fall through to defaults
   }
   const filename = `${formatDailyNoteFilename(format, date)}.md`;
   return folder === "" ? filename : `${folder.replace(/[/\\]+$/, "")}/${filename}`;
@@ -401,24 +412,43 @@ reg(
     const abs = assertWithinVault(v.root, rel);
     mkdirSync(dirname(abs), { recursive: true });
 
-    let prefix = "";
-    if (existsSync(abs)) {
-      const existing = readFileSync(abs, "utf8");
-      if (existing.length > 0 && !existing.endsWith("\n")) {
-        prefix = "\n";
+    // Open once with `a+` (read+append, creates if missing) and use the
+    // returned file descriptor for both the size/last-byte check and the
+    // append. This eliminates the time-of-check / time-of-use race that
+    // an `existsSync` → `readFileSync` → `writeFileSync` sequence would
+    // expose: a regular file swapped to a symlink between the calls would
+    // still be followed by the later one. With a single fd, all three
+    // operations resolve through the same open inode.
+    const fd = openSync(abs, "a+");
+    let bytes = 0;
+    try {
+      let prefix = "";
+      const size = fstatSync(fd).size;
+      if (size > 0) {
+        const tail = Buffer.alloc(1);
+        readSync(fd, tail, 0, 1, size - 1);
+        if (tail[0] !== 0x0a) {
+          prefix = "\n";
+        }
+      }
+      const final = `${prefix}${parsed.content}`;
+      const buf = Buffer.from(final, "utf8");
+      writeSync(fd, buf);
+      bytes = buf.length;
+    } finally {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore close errors
       }
     }
-    const final = `${prefix}${parsed.content}`;
-    // Append (existsSync above is informational — writeFileSync with the
-    // `flag: "a"` does the actual append-or-create atomically).
-    writeFileSync(abs, final, { flag: "a" });
 
     return jsonResult({
       appended: true,
       vault_id: v.id,
       vault_name: v.name,
       path: rel,
-      bytes: Buffer.byteLength(final, "utf8"),
+      bytes,
     });
   },
 );
