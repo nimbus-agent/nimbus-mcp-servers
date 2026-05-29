@@ -1,36 +1,7 @@
-/**
- * nimbus-mcp-wiz — Wiz cloud security platform connector
- * (GraphQL, read-only).
- *
- * Exposes the three mandatory read tools (`wiz_list`, `wiz_get`,
- * `wiz_search`) per the Nimbus connector authoring contract. No write
- * tools are registered and `hitlRequired` is empty in the manifest —
- * `wiz.issue.resolve` and `wiz.issue.assign` are deferred Phase 8
- * follow-ups.
- *
- * Auth is Wiz's standard OAuth client_credentials flow: at process
- * startup the connector exchanges `WIZ_CLIENT_ID` + `WIZ_CLIENT_SECRET`
- * (injected from `wiz.client_id` + `wiz.client_secret` vault keys) for
- * an access token at `WIZ_AUTH_URL` (default
- * `https://auth.app.wiz.io/oauth/token`). The token is cached for the
- * process lifetime; Wiz tokens live ~24 h so a fresh-per-spawn token
- * survives any reasonable session. The Gateway re-spawns the connector
- * if the process exits, which re-fetches.
- *
- * The GraphQL endpoint is at `WIZ_API_URL` (default
- * `https://api.app.wiz.io/graphql`). Regional users (us-2, eu-1, …)
- * override both vault keys.
- */
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import {
-  createRegisterSimpleTool,
-  createZodToolRegistrar,
-  mcpJsonResult as jsonResult,
-} from "../../shared/mcp-tool-kit.ts";
+import { mcpJsonResult as jsonResult } from "../../shared/mcp-tool-kit.ts";
+import { runReadOnlyMcpConnector } from "../../shared/run-read-only-mcp-connector.ts";
 import { filterWizIssues } from "./search-filter.ts";
 
 const DEFAULT_API = "https://api.app.wiz.io/graphql";
@@ -160,70 +131,66 @@ interface IssuesPage {
   };
 }
 
-const mcp = new McpServer({ name: "nimbus-wiz", version: "0.1.0" });
-const reg = createZodToolRegistrar(createRegisterSimpleTool(mcp));
+await runReadOnlyMcpConnector("nimbus-wiz", (reg) => {
+  reg(
+    "wiz_list",
+    "List Wiz issues. Filters map to the `IssueFilters` GraphQL input — severity, status, and entity type are all optional. Defaults to open issues across all severities, capped at 100.",
+    z.object({
+      severity: z.array(z.enum(SEVERITIES)).min(1).optional(),
+      status: z.array(z.enum(STATUSES)).min(1).optional(),
+      entityType: z.string().min(1).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    }),
+    async (p) => {
+      const filterBy: Record<string, unknown> = {};
+      filterBy["status"] = p.status ?? ["OPEN"];
+      if (p.severity !== undefined && p.severity.length > 0) {
+        filterBy["severity"] = p.severity;
+      }
+      if (p.entityType !== undefined) {
+        filterBy["entityType"] = p.entityType;
+      }
+      const data = await wizGraphql<IssuesPage>(ISSUES_QUERY, {
+        first: p.limit ?? 100,
+        after: null,
+        filterBy,
+      });
+      return jsonResult(data.issues);
+    },
+  );
 
-reg(
-  "wiz_list",
-  "List Wiz issues. Filters map to the `IssueFilters` GraphQL input — severity, status, and entity type are all optional. Defaults to open issues across all severities, capped at 100.",
-  z.object({
-    severity: z.array(z.enum(SEVERITIES)).min(1).optional(),
-    status: z.array(z.enum(STATUSES)).min(1).optional(),
-    entityType: z.string().min(1).optional(),
-    limit: z.number().int().min(1).max(500).optional(),
-  }),
-  async (p) => {
-    const filterBy: Record<string, unknown> = {};
-    filterBy["status"] = p.status ?? ["OPEN"];
-    if (p.severity !== undefined && p.severity.length > 0) {
-      filterBy["severity"] = p.severity;
-    }
-    if (p.entityType !== undefined) {
-      filterBy["entityType"] = p.entityType;
-    }
-    const data = await wizGraphql<IssuesPage>(ISSUES_QUERY, {
-      first: p.limit ?? 100,
-      after: null,
-      filterBy,
-    });
-    return jsonResult(data.issues);
-  },
-);
+  reg(
+    "wiz_get",
+    "Fetch one Wiz issue by its id. Throws when no match is found.",
+    z.object({
+      issueId: z.string().min(1),
+    }),
+    async (p) => {
+      const data = await wizGraphql<{ issue: unknown | null }>(SINGLE_ISSUE_QUERY, {
+        id: p.issueId,
+      });
+      if (data.issue === null) {
+        throw new Error(`Wiz: issue ${p.issueId} not found`);
+      }
+      return jsonResult(data.issue);
+    },
+  );
 
-reg(
-  "wiz_get",
-  "Fetch one Wiz issue by its id. Throws when no match is found.",
-  z.object({
-    issueId: z.string().min(1),
-  }),
-  async (p) => {
-    const data = await wizGraphql<{ issue: unknown | null }>(SINGLE_ISSUE_QUERY, {
-      id: p.issueId,
-    });
-    if (data.issue === null) {
-      throw new Error(`Wiz: issue ${p.issueId} not found`);
-    }
-    return jsonResult(data.issue);
-  },
-);
-
-reg(
-  "wiz_search",
-  "Substring search across open issues. Matches the query against `sourceRule.name`, `description`, `entity.name`, `entity.type`, and project names (case-insensitive). Returns a `{ matches: [...] }` envelope.",
-  z.object({
-    query: z.string().min(1),
-    limit: z.number().int().min(1).max(200).optional(),
-  }),
-  async (p) => {
-    const data = await wizGraphql<IssuesPage>(ISSUES_QUERY, {
-      first: 500,
-      after: null,
-      filterBy: { status: ["OPEN"] },
-    });
-    const matches = filterWizIssues(data.issues.nodes, { query: p.query, limit: p.limit });
-    return jsonResult({ matches });
-  },
-);
-
-const transport = new StdioServerTransport();
-await mcp.connect(transport);
+  reg(
+    "wiz_search",
+    "Substring search across open issues. Matches the query against `sourceRule.name`, `description`, `entity.name`, `entity.type`, and project names (case-insensitive). Returns a `{ matches: [...] }` envelope.",
+    z.object({
+      query: z.string().min(1),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
+    async (p) => {
+      const data = await wizGraphql<IssuesPage>(ISSUES_QUERY, {
+        first: 500,
+        after: null,
+        filterBy: { status: ["OPEN"] },
+      });
+      const matches = filterWizIssues(data.issues.nodes, { query: p.query, limit: p.limit });
+      return jsonResult({ matches });
+    },
+  );
+});

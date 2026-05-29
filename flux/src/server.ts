@@ -1,33 +1,8 @@
-/**
- * nimbus-mcp-flux — Flux (GitOps Toolkit) MCP server (read-only).
- *
- * Credentials arrive as FLUX_API_URL + FLUX_TOKEN env, injected at spawn time.
- * FLUX_TOKEN is a read-only Kubernetes ServiceAccount JWT, sent as
- * `Authorization: Bearer <token>`. Flux has no central API: state lives in
- * Kubernetes Custom Resources read via the API server's REST surface
- * (`GET ${FLUX_API_URL}/apis/<group>/<version>/<plural>`). Flux is always
- * self-hosted, so there is no SaaS default for FLUX_API_URL — it must be set.
- *
- * TLS note: K8s API servers commonly use self-signed certs that Bun's fetch
- * rejects; v1 relies on FLUX_API_URL pointing at a CA-trusted endpoint (a
- * TLS-terminating ingress or `kubectl proxy`). Custom-CA / insecure-TLS
- * handling is a deferred follow-up.
- */
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import {
-  createRegisterSimpleTool,
-  createZodToolRegistrar,
-  mcpJsonResult as jsonResult,
-} from "../../shared/mcp-tool-kit.ts";
+import { mcpJsonResult as jsonResult } from "../../shared/mcp-tool-kit.ts";
+import { runReadOnlyMcpConnector } from "../../shared/run-read-only-mcp-connector.ts";
 import { filterFluxResources } from "./search-filter.ts";
 
-/**
- * Flux CRD walk table — the set of GitOps-Toolkit Custom Resources we index.
- * Duplicated (intentionally) from the gateway-side sync handler so this MCP
- * server has no dependency on gateway internals.
- */
 interface FluxKindEntry {
   readonly kind: string;
   readonly group: string;
@@ -121,7 +96,6 @@ async function agGet(path: string): Promise<unknown> {
   return JSON.parse(text) as unknown;
 }
 
-/** Pull the `items` array out of a Kubernetes List response (or a bare array). */
 function itemsFrom(root: unknown): unknown[] {
   if (Array.isArray(root)) {
     return root;
@@ -130,7 +104,6 @@ function itemsFrom(root: unknown): unknown[] {
   return Array.isArray(items) ? items : [];
 }
 
-/** Build the all-namespaces or namespaced list path for a kind. */
 function listPath(entry: FluxKindEntry, namespace?: string): string {
   const prefix = `/apis/${entry.group}/${entry.version}`;
   if (namespace !== undefined && namespace !== "") {
@@ -139,59 +112,55 @@ function listPath(entry: FluxKindEntry, namespace?: string): string {
   return `${prefix}/${entry.plural}`;
 }
 
-const mcp = new McpServer({ name: "nimbus-flux", version: "0.1.0" });
-const reg = createZodToolRegistrar(createRegisterSimpleTool(mcp));
+await runReadOnlyMcpConnector("nimbus-flux", (reg) => {
+  reg(
+    "flux_list",
+    "List Flux Custom Resources of one `kind` (default `kustomization`). Reads the Kubernetes API: all-namespaces by default, or scoped to `namespace` when given. `limit` (default 200) caps the returned `items` client-side. Returns the raw Kubernetes List envelope.",
+    z.object({
+      kind: z.enum(KIND_VALUES).optional(),
+      namespace: z.string().optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    }),
+    async (p) => {
+      const entry = kindEntry(p.kind ?? "kustomization");
+      const root = await agGet(listPath(entry, p.namespace));
+      const items = itemsFrom(root);
+      const cap = p.limit ?? 200;
+      return jsonResult({ items: items.slice(0, cap) });
+    },
+  );
 
-reg(
-  "flux_list",
-  "List Flux Custom Resources of one `kind` (default `kustomization`). Reads the Kubernetes API: all-namespaces by default, or scoped to `namespace` when given. `limit` (default 200) caps the returned `items` client-side. Returns the raw Kubernetes List envelope.",
-  z.object({
-    kind: z.enum(KIND_VALUES).optional(),
-    namespace: z.string().optional(),
-    limit: z.number().int().min(1).max(500).optional(),
-  }),
-  async (p) => {
-    const entry = kindEntry(p.kind ?? "kustomization");
-    const root = await agGet(listPath(entry, p.namespace));
-    const items = itemsFrom(root);
-    const cap = p.limit ?? 200;
-    return jsonResult({ items: items.slice(0, cap) });
-  },
-);
+  reg(
+    "flux_get",
+    "Fetch one Flux Custom Resource by `kind`, `namespace`, and `name` (`/apis/<group>/<version>/namespaces/<ns>/<plural>/<name>`). Throws when no such resource exists.",
+    z.object({
+      kind: z.enum(KIND_VALUES),
+      namespace: z.string().min(1),
+      name: z.string().min(1),
+    }),
+    async (p) => {
+      const entry = kindEntry(p.kind);
+      const path = `${listPath(entry, p.namespace)}/${encodeURIComponent(p.name)}`;
+      return jsonResult(await agGet(path));
+    },
+  );
 
-reg(
-  "flux_get",
-  "Fetch one Flux Custom Resource by `kind`, `namespace`, and `name` (`/apis/<group>/<version>/namespaces/<ns>/<plural>/<name>`). Throws when no such resource exists.",
-  z.object({
-    kind: z.enum(KIND_VALUES),
-    namespace: z.string().min(1),
-    name: z.string().min(1),
-  }),
-  async (p) => {
-    const entry = kindEntry(p.kind);
-    const path = `${listPath(entry, p.namespace)}/${encodeURIComponent(p.name)}`;
-    return jsonResult(await agGet(path));
-  },
-);
-
-reg(
-  "flux_search",
-  "Substring search across Flux Custom Resources of one `kind` (default `kustomization`). Lists the kind across all namespaces and matches the query (case-insensitive) against resource name, namespace, and the Ready condition's reason/message. Returns a `{ matches: [...] }` envelope.",
-  z.object({
-    query: z.string().min(1),
-    kind: z.enum(KIND_VALUES).optional(),
-    limit: z.number().int().min(1).max(200).optional(),
-  }),
-  async (p) => {
-    const entry = kindEntry(p.kind ?? "kustomization");
-    const root = await agGet(listPath(entry));
-    const matches = filterFluxResources(itemsFrom(root), {
-      query: p.query,
-      limit: p.limit,
-    });
-    return jsonResult({ matches });
-  },
-);
-
-const transport = new StdioServerTransport();
-await mcp.connect(transport);
+  reg(
+    "flux_search",
+    "Substring search across Flux Custom Resources of one `kind` (default `kustomization`). Lists the kind across all namespaces and matches the query (case-insensitive) against resource name, namespace, and the Ready condition's reason/message. Returns a `{ matches: [...] }` envelope.",
+    z.object({
+      query: z.string().min(1),
+      kind: z.enum(KIND_VALUES).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
+    async (p) => {
+      const entry = kindEntry(p.kind ?? "kustomization");
+      const root = await agGet(listPath(entry));
+      const matches = filterFluxResources(itemsFrom(root), {
+        query: p.query,
+        limit: p.limit,
+      });
+      return jsonResult({ matches });
+    },
+  );
+});
