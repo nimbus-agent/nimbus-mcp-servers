@@ -39,6 +39,12 @@ function vaultIdFromAbsolutePath(absolutePath: string): string {
   return createHash("sha256").update(absolutePath).digest("hex").slice(0, 12);
 }
 
+function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && (s.charAt(end - 1) === "/" || s.charAt(end - 1) === "\\")) end--;
+  return s.slice(0, end);
+}
+
 function assertWithinVault(vaultRoot: string, relPath: string): string {
   const resolvedRoot = resolve(vaultRoot);
   const candidate = resolve(resolvedRoot, relPath);
@@ -84,7 +90,7 @@ function walkForVaults(dir: string, out: VaultEntry[]): void {
     out.push({
       id: vaultIdFromAbsolutePath(dir),
       root: dir,
-      name: basename(dir.replace(/[/\\]+$/, "")),
+      name: basename(stripTrailingSlashes(dir)),
     });
   }
   for (const e of entries) {
@@ -186,7 +192,7 @@ reg(
   async (parsed) => {
     const limit = parsed.limit ?? 200;
     const filterVault =
-      parsed.vault !== undefined ? findVaultByIdOrPathPrefix(VAULTS, parsed.vault) : undefined;
+      parsed.vault === undefined ? undefined : findVaultByIdOrPathPrefix(VAULTS, parsed.vault);
     const targetVaults = filterVault === undefined ? VAULTS : [filterVault];
     const out: Array<{
       id: string;
@@ -201,7 +207,7 @@ reg(
         const { title, raw } = readNote(v.root, rel);
         if (parsed.tag !== undefined) {
           const fm = FRONTMATTER_RE.exec(raw);
-          if (fm === null || !fm[1]?.includes(parsed.tag)) continue;
+          if (!fm?.[1]?.includes(parsed.tag)) continue;
         }
         out.push({
           id: noteIdFor(v.id, rel),
@@ -271,11 +277,11 @@ reg(
     const limit = parsed.limit ?? 50;
     const needle = parsed.query.toLowerCase();
     const targets =
-      parsed.vault !== undefined
-        ? [findVaultByIdOrPathPrefix(VAULTS, parsed.vault)].filter(
+      parsed.vault === undefined
+        ? VAULTS
+        : [findVaultByIdOrPathPrefix(VAULTS, parsed.vault)].filter(
             (v): v is VaultEntry => v !== undefined,
-          )
-        : VAULTS;
+          );
     const out: Array<{
       id: string;
       vault_id: string;
@@ -342,16 +348,16 @@ function resolveDailyNoteRelativePath(vaultRoot: string, date: Date): string {
     const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as unknown;
     if (parsed !== null && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
-      if (typeof obj["folder"] === "string") folder = obj["folder"] as string;
-      if (typeof obj["format"] === "string" && (obj["format"] as string) !== "") {
-        format = obj["format"] as string;
+      if (typeof obj["folder"] === "string") folder = obj["folder"];
+      if (typeof obj["format"] === "string" && obj["format"] !== "") {
+        format = obj["format"];
       }
     }
   } catch {
     // fall through to defaults
   }
   const filename = `${formatDailyNoteFilename(format, date)}.md`;
-  return folder === "" ? filename : `${folder.replace(/[/\\]+$/, "")}/${filename}`;
+  return folder === "" ? filename : `${stripTrailingSlashes(folder)}/${filename}`;
 }
 
 reg(
@@ -364,7 +370,7 @@ reg(
       throw new Error("Unknown vault_id");
     }
     const date =
-      parsed.date_iso !== undefined ? new Date(`${parsed.date_iso}T00:00:00Z`) : new Date();
+      parsed.date_iso === undefined ? new Date() : new Date(`${parsed.date_iso}T00:00:00Z`);
     const rel = resolveDailyNoteRelativePath(v.root, date);
     const abs = assertWithinVault(v.root, rel);
     mkdirSync(dirname(abs), { recursive: true });
