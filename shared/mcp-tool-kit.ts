@@ -143,6 +143,25 @@ export function requireProcessEnv(envVarName: string): string {
   return t;
 }
 
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 15_000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Compose with a caller-provided signal rather than clobbering it, so callers
+  // can still cancel via their own abort signal on top of the timeout.
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, controller.signal])
+    : controller.signal;
+  try {
+    return await fetch(url, { ...init, signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** HTTP Basic header for email:API-token style Atlassian credentials (never log the raw value). */
 export function encodeBasicAuthHeader(email: string, token: string): string {
   const raw = `${email}:${token}`;
