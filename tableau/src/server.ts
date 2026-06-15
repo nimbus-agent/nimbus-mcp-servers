@@ -120,6 +120,34 @@ async function listViews(
   };
 }
 
+async function tableauRefresh(kind: "datasources" | "workbooks", id: string): Promise<string> {
+  const { token, siteId } = await tableauSignin();
+  const base = apiBase();
+  const res = await fetchWithTimeout(
+    `${base}/api/3.4/sites/${encodeURIComponent(siteId)}/${kind}/${encodeURIComponent(id)}/refresh`,
+    {
+      method: "POST",
+      headers: {
+        "X-Tableau-Auth": token,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    },
+  );
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`Tableau ${kind} refresh ${String(res.status)}: ${text.slice(0, 400)}`);
+  const root = JSON.parse(text) as { job?: { id?: string } };
+  const jobId = root.job?.id;
+  if (jobId === undefined || jobId === "") {
+    // Fail closed: a 2xx with no job id is a malformed response; do not report it as a queued
+    // refresh (which would make the agent treat a non-started refresh as success).
+    throw new Error(`Tableau ${kind} refresh: response missing job.id: ${text.slice(0, 400)}`);
+  }
+  return jobId;
+}
+
 export function registerTableauTools(reg: ZodToolRegistrar): void {
   reg(
     "tableau_list",
@@ -177,6 +205,20 @@ export function registerTableauTools(reg: ZodToolRegistrar): void {
       const matches = filterTableauViews(views, { query: p.query, limit: p.limit });
       return jsonResult({ matches });
     },
+  );
+
+  reg(
+    "tableau_datasource_refresh",
+    "Trigger an extract refresh for a published datasource (requires HITL tableau.datasource.refresh). Async — returns the job id.",
+    z.object({ id: z.string().min(1) }),
+    async (p) => jsonResult({ status: "queued", jobId: await tableauRefresh("datasources", p.id) }),
+  );
+
+  reg(
+    "tableau_workbook_refresh",
+    "Trigger an extract refresh for a workbook (requires HITL tableau.workbook.refresh). Async — returns the job id.",
+    z.object({ id: z.string().min(1) }),
+    async (p) => jsonResult({ status: "queued", jobId: await tableauRefresh("workbooks", p.id) }),
   );
 }
 
