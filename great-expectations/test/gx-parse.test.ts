@@ -7,6 +7,7 @@ import {
   FORBIDDEN_RESULT_KEYS,
   listAllExpectations,
   parseValidationResult,
+  resultsDir,
 } from "../src/gx-parse.ts";
 
 describe("FORBIDDEN_RESULT_KEYS", () => {
@@ -154,6 +155,11 @@ describe("parseValidationResult — no-row-data stripping", () => {
     expect(rows[0]?.expectationType).toBe("unknown");
     expect(rows[0]?.column).toBeNull();
     expect(rows[0]?.observedValue).toBeNull();
+  });
+
+  it("returns empty when results is not an array", () => {
+    const doc = { results: { success: true } };
+    expect(parseValidationResult(doc, "x.json")).toEqual([]);
   });
 
   it("defaults suite/expectation type and column when meta/config are absent", () => {
@@ -313,6 +319,38 @@ describe("assertWithinResultsDir", () => {
   });
 });
 
+describe("resultsDir", () => {
+  let prevEnv: string | undefined;
+
+  beforeEach(() => {
+    prevEnv = process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
+  });
+
+  afterEach(() => {
+    if (prevEnv === undefined) {
+      delete process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
+    } else {
+      process.env["GREAT_EXPECTATIONS_RESULTS_DIR"] = prevEnv;
+    }
+  });
+
+  it("resolves the GREAT_EXPECTATIONS_RESULTS_DIR env var", () => {
+    const targetDir = join(tmpdir(), "some-dir");
+    process.env["GREAT_EXPECTATIONS_RESULTS_DIR"] = targetDir;
+    expect(resultsDir()).toBe(resolve(targetDir));
+  });
+
+  it("throws when GREAT_EXPECTATIONS_RESULTS_DIR is unset", () => {
+    delete process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
+    expect(() => resultsDir()).toThrow("GREAT_EXPECTATIONS_RESULTS_DIR is not set");
+  });
+
+  it("throws when GREAT_EXPECTATIONS_RESULTS_DIR is empty", () => {
+    process.env["GREAT_EXPECTATIONS_RESULTS_DIR"] = "   ";
+    expect(() => resultsDir()).toThrow("GREAT_EXPECTATIONS_RESULTS_DIR is not set");
+  });
+});
+
 describe("listAllExpectations — filesystem walk", () => {
   const PII = "secret-pii@example.com";
   let dir: string;
@@ -424,8 +462,133 @@ describe("listAllExpectations — filesystem walk", () => {
     expect(rows).toEqual([]);
   });
 
+  it("stops recursing at MAX_WALK_DEPTH (12)", async () => {
+    // Create nested directories up to depth 13
+    let currentDir = dir;
+    for (let i = 1; i <= 13; i++) {
+      currentDir = join(currentDir, `level${i}`);
+      await mkdir(currentDir, { recursive: true });
+    }
+
+    const doc = {
+      meta: { expectation_suite_name: "nested" },
+      results: [
+        { success: true, expectation_config: { expectation_type: "t", kwargs: {} }, result: {} },
+      ],
+    };
+
+    // Level 12 (at MAX_WALK_DEPTH) should be found
+    let level12 = dir;
+    for (let i = 1; i <= 12; i++) {
+      level12 = join(level12, `level${i}`);
+    }
+    await writeFile(join(level12, "depth12.json"), JSON.stringify(doc), "utf8");
+
+    // Level 13 (beyond MAX_WALK_DEPTH) should NOT be found
+    const level13 = join(level12, "level13");
+    await writeFile(join(level13, "depth13.json"), JSON.stringify(doc), "utf8");
+
+    const rows = await listAllExpectations();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sourceFile).toContain("depth12.json");
+  });
+
+  it("stops collecting files at MAX_FILES (1000)", async () => {
+    const doc = {
+      meta: { expectation_suite_name: "many" },
+      results: [
+        { success: true, expectation_config: { expectation_type: "t", kwargs: {} }, result: {} },
+      ],
+    };
+    const content = JSON.stringify(doc);
+
+    // Create 1001 files sequentially to avoid EMFILE (too many open files) on some systems
+    for (let i = 0; i < 1001; i++) {
+      await writeFile(join(dir, `file${i}.json`), content, "utf8");
+    }
+
+    const rows = await listAllExpectations();
+    expect(rows).toHaveLength(1000); // 1000 expectations, as one file is skipped
+  });
+
+  it("skips files larger than MAX_FILE_BYTES", async () => {
+    // 4 MiB + 1 byte
+    const oversizedContent = "x".repeat(4 * 1024 * 1024 + 1);
+    await writeFile(join(dir, "oversized.json"), oversizedContent, "utf8");
+
+    // Normal file
+    const doc = {
+      meta: { expectation_suite_name: "normal" },
+      results: [
+        { success: true, expectation_config: { expectation_type: "t", kwargs: {} }, result: {} },
+      ],
+    };
+    await writeFile(join(dir, "normal.json"), JSON.stringify(doc), "utf8");
+
+    const rows = await listAllExpectations();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.suiteName).toBe("normal");
+  });
+
+  it("gracefully handles unreadable directories during walk", async () => {
+    if (process.platform === "win32") {
+      // chmod 000 does not block directory reading for administrators/owners on Windows
+      return;
+    }
+    const sub = join(dir, "unreadable");
+    await mkdir(sub, { recursive: true });
+
+    // Write a dummy JSON expectation file inside the sub-directory first
+    const doc = {
+      meta: { expectation_suite_name: "unreadable-dummy" },
+      results: [
+        { success: true, expectation_config: { expectation_type: "t", kwargs: {} }, result: {} },
+      ],
+    };
+    await writeFile(join(sub, "dummy.json"), JSON.stringify(doc), "utf8");
+
+    // This will cause readdir to fail on this directory
+    await import("node:fs/promises").then((fs) => fs.chmod(sub, 0o000));
+
+    try {
+      const rows = await listAllExpectations();
+      expect(rows).toEqual([]);
+    } finally {
+      // Restore permissions so cleanup works
+      await import("node:fs/promises").then((fs) => fs.chmod(sub, 0o755));
+    }
+  });
+
   it("throws when GREAT_EXPECTATIONS_RESULTS_DIR is unset", async () => {
     delete process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
     await expect(listAllExpectations()).rejects.toThrow(/GREAT_EXPECTATIONS_RESULTS_DIR/);
+  });
+});
+
+describe("resultsDir", () => {
+  const originalEnv = process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
+    } else {
+      process.env["GREAT_EXPECTATIONS_RESULTS_DIR"] = originalEnv;
+    }
+  });
+
+  it("returns the resolved path when GREAT_EXPECTATIONS_RESULTS_DIR is set", () => {
+    const targetDir = join(tmpdir(), "gx-results");
+    process.env["GREAT_EXPECTATIONS_RESULTS_DIR"] = targetDir;
+    expect(resultsDir()).toBe(resolve(targetDir));
+  });
+
+  it("throws an error when GREAT_EXPECTATIONS_RESULTS_DIR is not set", () => {
+    delete process.env["GREAT_EXPECTATIONS_RESULTS_DIR"];
+    expect(() => resultsDir()).toThrow("GREAT_EXPECTATIONS_RESULTS_DIR is not set");
+  });
+
+  it("throws an error when GREAT_EXPECTATIONS_RESULTS_DIR is an empty string", () => {
+    process.env["GREAT_EXPECTATIONS_RESULTS_DIR"] = "   ";
+    expect(() => resultsDir()).toThrow("GREAT_EXPECTATIONS_RESULTS_DIR is not set");
   });
 });
