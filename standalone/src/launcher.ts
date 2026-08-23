@@ -50,8 +50,14 @@ export type Eligibility =
  * An unreadable manifest is treated as declaring a write. The cost is refusing one connector that
  * might have been fine; the alternative is starting one that is not.
  */
-export function standaloneEligibility(id: string): Eligibility {
-  const dir = join(connectorsDir(), id);
+export function standaloneEligibility(
+  id: string,
+  // Injectable root so a test can point at a fixture. Tests previously used a real connector as
+  // their "unmigrated" example and broke the moment it was migrated — a test whose meaning depends
+  // on unrelated work is a test that will lie eventually.
+  root: string = connectorsDir(),
+): Eligibility {
+  const dir = join(root, id);
   let declaresWrite: boolean;
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(dir, "nimbus.extension.json"), "utf8"));
@@ -65,14 +71,24 @@ export function standaloneEligibility(id: string): Eligibility {
   }
   if (!declaresWrite) return { eligible: true, reason: "no-writes" };
 
+  // BOTH entrypoint files. 16 connectors register their tools in `src/tools.ts` rather than
+  // `src/server.ts` — apple, fastmail, imap, protonmail and the CLI-backed cloud ones among them —
+  // so reading only server.ts would refuse a connector that IS hardened, in tools.ts.
   let src = "";
-  try {
-    src = readFileSync(join(dir, "src", "server.ts"), "utf8");
-  } catch {
-    /* an unreadable entrypoint falls through to the refusal below */
+  for (const f of ["server.ts", "tools.ts"]) {
+    try {
+      src += readFileSync(join(dir, "src", f), "utf8");
+    } catch {
+      /* a connector need not have both; an unreadable pair falls through to the refusal below */
+    }
   }
 
-  if (src.includes("registerWriteTool")) return { eligible: true, reason: "hardened" };
+  // A registration CALL, or the registrar handed to a shared kit — not a bare substring, which
+  // the registrar's own `const registerWriteTool = ...` would satisfy even with nothing registered.
+  // Kept in step with check-connector-consent.ts's WRITE_CALL_RE.
+  if (/^\s*register[A-Za-z]*WriteTool\(|^\s*registerWriteTool,$/m.test(src)) {
+    return { eligible: true, reason: "hardened" };
+  }
 
   return {
     eligible: false,
