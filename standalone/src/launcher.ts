@@ -150,7 +150,7 @@ export async function runStandalone(
 ): Promise<number> {
   const id = argv[0];
   if (id === undefined) {
-    process.stderr.write("usage: nimbus-mcp <connector-id>\n");
+    process.stderr.write("usage: nimbus-connector <connector-id>\n");
     return 2;
   }
   let entry: string;

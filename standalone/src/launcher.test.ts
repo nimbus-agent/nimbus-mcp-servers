@@ -18,9 +18,15 @@ import { resolveConnectorEntry, runStandalone, standaloneEligibility } from "./l
 
 describe("resolveConnectorEntry", () => {
   test("resolves a known connector id to its server entry", () => {
-    expect(resolveConnectorEntry("github")).toMatch(
-      /mcp-connectors[\\/]github[\\/]src[\\/]server\.ts$/,
-    );
+    const entry = resolveConnectorEntry("github");
+    expect(entry).toMatch(/[\\/]github[\\/]src[\\/]server\.ts$/);
+    // Deliberately NOT pinned to a parent directory name. This assertion used to require
+    // `mcp-connectors/github/src/server.ts` — a property of where the connectors happened to sit
+    // in the monorepo, not of the resolver. It was the ONLY test that broke when they moved to
+    // their own repo, even though the resolver was already layout-independent
+    // (`../../<id>/src/server.ts`, relative to this file). That the entry EXISTS is the property
+    // worth asserting, and it holds in both layouts.
+    expect(existsSync(entry)).toBe(true);
   });
 
   test("rejects an id containing a path separator — no traversal via the id", () => {

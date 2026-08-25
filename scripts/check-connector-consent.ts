@@ -104,7 +104,13 @@ function codeOnly(src: string): string {
  */
 function registersWriteTool(src: string): boolean {
   for (const line of src.split("\n")) {
-    const t = line.trimStart();
+    // trim(), not trimStart(): the equality below is exact, and a CRLF checkout leaves a trailing
+    // carriage return that breaks it. Observed on the first standalone run of this repo, before .gitattributes
+    // existed — imap and protonmail were both reported as declaring ungated writes while both do
+    // register through the kit, on a line reading `registerWriteTool,` plus a CR. It failed SAFE (a false
+    // finding, not a false green) because every other check here is substring-based, but a gate
+    // whose verdict depends on the checkout's line endings is a gate waiting to be wrong.
+    const t = line.trim();
     if (t === "registerWriteTool,") return true;
     if (!t.startsWith("register")) continue;
     const at = t.indexOf("WriteTool(");

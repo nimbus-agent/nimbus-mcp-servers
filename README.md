@@ -77,6 +77,15 @@ config holds the secret.
 | `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. |
 
+### Optional dependencies
+
+Four connectors need libraries the other 90 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
+`imap` and `protonmail` (`imapflow`, `nodemailer`), and `dataprofile` (`hyparquet`). They are
+declared as **optional** dependencies, so a normal install fetches them and all 94 connectors work
+out of the box, while a platform that cannot build one does not break the other 93. If you install
+with optional dependencies disabled, those four fail at startup with a module-not-found error; the
+rest are unaffected.
+
 ### Two behaviours that look like bugs and are not
 
 **No write tools appear.** Your client does not advertise `elicitation`, so there is no way to obtain

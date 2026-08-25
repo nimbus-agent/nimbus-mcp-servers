@@ -2,7 +2,7 @@
 import { runStandalone } from "./launcher.ts";
 
 /**
- * The `nimbus-mcp` process entry point, and nothing else.
+ * The `nimbus-connector` process entry point, and nothing else.
  *
  * Split from `launcher.ts` so that file stays pure, fully testable logic. An `import.meta.main`
  * block cannot be exercised in-process by any test, so leaving it inside the launcher would have
