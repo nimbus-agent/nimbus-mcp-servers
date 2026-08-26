@@ -1,32 +1,122 @@
 # Nimbus MCP Servers
 
-Standalone, MCP-standard [**Nimbus**](https://github.com/nimbus-agent/Nimbus) connectors — usable by **any** MCP client (Claude Desktop, Cursor, …), not just the Nimbus gateway.
+Standalone, MCP-standard [**Nimbus**](https://github.com/nimbus-agent/Nimbus) connectors — usable by
+**any** MCP client (Claude Code, Cursor, Claude Desktop, …), not just the Nimbus gateway.
 
-> **Status: SCAFFOLD — not yet built.** This repo holds its vision and a [build prompt](./NEW-SESSION-PROMPT.md). There is a load-bearing design decision to make first (see below).
+All **94** connectors ship in one package, `@nimbus-dev/connectors`, each runnable standalone over
+stdio with credentials supplied from the environment.
 
-## The opportunity
+```bash
+npx @nimbus-dev/connectors github
+```
 
-Nimbus ships ~94 first-party MCP connectors in [`packages/mcp-connectors`](https://github.com/nimbus-agent/Nimbus/tree/main/packages/mcp-connectors). They speak standard MCP — but today they are bundled with the gateway and coupled to gateway-internal seams:
+## What you get, and what you do not
 
-- the lazy-mesh **sandbox** wrapper (`wrapServerSpec`, invariant I15), and
-- **credential injection** from the OS Vault at spawn time.
+Run standalone, a connector gives you:
 
-If a curated subset is published as **standalone** MCP servers — runnable independently over stdio with credentials supplied via environment variables — the whole MCP ecosystem can use them (`npx @nimbus/mcp-github`, a Claude Desktop config entry, a Cursor MCP server), which expands reach and funnels users back to Nimbus.
+- **Consent before every mutation.** A write tool asks your MCP client to put the exact operation and
+  parameters in front of you, and does nothing unless you approve.
+- **A write-scope allow-list**, enforced by the server and unreachable by the model.
+- **A mutation budget** per session, which caps a runaway agent loop.
+- **A local, hash-chained, append-only audit log**, when `NIMBUS_MCP_AUDIT_LOG` is set.
 
-## The decision to make first
+It does **not** give you the process sandbox, OS-keychain credential storage, the egress ledger, or
+owner-controlled consent. Those are properties of the Nimbus gateway and no published package can
+supply them. See [`NOTICE`](./NOTICE) for the security tiering that notice asks you to preserve.
 
-How to decouple from the gateway-internal seams without forking 94 connectors into drift:
+## Client support — writes depend on your client
 
-- **Share vs vendor vs fork** the connector code relative to the monorepo.
-- The **credential model** outside the Vault (env-only, with clear docs).
-- **AGPL-3.0 implications** for downstream MCP clients that embed these servers (this repo is AGPL — see [LICENSE](./LICENSE)).
+Reads work everywhere. **Writes require your client to implement the MCP `elicitation` capability**,
+because that is the only way a server can put a consent prompt in front of you. Without it, write
+tools are **not registered at all** rather than offered ungated — deliberate, not a defect: a tool
+the model cannot see is a tool it cannot call without a human.
 
-This is genuinely architectural; the build prompt routes it through a brainstorm first.
+**This table is a dated observation, not a standing guarantee.** Client support changes between
+releases, so the version tested is part of the claim.
 
-## Candidate first connectors
+| Client | Version tested | `elicitation` | Basis | You get |
+| --- | --- | --- | --- | --- |
+| **Claude Desktop** | 1.34493.1 (MSIX) | **no** | **observed** | **reads only** |
+| Claude Code | not tested | yes — form + URL | vendor docs | reads and writes |
+| Cursor | not tested | yes, since v1.5 | vendor changelog | reads and writes |
+| Anything else | — | check it | — | reads, plus writes if it advertises `elicitation` |
 
-Connectors that are naturally standalone (token/env auth, no gateway-specific indexing assumptions) make the best first targets — e.g. **github**, **linear** — with a repeatable template for the rest.
+Measured 2026-08-24 against the `github` connector, which exposes 9 read tools and 5 write tools. A
+client that supports elicitation is served **14** tools; Claude Desktop was served **9**, with
+`github_pr_merge`, `github_branch_delete`, `github_issue_create`, `github_pr_close` and
+`github_tag_create` correctly absent.
+
+**Checking your own client** takes one query: ask it to list the connector's tools. If the write
+tools are absent, your client does not implement elicitation.
+
+## Configuration
+
+```json
+{
+  "mcpServers": {
+    "nimbus-github": {
+      "command": "npx",
+      "args": ["-y", "@nimbus-dev/connectors", "github"],
+      "env": {
+        "GITHUB_PAT": "ghp_...",
+        "NIMBUS_MCP_GITHUB_WRITE_SCOPE": "repo:acme/api",
+        "NIMBUS_MCP_AUDIT_LOG": "/absolute/path/to/nimbus-mcp-audit.jsonl"
+      }
+    }
+  }
+}
+```
+
+Credentials come from the environment. There is no Vault outside the gateway, so whoever writes this
+config holds the secret.
+
+| Variable | Meaning |
+| --- | --- |
+| `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. Unset authorises nothing. |
+| `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Defaults to `10`. |
+| `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. |
+| _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. |
+
+### Optional dependencies
+
+Four connectors need libraries the other 90 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
+`imap` and `protonmail` (`imapflow`, `nodemailer`), and `dataprofile` (`hyparquet`). They are
+declared as **optional** dependencies, so a normal install fetches them and all 94 connectors work
+out of the box, while a platform that cannot build one does not break the other 93. If you install
+with optional dependencies disabled, those four fail at startup with a module-not-found error; the
+rest are unaffected.
+
+### Two behaviours that look like bugs and are not
+
+**No write tools appear.** Your client does not advertise `elicitation`, so there is no way to obtain
+consent and the tools are not offered at all. Reads work normally. **On Claude Desktop this is the
+expected state today.**
+
+**Every write refuses with "out of scope".** `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` is unset. An empty
+scope authorises nothing — unset never means unrestricted.
+
+## Relationship to the Nimbus monorepo
+
+The connectors are developed here and consumed by the gateway from npm. The gateway's per-connector
+**sync and indexing** intelligence stays in
+[nimbus-agent/Nimbus](https://github.com/nimbus-agent/Nimbus) — this repo holds the MCP tool surface,
+which is the part that is useful without a gateway. Adding a connector therefore touches both repos.
+
+Not to be confused with [`nimbus-mcp`](https://github.com/nimbus-agent/nimbus-mcp), which exposes
+your local Nimbus **index and agents** to an MCP client. This repo is the other direction: the
+connectors that reach your tools.
+
+## History
+
+This repo was a scaffold from 2026-06-18 until the connectors landed. Its original README posed three
+"decisions to make first" — share-vs-vendor-vs-fork, the credential model outside the Vault, and the
+AGPL implications for downstream clients. All three were answered before the move: the connectors are
+consent-gated standalone, credentials come from the environment, and `NOTICE` states the tiering. It
+also proposed a package per connector; one package was chosen instead, because 94 packages means 94
+releases and forces `shared/` to become a versioned dependency that 190 files import by relative path.
 
 ## License
 
-[AGPL-3.0](./LICENSE) — consistent with the connector code in the main repo.
+[AGPL-3.0-only](./LICENSE), and [`NOTICE`](./NOTICE) records the security tiering — please preserve
+it. "Nimbus" is a trademark of the Nimbus project; this licence grants no trademark rights, and a
+modified version that removes these protections must not be described as Nimbus-grade.
