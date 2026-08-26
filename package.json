@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-dev/connectors",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publishConfig": {
     "access": "public"
   },
@@ -27,10 +27,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@nimbus-dev/sdk": "^1.20.0",
+    "@types/nodemailer": "^7.0.4",
     "zod": "^4.4.2"
   },
   "exports": {
     ".": "./standalone/src/bin.ts",
+    "./package.json": "./package.json",
     "./shared/connector-mode.ts": "./shared/connector-mode.ts",
     "./airflow": "./connectors/airflow/src/server.ts",
     "./apple": "./connectors/apple/src/server.ts",
@@ -140,7 +142,6 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",
     "@types/bun": "^1.4.0",
-    "@types/nodemailer": "^7.0.4",
     "typescript": "^7.0.2"
   },
   "engines": {
