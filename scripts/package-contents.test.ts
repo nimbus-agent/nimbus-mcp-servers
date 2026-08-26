@@ -3,26 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectorDirs } from "./check-connector-consent.ts";
+import { packedFiles } from "./packed-files.ts";
 
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
-
-/**
- * What `npm publish` would actually ship, asked of npm rather than reimplemented.
- *
- * `npm pack --dry-run` applies the real `files` semantics — negations, directory recursion and the
- * always-included set — which a hand-rolled glob walk would only approximate. The approximation is
- * the failure mode worth avoiding: a guard that disagrees with the packer certifies the wrong tree.
- */
-function packedFiles(): string[] {
-  const out = Bun.spawnSync(["npm", "pack", "--dry-run"], { cwd: ROOT, stderr: "pipe" });
-  const text = new TextDecoder().decode(out.stderr) + new TextDecoder().decode(out.stdout);
-  return text
-    .split("\n")
-    .map((l) => l.replace(/^npm notice /, "").trim())
-    .filter((l) => /^[\d.]+\s*[kMG]?B\s+\S/.test(l))
-    .map((l) => l.split(/\s+/).slice(1).join(" "))
-    .filter((l) => l.length > 0);
-}
 
 describe("published tarball", () => {
   const files = packedFiles();

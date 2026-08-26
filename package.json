@@ -1,6 +1,6 @@
 {
   "name": "@nimbus-dev/connectors",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": {
     "access": "public"
   },
@@ -31,6 +31,7 @@
   },
   "exports": {
     ".": "./standalone/src/bin.ts",
+    "./shared/connector-mode.ts": "./shared/connector-mode.ts",
     "./airflow": "./connectors/airflow/src/server.ts",
     "./apple": "./connectors/apple/src/server.ts",
     "./argocd": "./connectors/argocd/src/server.ts",
