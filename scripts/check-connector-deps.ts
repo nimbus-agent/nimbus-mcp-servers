@@ -21,6 +21,22 @@ export const ALLOWED_CONNECTOR_DEPS: readonly string[] = [
   "tsdav",
 ];
 
+/**
+ * `@types/*` packages carry declarations and no runtime code, by construction.
+ *
+ * This gate exists because a NATIVE dependency breaks the compiled gateway binary silently — a
+ * risk a types-only package cannot pose: nothing of it survives compilation. Exempted as a class
+ * rather than listed one by one, so adding a needed `@types/*` never requires editing the
+ * allow-list for a reason that does not apply to it.
+ *
+ * They are not unguarded. `consumer-types.test.ts` asserts that any `@types/*` the SHIPPED sources
+ * need is a real dependency rather than a devDependency — this package ships raw TypeScript, so a
+ * consumer compiles those sources and needs the same declarations.
+ */
+function isTypesOnly(dep: string): boolean {
+  return dep.startsWith("@types/");
+}
+
 export interface DepViolation {
   readonly connector: string;
   readonly dependency: string;
@@ -76,7 +92,8 @@ export function checkConnectorDeps(
   const rootPkg = join(root, "package.json");
   if (existsSync(rootPkg)) {
     for (const dep of runtimeDepNames(readManifest(rootPkg))) {
-      if (!allowed.has(dep)) out.push({ connector: "<root>", dependency: dep });
+      if (isTypesOnly(dep) || allowed.has(dep)) continue;
+      out.push({ connector: "<root>", dependency: dep });
     }
   }
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -86,7 +103,8 @@ export function checkConnectorDeps(
     // An unreadable or malformed manifest is an OBSERVATION failure, not a dependency violation —
     // reporting it as a violation would name an innocent package. Fail loudly instead.
     for (const dep of runtimeDepNames(readManifest(pkgPath))) {
-      if (!allowed.has(dep)) out.push({ connector: entry.name, dependency: dep });
+      if (isTypesOnly(dep) || allowed.has(dep)) continue;
+      out.push({ connector: entry.name, dependency: dep });
     }
   }
   return out;
