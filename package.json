@@ -1,7 +1,9 @@
 {
   "name": "@nimbus-dev/connectors",
   "version": "0.1.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Nimbus first-party MCP connectors, runnable standalone by any MCP client.",
