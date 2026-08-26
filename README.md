@@ -22,32 +22,23 @@ Run standalone, a connector gives you:
 
 It does **not** give you the process sandbox, OS-keychain credential storage, the egress ledger, or
 owner-controlled consent. Those are properties of the Nimbus gateway and no published package can
-supply them. See [`NOTICE`](./NOTICE) for the security tiering that notice asks you to preserve.
+supply them. [`NOTICE`](./NOTICE) states the tiering that notice asks you to preserve.
 
-## Client support — writes depend on your client
+## Writes depend on your client
 
 Reads work everywhere. **Writes require your client to implement the MCP `elicitation` capability**,
 because that is the only way a server can put a consent prompt in front of you. Without it, write
 tools are **not registered at all** rather than offered ungated — deliberate, not a defect: a tool
-the model cannot see is a tool it cannot call without a human.
+the model cannot see is one it cannot call without a human.
 
-**This table is a dated observation, not a standing guarantee.** Client support changes between
-releases, so the version tested is part of the claim.
+**Claude Desktop does not implement elicitation today**, so you get reads only there. Claude Code and
+Cursor do, per their vendor docs.
 
-| Client | Version tested | `elicitation` | Basis | You get |
-| --- | --- | --- | --- | --- |
-| **Claude Desktop** | 1.34493.1 (MSIX) | **no** | **observed** | **reads only** |
-| Claude Code | not tested | yes — form + URL | vendor docs | reads and writes |
-| Cursor | not tested | yes, since v1.5 | vendor changelog | reads and writes |
-| Anything else | — | check it | — | reads, plus writes if it advertises `elicitation` |
+Checking your own client takes one query: ask it to list the connector's tools. If the write tools are
+absent, your client does not implement elicitation.
 
-Measured 2026-08-24 against the `github` connector, which exposes 9 read tools and 5 write tools. A
-client that supports elicitation is served **14** tools; Claude Desktop was served **9**, with
-`github_pr_merge`, `github_branch_delete`, `github_issue_create`, `github_pr_close` and
-`github_tag_create` correctly absent.
-
-**Checking your own client** takes one query: ask it to list the connector's tools. If the write
-tools are absent, your client does not implement elicitation.
+Full matrix, versions tested, and the provenance of each claim:
+[Client support](./docs/client-support.md).
 
 ## Configuration
 
@@ -68,32 +59,30 @@ tools are absent, your client does not implement elicitation.
 ```
 
 Credentials come from the environment. There is no Vault outside the gateway, so whoever writes this
-config holds the secret.
+config holds the secret. Every variable, and the two behaviours that look like bugs and are not, are
+in [Configuration](./docs/configuration.md).
 
-| Variable | Meaning |
+Each connector documents its own tools and credentials at `connectors/<id>/README.md`.
+
+## Documentation
+
+| Page | Read it when |
 | --- | --- |
-| `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. Unset authorises nothing. |
-| `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Defaults to `10`. |
-| `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. |
-| _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. |
+| [Architecture](./docs/architecture.md) | You want the layout, or how a connector is put together. |
+| [Client support](./docs/client-support.md) | Write tools are missing, or you need to know if your client can approve a mutation. |
+| [Configuration](./docs/configuration.md) | You are wiring a connector into a client. |
+| [Standalone launcher](./docs/standalone-launcher.md) | You want `nimbus-connector`: eligibility, exit codes, refusals. |
+| [Adding a connector](./docs/adding-a-connector.md) | You are writing or changing a connector. |
+| [Publishing](./docs/publishing.md) | You are cutting a release. |
 
-### Optional dependencies
+## Development
 
-Four connectors need libraries the other 90 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
-`imap` and `protonmail` (`imapflow`, `nodemailer`), and `dataprofile` (`hyparquet`). They are
-declared as **optional** dependencies, so a normal install fetches them and all 94 connectors work
-out of the box, while a platform that cannot build one does not break the other 93. If you install
-with optional dependencies disabled, those four fail at startup with a module-not-found error; the
-rest are unaffected.
+```bash
+bun install
+bun run check   # lint, typecheck, consent audit, full suite
+```
 
-### Two behaviours that look like bugs and are not
-
-**No write tools appear.** Your client does not advertise `elicitation`, so there is no way to obtain
-consent and the tools are not offered at all. Reads work normally. **On Claude Desktop this is the
-expected state today.**
-
-**Every write refuses with "out of scope".** `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` is unset. An empty
-scope authorises nothing — unset never means unrestricted.
+CI runs those four on Ubuntu, macOS and Windows — platform equality is a Nimbus non-negotiable.
 
 ## Relationship to the Nimbus monorepo
 

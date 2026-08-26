@@ -40,8 +40,15 @@ function registersWriteTool(src: string): boolean {
   return false;
 }
 
+/**
+ * The directory holding the 94 connector packages.
+ *
+ * `standalone/src/` -> repo root -> `connectors/`. This used to be just `../..`, back when the
+ * connectors sat directly at the repo root alongside `shared/` and `standalone/` — 97 top-level
+ * entries, which is why they were nested.
+ */
 function connectorsDir(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "connectors");
 }
 
 /**

@@ -254,12 +254,12 @@ describe("discord over-declared and was corrected", () => {
   });
 });
 
-describe("the README's eligibility count cannot drift from the code", () => {
+describe("the eligibility count cannot drift from the code", () => {
   // Part 2 migrated every connector and took the count from 58 to 94, but the README kept saying
   // "58 of 94 ... plus github" — a hand-maintained number that went stale the moment the work
   // landed, understating the migration by 36 connectors. The count is derivable, so derive it.
   function eligibilityCounts(): { total: number; noWrites: number; hardened: number } {
-    const root = join(fileURLToPath(import.meta.url), "../../..");
+    const root = join(fileURLToPath(import.meta.url), "../../../connectors");
     const ids = readdirSync(root, { withFileTypes: true })
       .filter((d) => d.isDirectory() && existsSync(join(root, d.name, "nimbus.extension.json")))
       .map((d) => d.name);
@@ -276,13 +276,13 @@ describe("the README's eligibility count cannot drift from the code", () => {
     expect(noWrites + hardened).toBe(total);
   });
 
-  test("the README states the measured total and split", () => {
+  test("the launcher doc states the measured total and split", () => {
     const { total, noWrites, hardened } = eligibilityCounts();
     // Collapsed, because the README is hard-wrapped at 100 columns and a wrap can fall in the
     // middle of any of these phrases — the first version of this test failed on "all 94 are\n
     // eligible", which is a formatting artefact and not the drift the test exists to catch.
     const readme = readFileSync(
-      join(fileURLToPath(import.meta.url), "../../README.md"),
+      join(fileURLToPath(import.meta.url), "../../../docs/standalone-launcher.md"),
       "utf8",
     ).replace(/\s+/g, " ");
     expect(readme).toContain(`all ${total} are eligible`);
@@ -296,7 +296,7 @@ describe("no connector package can be published by accident", () => {
   // npx it for two releases (#1323). Nothing publishes these packages today; this makes that
   // structural rather than incidental.
   test("every connector package.json is private", () => {
-    const root = join(fileURLToPath(import.meta.url), "../../..");
+    const root = join(fileURLToPath(import.meta.url), "../../../connectors");
     const offenders = readdirSync(root, { withFileTypes: true })
       .filter((d) => d.isDirectory() && existsSync(join(root, d.name, "package.json")))
       .filter((d) => {
