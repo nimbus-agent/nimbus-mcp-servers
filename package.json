@@ -129,6 +129,7 @@
   },
   "scripts": {
     "test": "bun test",
+    "test:sandbox": "bun scripts/run-sandbox-contract.ts",
     "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --write .",
     "typecheck": "tsc -p tsconfig.json",
