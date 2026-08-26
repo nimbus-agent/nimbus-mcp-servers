@@ -7,9 +7,9 @@ import { checkConnectorConsent, connectorDirs } from "./check-connector-consent.
 /** A one-connector fixture tree whose sources use `eol` as their line ending. */
 function fixture(eol: "\n" | "\r\n", opts: { registers: boolean }): string {
   const root = mkdtempSync(join(tmpdir(), "consent-"));
-  mkdirSync(join(root, "acme", "src"), { recursive: true });
+  mkdirSync(join(root, "connectors", "acme", "src"), { recursive: true });
   const body = [
-    'import { createWriteToolRegistrar } from "../../shared/consent-kit.ts";',
+    'import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";',
     "export function registerTools(server: unknown): void {",
     "  const registerWriteTool = createWriteToolRegistrar(server, {});",
     "  registerSharedTools({",
@@ -18,9 +18,9 @@ function fixture(eol: "\n" | "\r\n", opts: { registers: boolean }): string {
     "  });",
     "}",
   ].join(eol);
-  writeFileSync(join(root, "acme", "src", "server.ts"), body);
+  writeFileSync(join(root, "connectors", "acme", "src", "server.ts"), body);
   writeFileSync(
-    join(root, "acme", "nimbus.extension.json"),
+    join(root, "connectors", "acme", "nimbus.extension.json"),
     JSON.stringify({ id: "com.nimbus.acme", hitlRequired: ["write"] }),
   );
   return root;
@@ -29,8 +29,8 @@ function fixture(eol: "\n" | "\r\n", opts: { registers: boolean }): string {
 describe("checkConnectorConsent", () => {
   test("identifies connectors by src/server.ts, not by a name blocklist", () => {
     const root = fixture("\n", { registers: true });
-    mkdirSync(join(root, "node_modules", "left-pad"), { recursive: true });
-    writeFileSync(join(root, "node_modules", "left-pad", "package.json"), "{}");
+    mkdirSync(join(root, "connectors", "node_modules", "left-pad"), { recursive: true });
+    writeFileSync(join(root, "connectors", "node_modules", "left-pad", "package.json"), "{}");
     expect(connectorDirs(root)).toEqual(["acme"]);
   });
 

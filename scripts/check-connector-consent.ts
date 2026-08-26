@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 export type ConsentViolation = {
@@ -43,11 +43,11 @@ export const MUTATION_RULE_BLOCKING = true;
  * `MUTATING_RE` is checked as well.
  */
 function connectorDeclaresWrite(root: string, rel: string): boolean {
-  const name = rel.split("/")[0];
+  const name = rel.split("/")[1];
   if (name === undefined || name === "") return false;
   try {
     const manifest: unknown = JSON.parse(
-      readFileSync(join(root, name, "nimbus.extension.json"), "utf8"),
+      readFileSync(join(root, CONNECTORS_SUBDIR, name, "nimbus.extension.json"), "utf8"),
     );
     if (typeof manifest !== "object" || manifest === null) return false;
     const hitl = (manifest as Record<string, unknown>)["hitlRequired"];
@@ -123,9 +123,9 @@ function registersWriteTool(src: string): boolean {
   return false;
 }
 
-/** `<name>/src/...` → `<name>`. */
+/** `connectors/<name>/src/...` → `<name>`. */
 function connectorOf(rel: string): string {
-  return rel.split("/")[0] ?? "";
+  return rel.split("/")[1] ?? "";
 }
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -151,13 +151,24 @@ function walk(dir: string, out: string[] = []): string[] {
  * contributor adds, so a blocklist would need extending for each one and would fail the same way
  * every time it was not. Asking what a connector HAS cannot fail that way.
  */
+export const CONNECTORS_SUBDIR = "connectors";
+
 export function connectorDirs(root: string): string[] {
-  return readdirSync(root, { withFileTypes: true })
+  const dir = join(root, CONNECTORS_SUBDIR);
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    // A tree with no connectors/ directory yields no connectors, rather than throwing. The
+    // audit's own fixtures build partial trees, and a missing directory is not a violation.
+    return [];
+  }
+  return entries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
     .filter((name) => {
       try {
-        return statSync(join(root, name, "src", "server.ts")).isFile();
+        return statSync(join(dir, name, "src", "server.ts")).isFile();
       } catch {
         return false;
       }
@@ -171,7 +182,7 @@ export function checkConnectorConsent(
   const out: ConsentViolation[] = [];
   const hardened = new Set<string>();
   const names = connectorDirs(root);
-  for (const base of [...names, "shared", "standalone"]) {
+  for (const base of [...names.map((n) => join(CONNECTORS_SUBDIR, n)), "shared", "standalone"]) {
     const dir = join(root, base);
     try {
       if (!statSync(dir).isDirectory()) continue;
@@ -204,11 +215,11 @@ export function checkConnectorConsent(
   // Per CONNECTOR, not per file: a connector's write registration lives in one of its files and
   // its verb literals may live in another.
   for (const name of names) {
-    if (!connectorDeclaresWrite(root, `${name}/src/server.ts`)) continue;
+    if (!connectorDeclaresWrite(root, `${CONNECTORS_SUBDIR}/${name}/src/server.ts`)) continue;
     if (hardened.has(name)) continue;
     out.push({
       rule: "mutation-declared",
-      file: `${name}/nimbus.extension.json`,
+      file: `${CONNECTORS_SUBDIR}/${name}/nimbus.extension.json`,
       reason:
         "declares write or delete in hitlRequired but no file in the connector registers a write " +
         "tool through the consent kit — running it standalone would expose ungated mutations. " +

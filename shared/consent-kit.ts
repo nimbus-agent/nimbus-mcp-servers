@@ -223,7 +223,7 @@ export function createWriteToolRegistrar(
     // PROTOCOL channel is stdout; writing this to stdout would corrupt the JSON-RPC stream.
     if (scope.length === 0) {
       process.stderr.write(
-        `nimbus-mcp ${cfg.connector}: ${cfg.scopeEnv} is unset or empty, so every write tool ` +
+        `nimbus-connector ${cfg.connector}: ${cfg.scopeEnv} is unset or empty, so every write tool ` +
           `will refuse. Set it to a comma-separated list of ${cfg.scopeKinds.join("|")}:value ` +
           "terms to enable writes.\n",
       );
