@@ -133,7 +133,9 @@
     "lint:fix": "biome check --write .",
     "typecheck": "tsc -p tsconfig.json",
     "audit:connector-consent": "bun scripts/check-connector-consent.ts",
-    "check": "bun run lint && bun run typecheck && bun run audit:connector-consent && bun run test"
+    "audit:connector-deps": "bun scripts/check-connector-deps.ts",
+    "audit:connector-entrypoints": "bun scripts/check-connector-entrypoints.ts",
+    "check": "bun run lint && bun run typecheck && bun run audit:connector-consent && bun run audit:connector-deps && bun run audit:connector-entrypoints && bun run test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",

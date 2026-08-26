@@ -34,6 +34,8 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - run: bun run audit:connector-consent
+      - run: bun run audit:connector-deps
+      - run: bun run audit:connector-entrypoints
       - run: bun test
 
   required:
