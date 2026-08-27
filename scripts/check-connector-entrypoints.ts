@@ -39,8 +39,15 @@ export function checkConnectorEntrypoints(dir: string = CONNECTORS_DIR): Entrypo
   return out;
 }
 
-if (import.meta.main) {
-  const violations = checkConnectorEntrypoints();
+/**
+ * Print the verdict and return the process exit code.
+ *
+ * Split out of the `import.meta.main` block so it can be tested. That guard is false under an
+ * import, so anything inside it is unreachable to every in-process test — the same reason
+ * `standalone/src/bin.ts` was split from `launcher.ts`. Leaving the reporting inline meant either
+ * an uncoverable branch or a coverage exclusion over the whole file, and the file is the audit.
+ */
+export function report(violations: readonly EntrypointViolation[]): number {
   for (const v of violations) {
     console.error(`::error file=connectors/${v.connector}/src/server.ts::${v.reason}`);
   }
@@ -49,5 +56,9 @@ if (import.meta.main) {
       ? "connector entrypoints: ok"
       : `connector entrypoints: ${violations.length} violation(s)`,
   );
-  process.exit(violations.length > 0 ? 1 : 0);
+  return violations.length > 0 ? 1 : 0;
+}
+
+if (import.meta.main) {
+  process.exit(report(checkConnectorEntrypoints()));
 }

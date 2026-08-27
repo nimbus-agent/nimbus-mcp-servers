@@ -83,38 +83,57 @@ function readManifest(pkgPath: string): unknown {
  * binary — actually resolves. Checking only the per-connector files would leave the real graph
  * unguarded, which is the inverse of the bug this audit exists to prevent.
  */
+/**
+ * Disallowed runtime dependencies declared by ONE manifest, attributed to `connector`.
+ *
+ * Extracted because the root manifest and each connector's were being walked by two near-identical
+ * loops, which is where this function's cognitive complexity came from (16, over the 15 allowed) —
+ * and duplicated logic in an audit is worse than the metric suggests: the root check was added
+ * later, and the two copies could have drifted apart without anything noticing.
+ *
+ * A missing manifest yields nothing. An unreadable one throws, via readManifest — that is an
+ * OBSERVATION failure, not a dependency violation, and reporting it as one would name an innocent
+ * package.
+ */
+function violationsIn(
+  pkgPath: string,
+  connector: string,
+  allowed: ReadonlySet<string>,
+): DepViolation[] {
+  if (!existsSync(pkgPath)) return [];
+  return runtimeDepNames(readManifest(pkgPath))
+    .filter((dep) => !isTypesOnly(dep) && !allowed.has(dep))
+    .map((dependency) => ({ connector, dependency }));
+}
+
 export function checkConnectorDeps(
   dir: string = CONNECTORS_DIR,
   root: string = REPO_ROOT,
 ): DepViolation[] {
-  const allowed = new Set(ALLOWED_CONNECTOR_DEPS);
-  const out: DepViolation[] = [];
-  const rootPkg = join(root, "package.json");
-  if (existsSync(rootPkg)) {
-    for (const dep of runtimeDepNames(readManifest(rootPkg))) {
-      if (isTypesOnly(dep) || allowed.has(dep)) continue;
-      out.push({ connector: "<root>", dependency: dep });
-    }
-  }
+  const allowed: ReadonlySet<string> = new Set(ALLOWED_CONNECTOR_DEPS);
+  const out = violationsIn(join(root, "package.json"), "<root>", allowed);
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const pkgPath = join(dir, entry.name, "package.json");
-    if (!existsSync(pkgPath)) continue;
-    // An unreadable or malformed manifest is an OBSERVATION failure, not a dependency violation —
-    // reporting it as a violation would name an innocent package. Fail loudly instead.
-    for (const dep of runtimeDepNames(readManifest(pkgPath))) {
-      if (isTypesOnly(dep) || allowed.has(dep)) continue;
-      out.push({ connector: entry.name, dependency: dep });
-    }
+    out.push(...violationsIn(join(dir, entry.name, "package.json"), entry.name, allowed));
   }
   return out;
 }
 
-if (import.meta.main) {
-  const violations = checkConnectorDeps();
+/** `<root>` reports against the root manifest; anything else against that connector's. */
+export function manifestPathFor(connector: string): string {
+  return connector === "<root>" ? "package.json" : `connectors/${connector}/package.json`;
+}
+
+/**
+ * Print the verdict and return the process exit code.
+ *
+ * Split out of the `import.meta.main` block so it can be tested — that guard is false under an
+ * import, so anything inside it is unreachable to every in-process test.
+ */
+export function report(violations: readonly DepViolation[]): number {
   for (const v of violations) {
     console.error(
-      `::error file=${v.connector === "<root>" ? "package.json" : `connectors/${v.connector}/package.json`}::dependency "${v.dependency}" is not in ALLOWED_CONNECTOR_DEPS — connectors are bundled into the gateway binary, so a native dependency breaks it silently`,
+      `::error file=${manifestPathFor(v.connector)}::dependency "${v.dependency}" is not in ALLOWED_CONNECTOR_DEPS — connectors are bundled into the gateway binary, so a native dependency breaks it silently`,
     );
   }
   console.log(
@@ -122,5 +141,9 @@ if (import.meta.main) {
       ? "connector deps: ok"
       : `connector deps: ${violations.length} violation(s)`,
   );
-  process.exit(violations.length > 0 ? 1 : 0);
+  return violations.length > 0 ? 1 : 0;
+}
+
+if (import.meta.main) {
+  process.exit(report(checkConnectorDeps()));
 }
