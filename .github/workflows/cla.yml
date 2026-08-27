@@ -25,7 +25,24 @@ jobs:
       (github.event.issue.pull_request && contains(fromJSON('["I have read the CLA Document and I hereby sign the CLA","recheck"]'), github.event.comment.body))
       || github.event_name == 'pull_request_target'
     steps:
+      # Dependabot-triggered runs get a read-only token and NO access to Actions secrets — the
+      # restriction applies to pull_request_target too. So the token mint below fails with
+      # "client-id must be non-empty" and takes the whole job with it, which matters now that `cla`
+      # is a required check: every Dependabot PR would be permanently unmergeable.
+      #
+      # Skipping is correct rather than merely convenient. A bot cannot sign a CLA, and the action's
+      # own `allowlist` already contains `bot*` — so on a run that DID have secrets it would pass
+      # anyway. Skipping the steps still concludes the job as success, so the required check
+      # reports and the PR is mergeable.
+      #
+      # The sibling repos have the same latent problem; theirs pass because a human re-ran the
+      # workflow, which re-triggers it with the user as actor and therefore with secrets.
+      - name: Skip — a bot cannot sign a CLA
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        run: echo "Dependabot PR — CLA not applicable (the action's allowlist covers bot*)."
+
       - name: Mint CLA App token
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
         id: apptoken
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -34,6 +51,7 @@ jobs:
           owner: nimbus-agent
           repositories: ${{ github.event.repository.name }},.github
       - name: CLA Assistant
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ github.token }}
