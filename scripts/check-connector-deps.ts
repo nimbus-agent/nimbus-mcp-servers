@@ -83,29 +83,38 @@ function readManifest(pkgPath: string): unknown {
  * binary — actually resolves. Checking only the per-connector files would leave the real graph
  * unguarded, which is the inverse of the bug this audit exists to prevent.
  */
+/**
+ * Disallowed runtime dependencies declared by ONE manifest, attributed to `connector`.
+ *
+ * Extracted because the root manifest and each connector's were being walked by two near-identical
+ * loops, which is where this function's cognitive complexity came from (16, over the 15 allowed) —
+ * and duplicated logic in an audit is worse than the metric suggests: the root check was added
+ * later, and the two copies could have drifted apart without anything noticing.
+ *
+ * A missing manifest yields nothing. An unreadable one throws, via readManifest — that is an
+ * OBSERVATION failure, not a dependency violation, and reporting it as one would name an innocent
+ * package.
+ */
+function violationsIn(
+  pkgPath: string,
+  connector: string,
+  allowed: ReadonlySet<string>,
+): DepViolation[] {
+  if (!existsSync(pkgPath)) return [];
+  return runtimeDepNames(readManifest(pkgPath))
+    .filter((dep) => !isTypesOnly(dep) && !allowed.has(dep))
+    .map((dependency) => ({ connector, dependency }));
+}
+
 export function checkConnectorDeps(
   dir: string = CONNECTORS_DIR,
   root: string = REPO_ROOT,
 ): DepViolation[] {
-  const allowed = new Set(ALLOWED_CONNECTOR_DEPS);
-  const out: DepViolation[] = [];
-  const rootPkg = join(root, "package.json");
-  if (existsSync(rootPkg)) {
-    for (const dep of runtimeDepNames(readManifest(rootPkg))) {
-      if (isTypesOnly(dep) || allowed.has(dep)) continue;
-      out.push({ connector: "<root>", dependency: dep });
-    }
-  }
+  const allowed: ReadonlySet<string> = new Set(ALLOWED_CONNECTOR_DEPS);
+  const out = violationsIn(join(root, "package.json"), "<root>", allowed);
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const pkgPath = join(dir, entry.name, "package.json");
-    if (!existsSync(pkgPath)) continue;
-    // An unreadable or malformed manifest is an OBSERVATION failure, not a dependency violation —
-    // reporting it as a violation would name an innocent package. Fail loudly instead.
-    for (const dep of runtimeDepNames(readManifest(pkgPath))) {
-      if (isTypesOnly(dep) || allowed.has(dep)) continue;
-      out.push({ connector: entry.name, dependency: dep });
-    }
+    out.push(...violationsIn(join(dir, entry.name, "package.json"), entry.name, allowed));
   }
   return out;
 }

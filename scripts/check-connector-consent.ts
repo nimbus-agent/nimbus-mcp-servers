@@ -15,7 +15,7 @@ export type ConsentViolation = {
  * caller could re-gate a connector mid-process, which is exactly what Non-Negotiable #2 forbids.
  * Test files are exempt: they are in-repo code, not a runtime switch.
  */
-const MODE_SETTER_ALLOWED = ["shared/connector-mode.ts"];
+const MODE_SETTER_ALLOWED = new Set(["shared/connector-mode.ts"]);
 
 /**
  * Rule 2 is now BLOCKING, and it keys on the MANIFEST alone.
@@ -176,13 +176,19 @@ export function connectorDirs(root: string): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
-export function checkConnectorConsent(
-  root: string = resolve(import.meta.dir, ".."),
-): ConsentViolation[] {
-  const out: ConsentViolation[] = [];
-  const hardened = new Set<string>();
-  const names = connectorDirs(root);
-  for (const base of [...names.map((n) => join(CONNECTORS_SUBDIR, n)), "shared", "standalone"]) {
+/** One readable source file: its repo-relative path (forward slashes) and comment-stripped body. */
+type Source = { readonly rel: string; readonly src: string };
+
+/**
+ * Every non-test `.ts` file under the given bases.
+ *
+ * Forward slashes so the allow-list comparison is identical on Windows. A base that is missing or
+ * is not a directory contributes nothing rather than throwing — the audit's own fixtures build
+ * partial trees.
+ */
+function readSources(root: string, bases: readonly string[]): Source[] {
+  const out: Source[] = [];
+  for (const base of bases) {
     const dir = join(root, base);
     try {
       if (!statSync(dir).isDirectory()) continue;
@@ -190,43 +196,75 @@ export function checkConnectorConsent(
       continue;
     }
     for (const file of walk(dir)) {
-      // Forward slashes so the allow-list comparison is identical on Windows.
       const rel = relative(root, file).replaceAll("\\", "/");
       if (rel.endsWith(".test.ts")) continue;
-      const raw = readFileSync(file, "utf8");
-      const src = codeOnly(raw);
-
-      if (src.includes("setConnectorMode(") && !MODE_SETTER_ALLOWED.includes(rel)) {
-        out.push({
-          rule: "mode-setter-confined",
-          file: rel,
-          reason:
-            "names setConnectorMode outside its sanctioned callers — the mode must come from the " +
-            "entrypoint, not from arbitrary code",
-        });
-      }
-
-      // A CALL, not the declaration. `const registerWriteTool = createWriteToolRegistrar(...)`
-      // contains the identifier too, so a substring check called a connector hardened even after
-      // every one of its write registrations had been reverted — caught by red-proving this gate.
-      if (registersWriteTool(src)) hardened.add(connectorOf(rel));
+      out.push({ rel, src: codeOnly(readFileSync(file, "utf8")) });
     }
   }
-  // Per CONNECTOR, not per file: a connector's write registration lives in one of its files and
-  // its verb literals may live in another.
-  for (const name of names) {
-    if (!connectorDeclaresWrite(root, `${CONNECTORS_SUBDIR}/${name}/src/server.ts`)) continue;
-    if (hardened.has(name)) continue;
-    out.push({
-      rule: "mutation-declared",
+  return out;
+}
+
+/** The mode-setter finding for one file, if it has one. */
+function modeSetterViolation({ rel, src }: Source): ConsentViolation | undefined {
+  if (!src.includes("setConnectorMode(") || MODE_SETTER_ALLOWED.has(rel)) return undefined;
+  return {
+    rule: "mode-setter-confined",
+    file: rel,
+    reason:
+      "names setConnectorMode outside its sanctioned callers — the mode must come from the " +
+      "entrypoint, not from arbitrary code",
+  };
+}
+
+/**
+ * Connectors that declare a mutating tool without registering one through the consent kit.
+ *
+ * Per CONNECTOR, not per file: a connector's write registration lives in one of its files and its
+ * verb literals may live in another.
+ */
+function undeclaredWriteViolations(
+  root: string,
+  names: readonly string[],
+  hardened: ReadonlySet<string>,
+): ConsentViolation[] {
+  return names
+    .filter((name) => connectorDeclaresWrite(root, `${CONNECTORS_SUBDIR}/${name}/src/server.ts`))
+    .filter((name) => !hardened.has(name))
+    .map((name) => ({
+      rule: "mutation-declared" as const,
       file: `${CONNECTORS_SUBDIR}/${name}/nimbus.extension.json`,
       reason:
         "declares write or delete in hitlRequired but no file in the connector registers a write " +
         "tool through the consent kit — running it standalone would expose ungated mutations. " +
         "Route its mutating tools through registerWriteTool, or correct the manifest if it does " +
         "not actually mutate",
-    });
+    }));
+}
+
+/**
+ * Split into readSources / modeSetterViolation / undeclaredWriteViolations because this function
+ * was doing all three at once, at a cognitive complexity of 22 against the 15 allowed. The pieces
+ * are also the units worth testing separately: "which files does it read" and "what counts as a
+ * violation" are different questions.
+ */
+export function checkConnectorConsent(
+  root: string = resolve(import.meta.dir, ".."),
+): ConsentViolation[] {
+  const names = connectorDirs(root);
+  const bases = [...names.map((n) => join(CONNECTORS_SUBDIR, n)), "shared", "standalone"];
+  const out: ConsentViolation[] = [];
+  const hardened = new Set<string>();
+
+  for (const source of readSources(root, bases)) {
+    const violation = modeSetterViolation(source);
+    if (violation !== undefined) out.push(violation);
+    // A CALL, not the declaration. `const registerWriteTool = createWriteToolRegistrar(...)`
+    // contains the identifier too, so a substring check called a connector hardened even after
+    // every one of its write registrations had been reverted — caught by red-proving this gate.
+    if (registersWriteTool(source.src)) hardened.add(connectorOf(source.rel));
   }
+
+  out.push(...undeclaredWriteViolations(root, names, hardened));
   return out;
 }
 
