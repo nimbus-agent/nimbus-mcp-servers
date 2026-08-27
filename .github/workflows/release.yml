@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The org blocks GITHUB_TOKEN from creating pull requests, so release-please
+    # opens its release PR with a token minted from the "Nimbus Release Bot"
+    # GitHub App — the same App the monorepo uses, now installed on this repo.
+    # This replaces RELEASE_PLEASE_PAT, which had no write access here: creating
+    # the release branch failed with "Resource not accessible by personal
+    # access token". App tokens are minted per-run and expire in ~1h.
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Mint release-bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: nimbus-agent
+          repositories: nimbus-mcp-servers
+          permission-contents: write
+          permission-pull-requests: write
+          # release-please needs issues:write to CREATE its autorelease:* label
+          # definitions. This repo has never cut a release, so unlike the other
+          # satellites those labels do not exist yet and the first run WILL
+          # need to create them.
+          permission-issues: write
+
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ steps.app-token.outputs.token }}
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Required for npm provenance + token-less OIDC trusted publishing.
+      id-token: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          # Publishing reaches npm + the sigstore provenance endpoints; audit
+          # (not block) avoids brittle allowlist drift on the signing chain.
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Setup Node (for npm publish --provenance)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # npm trusted publishing (token-less OIDC) requires npm >= 11.5.1, newer
+      # than the version bundled with Node 22.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest
+
+      # The same gates CI runs. A release is the LAST place to discover a red
+      # gate: npm cannot unpublish after 72h, so publishing an untested tarball
+      # is not something a follow-up commit can undo.
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Connector audits
+        run: |
+          bun run audit:connector-consent
+          bun run audit:connector-deps
+          bun run audit:connector-entrypoints
+
+      - name: Test
+        run: bun test
+        env:
+          CI: "true"
+
+      # Catch the two dominant causes of silent provenance degradation BEFORE
+      # publishing. npm cannot unpublish after 72h, so a post-publish failure
+      # reports damage rather than preventing it.
+      - name: Preflight — OIDC available and npm meets the trusted-publishing floor
+        run: |
+          set -euo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::ACTIONS_ID_TOKEN_REQUEST_TOKEN is unset — the job lacks 'id-token: write'."
+            echo "::error::Publishing now would succeed WITHOUT provenance and cannot be undone after 72h."
+            exit 1
+          fi
+          have="$(npm --version)"
+          need="11.5.1"
+          # `sort -V` is a GNU coreutils extension. Both satellites run on
+          # ubuntu-24.04, where it is guaranteed. If this job is ever moved to a
+          # macOS runner, BSD sort has no -V and this comparison breaks — switch
+          # to `gsort` or a Node one-liner at that point.
+          if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" != "$need" ]; then
+            echo "::error::npm $have is below the $need floor required for OIDC trusted publishing."
+            exit 1
+          fi
+          echo "preflight ok: OIDC token present, npm $have >= $need"
+
+      # No NODE_AUTH_TOKEN: the npm trusted-publisher binding for @nimbus-dev/connectors
+      # authenticates this workflow via GitHub OIDC and attaches provenance.
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public
+
+      - name: Resolve published version
+        id: published
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # `npm audit signatures` verifies the registry signatures of the packages
+      # in the CURRENT tree. Run in the repo root it would audit our own
+      # dependencies — which never includes the package we just shipped. To
+      # cryptographically verify the published artifact it must be installed
+      # from the registry into a clean tree first. Verified live against the
+      # sibling satellite package (same publish pipeline): "1 package has a
+      # verified registry signature / 1 package has a verified attestation",
+      # exit 0.
+      - name: Verify the published tarball's registry signature (cryptographic)
+        env:
+          PUBLISHED_VERSION: ${{ steps.published.outputs.version }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          npm init -y >/dev/null
+          # A publish is followed by TWO independent propagation lags, and each has
+          # already turned a good release red:
+          #
+          #   * packument lag — `npm install pkg@<v>` fails ETARGET "No matching
+          #     version found" while the version is still propagating. Observed
+          #     directly on THIS package: 0.1.0 published successfully and the
+          #     registry 404'd it for several minutes afterwards.
+          #   * attestation lag — the tarball installs fine while
+          #     `/-/npm/v1/attestations/...` still 404s, so `npm audit signatures`
+          #     fails on a package that is live and correctly attested. (That shipped
+          #     0.6.0's publish job red.)
+          #
+          # Install and audit therefore retry TOGETHER, and `--prefer-online` is
+          # required: npm caches the negative packument, so plain retries re-read the
+          # same cached 404 rather than asking the registry again — which is why
+          # 0.6.1's five attempts all failed identically.
+          verified=""
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if npm install "@nimbus-dev/connectors@${PUBLISHED_VERSION}" \
+                 --no-audit --no-fund --prefer-online \
+              && npm audit signatures; then
+              verified=1
+              break
+            fi
+            if [ "$attempt" != 8 ]; then
+              sleep $(( attempt * 10 ))
+            fi
+          done
+          if [ -z "$verified" ]; then
+            echo "::error::@nimbus-dev/connectors@${PUBLISHED_VERSION} could not be installed and signature-verified from the registry after 8 attempts (~4.5 min)."
+            exit 1
+          fi
+
+      - name: Verify provenance names this repo, workflow and commit
+        uses: nimbus-agent/.github/actions/verify-npm-provenance@5fb42792fa88287048fd24f704183b9a9b807a67
+        with:
+          package: "@nimbus-dev/connectors"
+          version: ${{ steps.published.outputs.version }}
+          expected-repo: nimbus-agent/nimbus-mcp-servers
+          expected-workflow: .github/workflows/release.yml
+          expected-sha: ${{ github.sha }}
+          severity: gate
