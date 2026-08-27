@@ -39,7 +39,30 @@ export async function findSandboxTests(root: string = REPO_ROOT): Promise<string
   for await (const file of new Glob(CONNECTOR_GLOB).scan({ cwd: root })) {
     hits.push(file.replaceAll("\\", "/"));
   }
-  return hits.sort();
+  // localeCompare, matching the rest of this repo. A bare sort() orders by UTF-16 code unit,
+  // which Sonar flags (typescript:S2871) as unreliable for alphabetical intent.
+  return hits.sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The `bun test` argv for a set of discovered sandbox tests.
+ *
+ * Extra argv wins, so a single connector path can scope the run down. Split out of the
+ * `import.meta.main` block so it can be tested — that guard is false under an import, which makes
+ * anything inside it unreachable to every in-process test, and the alternative was excluding this
+ * file from coverage entirely.
+ */
+export function targetsFor(files: readonly string[], extra: readonly string[]): string[] {
+  if (extra.length > 0) return [...extra];
+  return files.map((f) => relative(REPO_ROOT, resolve(REPO_ROOT, f)));
+}
+
+/** The banner shown before a run that makes real outbound requests. */
+export function runBanner(count: number): string {
+  return (
+    `Running ${String(count)} sandbox contract tests. These make real outbound ` +
+    `requests to each connector's declared host.`
+  );
 }
 
 if (import.meta.main) {
@@ -48,15 +71,8 @@ if (import.meta.main) {
     console.error(`No sandbox tests matched ${CONNECTOR_GLOB} under ${REPO_ROOT}.`);
     process.exit(1);
   }
-  console.error(
-    `Running ${String(files.length)} sandbox contract tests. These make real outbound ` +
-      `requests to each connector's declared host.`,
-  );
-  // Forward any extra argv (e.g. a single connector path) so this can be scoped down.
-  const extra = process.argv.slice(2);
-  const target =
-    extra.length > 0 ? extra : files.map((f) => relative(REPO_ROOT, resolve(REPO_ROOT, f)));
-  const proc = Bun.spawn(["bun", "test", ...target], {
+  console.error(runBanner(files.length));
+  const proc = Bun.spawn(["bun", "test", ...targetsFor(files, process.argv.slice(2))], {
     cwd: REPO_ROOT,
     stdout: "inherit",
     stderr: "inherit",

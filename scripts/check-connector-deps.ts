@@ -110,11 +110,21 @@ export function checkConnectorDeps(
   return out;
 }
 
-if (import.meta.main) {
-  const violations = checkConnectorDeps();
+/** `<root>` reports against the root manifest; anything else against that connector's. */
+export function manifestPathFor(connector: string): string {
+  return connector === "<root>" ? "package.json" : `connectors/${connector}/package.json`;
+}
+
+/**
+ * Print the verdict and return the process exit code.
+ *
+ * Split out of the `import.meta.main` block so it can be tested — that guard is false under an
+ * import, so anything inside it is unreachable to every in-process test.
+ */
+export function report(violations: readonly DepViolation[]): number {
   for (const v of violations) {
     console.error(
-      `::error file=${v.connector === "<root>" ? "package.json" : `connectors/${v.connector}/package.json`}::dependency "${v.dependency}" is not in ALLOWED_CONNECTOR_DEPS — connectors are bundled into the gateway binary, so a native dependency breaks it silently`,
+      `::error file=${manifestPathFor(v.connector)}::dependency "${v.dependency}" is not in ALLOWED_CONNECTOR_DEPS — connectors are bundled into the gateway binary, so a native dependency breaks it silently`,
     );
   }
   console.log(
@@ -122,5 +132,9 @@ if (import.meta.main) {
       ? "connector deps: ok"
       : `connector deps: ${violations.length} violation(s)`,
   );
-  process.exit(violations.length > 0 ? 1 : 0);
+  return violations.length > 0 ? 1 : 0;
+}
+
+if (import.meta.main) {
+  process.exit(report(checkConnectorDeps()));
 }
