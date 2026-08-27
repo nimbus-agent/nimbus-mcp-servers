@@ -1,0 +1,10 @@
+name: nimbus-mcp-servers CodeQL config
+
+# Higher-recall security queries on top of the default suite.
+queries:
+  - uses: security-extended
+
+# Analyze source only; skip generated output and deps.
+paths-ignore:
+  - dist
+  - node_modules

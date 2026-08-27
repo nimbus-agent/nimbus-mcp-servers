@@ -1,0 +1,47 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/configure/
+# The CodeRabbit GitHub App must have access to this repository (org-level
+# install on nimbus-agent, or add nimbus-mcp-servers to the app's repo list).
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!dist/**"
+  path_instructions:
+    - path: "connectors/*/src/**/*.ts"
+      instructions: >-
+        This is a Nimbus first-party MCP connector, published in
+        @nimbus-dev/connectors (AGPL-3.0-only) and bundled into the Nimbus
+        gateway's compiled binary. Flag: any `any` (prefer `unknown` + a type
+        guard); a mutating tool registered with the raw MCP call instead of
+        `createWriteToolRegistrar` from shared/consent-kit.ts (that registrar is
+        what enforces consent, the write-scope allow-list and the mutation
+        budget); any call to `setConnectorMode`, which must have exactly one
+        caller; any credential read from anywhere but `process.env`, or a
+        credential that could reach a tool result, log line or error message;
+        a tool argument shelled out without `shared/safe-cli-arg.ts`; and any
+        NEW runtime dependency, which must be pure JavaScript — a native module
+        breaks the compiled binary silently.
+    - path: "shared/**/*.ts"
+      instructions: >-
+        Shared kits every connector imports by relative path. consent-kit.ts,
+        write-scope.ts and audit-chain.ts are the enforcement layer for every
+        mutating tool in the package — treat a change to them as
+        security-relevant. connector-mode.ts is the ONLY permitted caller of
+        setConnectorMode.
+    - path: "package.json"
+      instructions: >-
+        The root manifest is the real dependency set; per-connector package.json
+        files are metadata nothing installs from. This package ships raw
+        TypeScript, so any `@types/*` its sources need is a real `dependency`,
+        not a `devDependency` — a consumer compiles these files. Runtime
+        dependencies must be pure JavaScript.
+chat:
+  auto_reply: true

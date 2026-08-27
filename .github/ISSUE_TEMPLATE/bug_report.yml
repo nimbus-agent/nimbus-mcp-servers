@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a problem with a Nimbus MCP connector
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For issues in the gateway, connectors, Vault, or the
+        HITL machinery, please use the
+        [Nimbus](https://github.com/nimbus-agent/Nimbus) repository instead — this
+        repo is only the MIT typed IPC client.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: client-version
+    attributes:
+      label: Client version
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime & version
+      placeholder: "Bun 1.2.x / Node 22.x"
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Relevant details
+      description: Minimal repro, stack trace, or the failing type/assertion.
+      render: shell

@@ -1,0 +1,18 @@
+name: Feature request
+description: Suggest an improvement to the Nimbus MCP connectors
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the app / extension / integration use case or pain point.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What typed method or helper would you like the client to expose? (Remember the single-runtime-dependency constraint — only `@nimbus-dev/sdk`.)
+    validations:
+      required: false

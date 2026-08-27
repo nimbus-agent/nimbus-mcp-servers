@@ -131,6 +131,7 @@
   },
   "scripts": {
     "test": "bun test",
+    "test:coverage": "bun test --coverage --coverage-reporter=lcov --coverage-reporter=text",
     "test:sandbox": "bun scripts/run-sandbox-contract.ts",
     "lint": "biome check --error-on-warnings .",
     "lint:fix": "biome check --write .",

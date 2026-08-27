@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Nimbus gateway / connectors
+    url: https://github.com/nimbus-agent/Nimbus/issues
+    about: For issues in the gateway, connectors, Vault, or the HITL machinery (not the client library).
+  - name: Nimbus docs & install help
+    url: https://nimbus-agent.dev/install
+    about: Setup and usage documentation.
