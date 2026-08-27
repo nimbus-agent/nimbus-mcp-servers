@@ -84,6 +84,10 @@ bun run check   # lint, typecheck, consent audit, full suite
 
 CI runs those four on Ubuntu, macOS and Windows — platform equality is a Nimbus non-negotiable.
 
+See [CONTRIBUTING](./CONTRIBUTING.md) before opening a PR, and
+[SECURITY](./SECURITY.md) before reporting a vulnerability — it states what this package does and
+does **not** claim, which is the difference between a security report and a documentation question.
+
 ## Relationship to the Nimbus monorepo
 
 The connectors are developed here and consumed by the gateway from npm. The gateway's per-connector
