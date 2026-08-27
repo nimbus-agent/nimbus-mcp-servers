@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.0...connectors-v0.2.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* green the Sonar gate by fixing the code, not by excluding it ([#18](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/18)) ([9823f33](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/9823f33da4eb9c538ef9fe51161d3a7898dff6b9))
+
 ## [0.2.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.1.1...connectors-v0.2.0) (2026-08-27)
 
 
