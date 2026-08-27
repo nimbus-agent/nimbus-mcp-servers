@@ -1,6 +1,17 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
+  # `bun`, not `npm`. Dependabot treats Bun as its OWN ecosystem; the npm one does
+  # not understand `bun.lock`, so it bumped package.json and left the lockfile
+  # untouched — every PR it opened then failed CI at `bun install --frozen-lockfile`
+  # with "lockfile had changes, but lockfile is frozen" (#11).
+  #
+  # Known limitation, recorded rather than discovered later: the bun ecosystem
+  # supports VERSION updates but not SECURITY updates. Dependabot *alerts* still
+  # fire — they come from advisories, not from this config — so a vulnerability
+  # still surfaces in the Security tab; what you do not get is an automatically
+  # opened security-fix PR. Weekly version updates carry most fixes anyway, and a
+  # working PR beats a security PR that cannot merge.
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "weekly"
