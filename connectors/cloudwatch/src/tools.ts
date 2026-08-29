@@ -1,18 +1,20 @@
 import { z } from "zod";
+import {
+  asArray,
+  cliArg,
+  createCliJsonRunner,
+  isRecord,
+  strField,
+} from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { isSafeCliArg } from "../../../shared/safe-cli-arg.ts";
 
 /**
  * A log-group name / prefix passed as a value to the `aws logs` CLI. Rejected at
  * the schema boundary if it begins with `-` (argv flag smuggling) or contains
  * control characters.
  */
-const cliArg = z
-  .string()
-  .min(1)
-  .refine(isSafeCliArg, { message: 'must not start with "-" or contain control characters' });
 
 /**
  * Amazon CloudWatch Logs (Tier-3, no-row-data) MCP tool surface. ALL tools
@@ -32,40 +34,19 @@ export const CLOUDWATCH_TOOL_NAMES = [
 
 const LIMIT = "50";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-
-function strField(r: Record<string, unknown>, key: string): string {
-  const v = r[key];
-  return typeof v === "string" ? v : "";
-}
-
-function asArray(parsed: unknown, key: string): unknown[] {
-  if (!isRecord(parsed)) {
-    return [];
-  }
-  const arr = parsed[key];
-  return Array.isArray(arr) ? arr : [];
-}
-
 /**
  * Run `aws logs <args> --output json` and parse stdout. The AWS CLI reads
  * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION / AWS_PROFILE
  * natively from the process env injected at spawn time. Throws on non-zero exit.
  */
-async function logsCli(args: string[]): Promise<unknown> {
-  const { code, stdout, stderr } = await nimbusSpawn(
-    ["aws", "logs", ...args, "--output", "json"],
-    {},
-  );
-  const out = stdout.trim();
-  const err = stderr.trim();
-  if (code !== 0) {
-    throw new Error(`aws logs ${args[0] ?? ""} failed: ${err.slice(0, 400)}`);
-  }
-  return out === "" ? {} : (JSON.parse(out) as unknown);
-}
+const logsCli = createCliJsonRunner(
+  {
+    argv: (args) => ["aws", "logs", ...args, "--output", "json"],
+    label: "aws logs",
+    emptyResult: {},
+  },
+  nimbusSpawn,
+);
 
 function groupMatches(entry: unknown, q: string): boolean {
   if (!isRecord(entry)) {

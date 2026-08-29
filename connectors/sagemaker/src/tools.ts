@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { asArray, createCliJsonRunner, isRecord, strField } from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -32,40 +33,19 @@ export const SAGEMAKER_TOOL_NAMES = [
 
 const PAGE = "50";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-
-function strField(r: Record<string, unknown>, key: string): string {
-  const v = r[key];
-  return typeof v === "string" ? v : "";
-}
-
-function asArray(parsed: unknown, key: string): unknown[] {
-  if (!isRecord(parsed)) {
-    return [];
-  }
-  const arr = parsed[key];
-  return Array.isArray(arr) ? arr : [];
-}
-
 /**
  * Run `aws sagemaker <args> --output json` and parse stdout. The AWS CLI reads
  * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION / AWS_PROFILE
  * natively from the process env injected at spawn time. Throws on non-zero exit.
  */
-async function sagemakerCli(args: string[]): Promise<unknown> {
-  const { code, stdout, stderr } = await nimbusSpawn(
-    ["aws", "sagemaker", ...args, "--output", "json"],
-    {},
-  );
-  const out = stdout.trim();
-  const err = stderr.trim();
-  if (code !== 0) {
-    throw new Error(`aws sagemaker ${args[0] ?? ""} failed: ${err.slice(0, 400)}`);
-  }
-  return out === "" ? {} : (JSON.parse(out) as unknown);
-}
+const sagemakerCli = createCliJsonRunner(
+  {
+    argv: (args) => ["aws", "sagemaker", ...args, "--output", "json"],
+    label: "aws sagemaker",
+    emptyResult: {},
+  },
+  nimbusSpawn,
+);
 
 function modelMatches(entry: unknown, q: string): boolean {
   if (!isRecord(entry)) {

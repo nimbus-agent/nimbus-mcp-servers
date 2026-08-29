@@ -1,18 +1,20 @@
 import { z } from "zod";
+import {
+  asArray,
+  cliArg,
+  createCliJsonRunner,
+  isRecord,
+  strField,
+} from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { isSafeCliArg } from "../../../shared/safe-cli-arg.ts";
 
 /**
  * A catalog / database / table name passed as a value to the `aws athena` CLI.
  * Rejected at the schema boundary if it begins with `-` (argv flag smuggling) or
  * contains control characters.
  */
-const cliArg = z
-  .string()
-  .min(1)
-  .refine(isSafeCliArg, { message: 'must not start with "-" or contain control characters' });
 
 /**
  * Amazon Athena (Tier-3, metadata-only) MCP tool surface. ALL tools index
@@ -27,40 +29,19 @@ export const ATHENA_TOOL_NAMES = ["athena_list", "athena_get", "athena_search"] 
 
 const PAGE = "200";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-
-function strField(r: Record<string, unknown>, key: string): string {
-  const v = r[key];
-  return typeof v === "string" ? v : "";
-}
-
-function asArray(parsed: unknown, key: string): unknown[] {
-  if (!isRecord(parsed)) {
-    return [];
-  }
-  const arr = parsed[key];
-  return Array.isArray(arr) ? arr : [];
-}
-
 /**
  * Run `aws athena <args> --output json` and parse stdout. The AWS CLI reads
  * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION / AWS_PROFILE
  * natively from the process env injected at spawn time. Throws on non-zero exit.
  */
-async function athenaCli(args: string[]): Promise<unknown> {
-  const { code, stdout, stderr } = await nimbusSpawn(
-    ["aws", "athena", ...args, "--output", "json"],
-    {},
-  );
-  const out = stdout.trim();
-  const err = stderr.trim();
-  if (code !== 0) {
-    throw new Error(`aws athena ${args[0] ?? ""} failed: ${err.slice(0, 400)}`);
-  }
-  return out === "" ? {} : (JSON.parse(out) as unknown);
-}
+const athenaCli = createCliJsonRunner(
+  {
+    argv: (args) => ["aws", "athena", ...args, "--output", "json"],
+    label: "aws athena",
+    emptyResult: {},
+  },
+  nimbusSpawn,
+);
 
 function catalogMatches(entry: unknown, q: string): boolean {
   if (!isRecord(entry)) {
