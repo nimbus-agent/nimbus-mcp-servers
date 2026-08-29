@@ -375,10 +375,12 @@ describe("createNodemailerMailer", () => {
     expect(fake.options[0]).toMatchObject({ secure: false, requireTLS: true });
   });
 
-  it("lets a caller opt out of the STARTTLS requirement explicitly", () => {
+  it("offers no way to ask for a transport that may send in the clear", () => {
+    // The guarantee is structural, not a default: `SmtpEndpointConfig` has no
+    // `requireTLS` field, so there is no input that produces one.
     const fake = makeFakeTransport();
-    createNodemailerMailer({ ...smtpConfig, secure: false, requireTLS: false }, fake.factory);
-    expect(fake.options[0]).toMatchObject({ secure: false, requireTLS: false });
+    createNodemailerMailer({ ...smtpConfig, secure: false }, fake.factory);
+    expect(fake.options[0]?.requireTLS).toBe(true);
   });
 
   it("passes tls.rejectUnauthorized through, still demanding STARTTLS", () => {

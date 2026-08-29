@@ -73,24 +73,21 @@ export interface SmtpEndpointConfig {
   readonly pass: string;
   readonly secure: boolean;
   readonly rejectUnauthorized?: boolean;
-  /**
-   * Refuse to send at all if the server does not advertise STARTTLS.
-   *
-   * Only meaningful with `secure: false`. **Defaults to `true` there**, which is
-   * the safe default rather than nodemailer's: without it nodemailer falls back
-   * to plaintext when the server does not advertise STARTTLS, and the SMTP
-   * password goes out in the clear.
-   *
-   * That was a live gap, not a hypothetical one. `imap` computes
-   * `secure: port === 465`, so an operator setting `IMAP_SMTP_PORT=587` — the
-   * standard submission port — got `secure: false` and no `requireTLS`. Apple's
-   * copy of this mailer was the only one of the three that set it.
-   *
-   * Pass `false` only for an endpoint that genuinely cannot offer STARTTLS, and
-   * only where the connection cannot leave the host.
-   */
-  readonly requireTLS?: boolean;
 }
+
+/**
+ * There is deliberately no `requireTLS` option.
+ *
+ * When `secure` is false this adapter ALWAYS demands STARTTLS, and that is not
+ * a default a caller can override — an unencrypted SMTP session is not a
+ * configuration this module offers. Without it nodemailer falls back to
+ * plaintext when the server does not advertise STARTTLS, and the password goes
+ * out in the clear.
+ *
+ * The gap was live, not hypothetical: `imap` computes `secure: port === 465`,
+ * so an operator setting `IMAP_SMTP_PORT=587` — the standard submission port —
+ * got `secure: false` with no `requireTLS` at all. Of the three copies this
+ * adapter replaced, only Apple's set it.
 
 /** Constructs the `imapflow` client. Overridden in tests so no socket is opened. */
 export type ImapFlowFactory = (options: ConstructorParameters<typeof ImapFlow>[0]) => ImapFlow;
@@ -106,7 +103,7 @@ export interface SmtpTransportOptions {
   readonly port: number;
   readonly secure: boolean;
   readonly auth: { readonly user: string; readonly pass: string };
-  /** Always set by this module: `true` whenever `secure` is false. */
+  /** Always set by this module, and always `true` when `secure` is false. */
   readonly requireTLS: boolean;
   readonly tls?: { readonly rejectUnauthorized: boolean };
 }
@@ -310,10 +307,9 @@ class NodemailerMailer implements EmailSendMailer {
       secure,
       auth: { user, pass },
       // Implicit TLS already encrypts the session; otherwise STARTTLS is
-      // REQUIRED unless the caller has explicitly opted out. There is no
-      // configuration of this mailer that sends credentials in the clear by
-      // omission.
-      requireTLS: secure ? false : (config.requireTLS ?? true),
+      // required. Not a default — there is no input to this mailer that
+      // produces a transport willing to send in the clear.
+      requireTLS: !secure,
       ...(rejectUnauthorized === undefined ? {} : { tls: { rejectUnauthorized } }),
     });
   }
@@ -357,12 +353,30 @@ export function createImapFlowClient(
 }
 
 /**
- * The SMTP mailer for `config`. `makeTransport` defaults to nodemailer's
- * `createTransport`; tests pass a fake so no socket is opened.
+ * Construct the real nodemailer transport.
+ *
+ * Written as two explicit branches rather than passing `options` straight
+ * through. `NodemailerMailer` has already computed the guarantee, but a
+ * computed value is not something a reader — or a static analyser — can check
+ * at the call that actually opens the socket. Here it is a literal on both
+ * paths: implicit TLS, or STARTTLS required. There is no third branch.
+ */
+function realTransport(options: SmtpTransportOptions): Transporter {
+  const { host, port, auth } = options;
+  const tls = options.tls === undefined ? {} : { tls: options.tls };
+  if (options.secure) {
+    return createTransport({ host, port, auth, ...tls, secure: true });
+  }
+  return createTransport({ host, port, auth, ...tls, secure: false, requireTLS: true });
+}
+
+/**
+ * The SMTP mailer for `config`. `makeTransport` defaults to the real nodemailer
+ * transport; tests pass a fake so no socket is opened.
  */
 export function createNodemailerMailer(
   config: SmtpEndpointConfig,
-  makeTransport: TransportFactory = (options) => createTransport(options),
+  makeTransport: TransportFactory = realTransport,
 ): EmailSendMailer {
   return new NodemailerMailer(config, makeTransport);
 }

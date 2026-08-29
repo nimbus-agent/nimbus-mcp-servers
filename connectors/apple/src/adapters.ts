@@ -65,10 +65,10 @@ export function createAppleImapClient(
 /**
  * The iCloud SMTP mailer.
  *
- * Port 587 is STARTTLS, not implicit TLS, so `requireTLS` is what keeps the
- * credentials off the wire: without it nodemailer would fall back to plaintext
- * if the server failed to advertise STARTTLS. iCloud always advertises it.
- * `from` is pinned to the authenticated address by the shared mailer.
+ * Port 587 is STARTTLS, not implicit TLS. The shared mailer requires STARTTLS
+ * whenever TLS is not implicit and offers no way to opt out, so the credentials
+ * cannot reach the wire unencrypted; iCloud always advertises it. `from` is
+ * pinned to the authenticated address by the shared mailer.
  */
 export function createAppleSmtpMailer(
   user: string,
@@ -76,14 +76,7 @@ export function createAppleSmtpMailer(
   makeTransport?: TransportFactory,
 ): EmailSendMailer {
   return createNodemailerMailer(
-    {
-      host: ICLOUD_SMTP_HOST,
-      port: ICLOUD_SMTP_PORT,
-      user,
-      pass,
-      secure: false,
-      requireTLS: true,
-    },
+    { host: ICLOUD_SMTP_HOST, port: ICLOUD_SMTP_PORT, user, pass, secure: false },
     makeTransport,
   );
 }
