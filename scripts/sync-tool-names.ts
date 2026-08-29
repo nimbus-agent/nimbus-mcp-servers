@@ -60,7 +60,7 @@ function declaration(
   src: string,
 ): { match: string; constant: string; names: string[] } | undefined {
   const decl = NAMES_DECL.exec(src);
-  if (decl === null || decl[1] === undefined) {
+  if (decl?.[1] === undefined) {
     return undefined;
   }
   return {
@@ -71,7 +71,8 @@ function declaration(
 }
 
 function render(constant: string, names: readonly string[]): string {
-  return `export const ${constant} = [\n${names.map((n) => `  "${n}",\n`).join("")}] as const;`;
+  const entries = names.map((n) => `  "${n}",\n`).join("");
+  return `export const ${constant} = [\n${entries}] as const;`;
 }
 
 /**

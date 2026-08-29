@@ -1,19 +1,17 @@
 import { z } from "zod";
+import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterSupersetDashboards } from "./search-filter.ts";
-
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
 
 function apiBase(): string {
   const v = process.env["SUPERSET_URL"]?.trim();
   if (v === undefined || v === "") {
     throw new Error("SUPERSET_URL is not set");
   }
-  return trimTrailingSlash(v);
+  return stripTrailingSlashes(v);
 }
 
 function requiredEnv(name: string): string {
@@ -24,35 +22,20 @@ function requiredEnv(name: string): string {
   return v;
 }
 
-let cachedToken: string | null = null;
-
-async function login(): Promise<string> {
-  if (cachedToken !== null) {
-    return cachedToken;
-  }
-  const username = requiredEnv("SUPERSET_USERNAME");
-  const password = requiredEnv("SUPERSET_PASSWORD");
-  const res = await fetch(`${apiBase()}/api/v1/security/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ username, password, provider: "db", refresh: true }),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Superset login ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  let parsed: { access_token?: unknown };
-  try {
-    parsed = JSON.parse(text) as { access_token?: unknown };
-  } catch {
-    throw new Error("Superset login: invalid JSON response");
-  }
-  if (typeof parsed.access_token !== "string" || parsed.access_token === "") {
-    throw new Error("Superset login: no access_token in response");
-  }
-  cachedToken = parsed.access_token;
-  return cachedToken;
-}
+/** Superset issues its own JWT from a username/password POST, not OAuth. */
+const login = createAccessTokenCache({
+  label: "Superset login",
+  exchange: async () => {
+    const username = requiredEnv("SUPERSET_USERNAME");
+    const password = requiredEnv("SUPERSET_PASSWORD");
+    const res = await fetch(`${apiBase()}/api/v1/security/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ username, password, provider: "db", refresh: true }),
+    });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  },
+});
 
 async function supersetGet(path: string): Promise<unknown> {
   const token = await login();

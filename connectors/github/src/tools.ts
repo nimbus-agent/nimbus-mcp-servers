@@ -1,6 +1,9 @@
 import { z } from "zod";
-import type { ConsentServer } from "../../../shared/consent-kit.ts";
-import { createWriteToolRegistrar, type WriteToolConfig } from "../../../shared/consent-kit.ts";
+import {
+  type ConsentServer,
+  createWriteToolRegistrar,
+  type WriteToolConfig,
+} from "../../../shared/consent-kit.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,

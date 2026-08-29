@@ -1,6 +1,9 @@
 import { z } from "zod";
+import { isRecord, strField } from "../../../shared/cli-json-kit.ts";
+import { createJsonGetter } from "../../../shared/env-json-api.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 
 /**
  * Elasticsearch / Kibana (Tier-3, metadata-only) MCP tool surface. ALL tools
@@ -18,16 +21,12 @@ export const ELASTICSEARCH_TOOL_NAMES = [
   "elasticsearch_search",
 ] as const;
 
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
 function baseUrl(): string {
   const v = process.env["ELASTICSEARCH_URL"]?.trim();
   if (v === undefined || v === "") {
     throw new Error("ELASTICSEARCH_URL is not set");
   }
-  return trimTrailingSlash(v);
+  return stripTrailingSlashes(v);
 }
 
 function authHeaders(): Record<string, string> {
@@ -38,23 +37,11 @@ function authHeaders(): Record<string, string> {
   return { Authorization: `ApiKey ${k}`, Accept: "application/json" };
 }
 
-async function esGet(path: string): Promise<unknown> {
-  const res = await fetch(`${baseUrl()}${path}`, { headers: authHeaders() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Elasticsearch ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-
-function strField(r: Record<string, unknown>, key: string): string {
-  const v = r[key];
-  return typeof v === "string" ? v : "";
-}
+const esGet = createJsonGetter({
+  base: baseUrl,
+  label: "Elasticsearch",
+  headers: authHeaders,
+});
 
 function indexEntries(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [];

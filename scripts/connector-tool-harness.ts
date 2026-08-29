@@ -72,20 +72,58 @@ export class CapturedTools {
     return tool;
   }
 
-  /** Invoke a tool's handler. */
+  /**
+   * Invoke a tool the way the MCP server would: validate `args` against the
+   * tool's own schema, then hand the PARSED value to the handler.
+   *
+   * The validation is not incidental. `createZodToolRegistrar` parses before it
+   * calls, so a harness that skipped it would let a test pass arguments the
+   * real server rejects — and, worse, would make an assertion that a tool
+   * REFUSES bad input silently succeed. Athena's `cliArg` guard against argv
+   * flag smuggling is exactly such a rule, and it lives only in the schema.
+   */
   async call(name: string, args: unknown = {}): Promise<McpListResult> {
-    return this.get(name).handler(args);
+    const tool = this.get(name);
+    const schema = tool.schema as
+      | { safeParse: (v: unknown) => { success: boolean; data?: unknown; error?: Error } }
+      | undefined;
+    if (typeof schema?.safeParse !== "function") {
+      return tool.handler(args);
+    }
+    const parsed = schema.safeParse(args);
+    if (!parsed.success) {
+      throw new Error(parsed.error?.message ?? `invalid arguments for "${name}"`);
+    }
+    return tool.handler(parsed.data);
   }
 
   /** Invoke a tool and parse the single JSON text block it returned. */
   async callJson(name: string, args: unknown = {}): Promise<unknown> {
     const result = await this.call(name, args);
     const first = result.content[0];
-    if (first === undefined || first.type !== "text") {
+    if (first?.type !== "text") {
       throw new Error(`tool "${name}" returned no text content`);
     }
     return JSON.parse(first.text) as unknown;
   }
+}
+
+/**
+ * Every shape a connector's `register…Tools` takes.
+ *
+ * The third member is not redundant: a connector with consent-gated writes
+ * declares `(server)` alone and builds its read registrar from it, which is
+ * indistinguishable by arity from a read-only connector's `(reg)`. Both are
+ * accepted here, and {@link captureTools} decides at runtime which it is.
+ */
+export type ConnectorRegistrar =
+  | ((reg: ZodToolRegistrar) => void)
+  | ((reg: ZodToolRegistrar, server: never) => void)
+  | ((server: never) => void);
+
+/** Did this failure come from handing the registrar where a server was wanted? */
+function isWrongArgumentShape(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("expected MCP server with .tool");
 }
 
 /** The recording pair a capture attempt drives a connector's registrar with. */
@@ -161,28 +199,38 @@ function makeRecorders(captured: CapturedTools): Recorders {
  * `server.registerTool(...)` — into one container, so a mutating connector's
  * read AND write tools land in the same captured surface.
  */
-export function captureTools(
-  register: ((reg: ZodToolRegistrar) => void) | ((reg: ZodToolRegistrar, server: never) => void),
-): CapturedTools {
-  let firstFailure: unknown;
+export function captureTools(register: ConnectorRegistrar): CapturedTools {
+  const failures: unknown[] = [];
   for (const serverFirst of [false, true]) {
     const captured = new CapturedTools();
     const { reg, server } = makeRecorders(captured);
     try {
+      // The union has three members and only a runtime probe can say which one
+      // this connector is, so the call is made through one widened signature.
+      const call = register as (a: unknown, b: unknown) => void;
       if (serverFirst) {
-        (register as (a: never, b: never) => void)(server, server);
+        call(server, server);
       } else {
-        register(reg, server);
+        call(reg, server);
       }
       if (captured.names().length > 0) {
         return captured;
       }
     } catch (err) {
-      firstFailure ??= err;
+      failures.push(err);
     }
   }
-  if (firstFailure !== undefined) {
-    throw firstFailure;
+  // Report the connector's OWN failure, not the probe's. A wrong guess about
+  // the argument order fails inside the SDK with a fixed message, and throwing
+  // that would mask the real reason — a connector whose registration reads
+  // configuration would report "expected MCP server with .tool" instead of
+  // naming the variable it actually needs.
+  const real = failures.find((e) => !isWrongArgumentShape(e));
+  if (real !== undefined) {
+    throw real;
+  }
+  if (failures.length > 0) {
+    throw failures[0];
   }
   throw new Error("register…Tools registered no tools");
 }
@@ -205,6 +253,20 @@ export interface FetchStub {
   readonly only: RecordedRequest;
   /** Put `globalThis.fetch` back. Call from `afterEach`. */
   restore(): void;
+}
+
+/**
+ * The URL of a fetch argument, whichever of the three forms it takes.
+ *
+ * `String(input)` covers a string and a URL but stringifies a `Request` to
+ * `[object Object]`, so a connector calling `fetch(new Request(url))` would
+ * have every URL assertion in the tree silently compare against that.
+ */
+function requestUrl(input: Request | string | URL): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  return input instanceof URL ? input.href : input.url;
 }
 
 function headerRecord(init: RequestInit | undefined): Record<string, string> {
@@ -249,7 +311,7 @@ export function stubFetch(
   const calls: RecordedRequest[] = [];
   globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
     const req: RecordedRequest = {
-      url: typeof input === "string" ? input : String(input),
+      url: requestUrl(input),
       method: init?.method ?? "GET",
       headers: headerRecord(init),
       body: typeof init?.body === "string" ? init.body : undefined,

@@ -6,18 +6,15 @@ import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterLookerDashboards } from "./search-filter.ts";
-
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
 
 function apiBase(): string {
   const v = process.env["LOOKER_BASE_URL"]?.trim();
   if (v === undefined || v === "") {
     throw new Error("LOOKER_BASE_URL is not set");
   }
-  return trimTrailingSlash(v);
+  return stripTrailingSlashes(v);
 }
 
 function clientId(): string {
@@ -93,6 +90,25 @@ function offsetCursor(cursor: string | null | undefined): number {
     : Math.max(0, Number.parseInt(cursor, 10) || 0);
 }
 
+const PAGE_LIMIT_DEFAULT = 200;
+const PAGE_LIMIT_MAX = 500;
+
+/** The collections exposed as an offset-cursor listing. */
+const PAGINATED_LISTS = [
+  {
+    tool: "looker_list",
+    path: "/api/4.0/dashboards",
+    description:
+      "List Looker dashboards (`GET /api/4.0/dashboards`). Requires a client-credentials login first. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
+  },
+  {
+    tool: "looker_models_list",
+    path: "/api/4.0/lookml_models",
+    description:
+      "List LookML models (`GET /api/4.0/lookml_models`) for dashboard→table lineage. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`. Returns raw models (explores/views nested); the gateway flattens them.",
+  },
+] as const;
+
 export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): void {
   // Despite the read-only helper's name, this connector exposes write tools. The consent
   // kit needs the real server, which the helper now passes through as its second argument.
@@ -102,43 +118,26 @@ export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): voi
     scopeKinds: ["resource"],
   });
 
-  reg(
-    "looker_list",
-    "List Looker dashboards (`GET /api/4.0/dashboards`). Requires a client-credentials login first. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
-    async (p) => {
-      const limit = p.limit ?? 200;
-      const offset = offsetCursor(p.cursor);
-      const token = await lookerLogin();
-      const items = await getArray(token, "/api/4.0/dashboards", { limit, offset });
-      return jsonResult({
-        items,
-        nextCursor: items.length === limit ? String(offset + limit) : null,
-      });
-    },
-  );
-
-  reg(
-    "looker_models_list",
-    "List LookML models (`GET /api/4.0/lookml_models`) for dashboard→table lineage. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`. Returns raw models (explores/views nested); the gateway flattens them.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
-    async (p) => {
-      const limit = p.limit ?? 200;
-      const offset = offsetCursor(p.cursor);
-      const token = await lookerLogin();
-      const items = await getArray(token, "/api/4.0/lookml_models", { limit, offset });
-      return jsonResult({
-        items,
-        nextCursor: items.length === limit ? String(offset + limit) : null,
-      });
-    },
-  );
+  // Both listings are the same offset-cursor page over a different collection.
+  for (const { tool, path, description } of PAGINATED_LISTS) {
+    reg(
+      tool,
+      description,
+      z.object({
+        cursor: z.string().nullable().optional(),
+        limit: z.number().int().min(1).max(PAGE_LIMIT_MAX).optional(),
+      }),
+      async (p) => {
+        const limit = p.limit ?? PAGE_LIMIT_DEFAULT;
+        const offset = offsetCursor(p.cursor);
+        const items = await getArray(await lookerLogin(), path, { limit, offset });
+        return jsonResult({
+          items,
+          nextCursor: items.length === limit ? String(offset + limit) : null,
+        });
+      },
+    );
+  }
 
   reg(
     "looker_get",

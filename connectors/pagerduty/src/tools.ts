@@ -58,6 +58,13 @@ export const PAGERDUTY_TOOL_NAMES = [
   "pd_incident_escalate",
 ] as const;
 
+/** The incident status changes, which differ only in the word they PUT. */
+const INCIDENT_STATUS_ACTIONS = [
+  { action: "acknowledge", description: "Acknowledge an incident." },
+  { action: "resolve", description: "Resolve an incident." },
+  { action: "escalate", description: "Escalate an incident." },
+] as const;
+
 export function registerPagerdutyTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
 ): void {
@@ -107,39 +114,20 @@ export function registerPagerdutyTools(
     (parsed) => `/incidents/${encodeURIComponent(parsed.incidentId)}`,
   );
 
-  registerWriteTool(
-    "pd_incident_acknowledge",
-    {
-      mutates: "pagerduty.incident.acknowledge",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
-    "Acknowledge an incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (parsed) => pdIncidentPutMutation("acknowledge", "acknowledge", parsed.incidentId),
-  );
-
-  registerWriteTool(
-    "pd_incident_resolve",
-    {
-      mutates: "pagerduty.incident.resolve",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
-    "Resolve an incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (parsed) => pdIncidentPutMutation("resolve", "resolve", parsed.incidentId),
-  );
-
-  registerWriteTool(
-    "pd_incident_escalate",
-    {
-      mutates: "pagerduty.incident.escalate",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
-    "Escalate an incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (parsed) => pdIncidentPutMutation("escalate", "escalate", parsed.incidentId),
-  );
+  // The three incident status changes are the same PUT with a different status
+  // word, so they are declared rather than written out three times. Each keeps
+  // its own description; the rest was identical.
+  for (const { action, description } of INCIDENT_STATUS_ACTIONS) {
+    registerWriteTool(
+      `pd_incident_${action}`,
+      {
+        mutates: `pagerduty.incident.${action}`,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
+      },
+      description,
+      z.object({ incidentId: z.string().min(1) }),
+      async (parsed) => pdIncidentPutMutation(action, action, parsed.incidentId),
+    );
+  }
 }

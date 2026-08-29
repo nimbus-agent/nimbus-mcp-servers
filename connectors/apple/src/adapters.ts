@@ -36,8 +36,12 @@ import type {
   EmailReadClient,
   EmailSendMailer,
 } from "./apple-mail-core.ts";
-import type { EventWindow } from "./caldav-core.ts";
-import { type CalDavClient, type CalendarRef, caldavObjectFilename } from "./caldav-core.ts";
+import {
+  type CalDavClient,
+  type CalendarRef,
+  caldavObjectFilename,
+  type EventWindow,
+} from "./caldav-core.ts";
 
 // ---------------------------------------------------------------------------
 // Fixed iCloud endpoints

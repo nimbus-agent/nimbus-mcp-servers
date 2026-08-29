@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import type { ConsentServer } from "../../../shared/consent-kit.ts";
-import { createWriteToolRegistrar, type WriteToolConfig } from "../../../shared/consent-kit.ts";
+import {
+  type ConsentServer,
+  createWriteToolRegistrar,
+  type WriteToolConfig,
+} from "../../../shared/consent-kit.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -316,6 +319,18 @@ async function driveListParents(token: string, fileId: string): Promise<string[]
   }
   return parentsRaw.filter((p): p is string => typeof p === "string" && p !== "");
 }
+
+/** Tool names exposed by this connector — for contract/introspection tests. */
+export const GOOGLE_DRIVE_TOOL_NAMES = [
+  "gdrive_file_list",
+  "gdrive_file_metadata",
+  "gdrive_file_search",
+  "gdrive_file_download",
+  "gdrive_file_create",
+  "gdrive_file_trash",
+  "gdrive_file_move",
+  "gdrive_file_rename",
+] as const;
 
 export function registerGoogleDriveTools(
   server: ConsentServer & { tool: (...args: never) => unknown },

@@ -26,6 +26,18 @@ export const JENKINS_TOOL_NAMES = [
   "jenkins_build_log_tail",
 ] as const;
 
+/**
+ * GET one Jenkins JSON endpoint, throwing `Jenkins <status>: <body>` on a
+ * non-2xx. Module scope, not nested in the registrar: it closes over nothing.
+ */
+export async function jenkinsGetJsonExpectOk(url: string): Promise<unknown> {
+  const res = await jenkinsFetchJson(url, { method: "GET", authHeader: jenkinsAuthHeader() });
+  if (!res.ok) {
+    throw new Error(`Jenkins ${String(res.status)}: ${res.text.slice(0, 400)}`);
+  }
+  return res.json;
+}
+
 export function registerJenkinsTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
 ): void {
@@ -99,15 +111,6 @@ export function registerJenkinsTools(
       return jsonResult({ jobs: list });
     },
   );
-
-  async function jenkinsGetJsonExpectOk(url: string): Promise<unknown> {
-    const auth = jenkinsAuthHeader();
-    const res = await jenkinsFetchJson(url, { method: "GET", authHeader: auth });
-    if (!res.ok) {
-      throw new Error(`Jenkins ${String(res.status)}: ${res.text.slice(0, 400)}`);
-    }
-    return res.json;
-  }
 
   const jobNameSchema = z.object({
     jobName: z.string().min(1).describe("Job full name (e.g. folder/sub/job)"),
