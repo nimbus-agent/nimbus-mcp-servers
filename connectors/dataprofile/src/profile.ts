@@ -1,6 +1,6 @@
 import type { FileHandle } from "node:fs/promises";
-import { open, readdir } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { open } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   type DataColumn,
   firstLineAndRows,
@@ -10,6 +10,7 @@ import {
   parseJsonColumns,
   parseJsonlColumns,
 } from "@nimbus-dev/sdk";
+import { walkFiles } from "../../../shared/walk-files.ts";
 
 /**
  * Local data profiling reader (Tier-5, no-row-data). The MCP-server-side
@@ -218,37 +219,15 @@ async function profileFile(
   };
 }
 
-async function collectDataFiles(
-  root: string,
-): Promise<Array<{ path: string; format: DataFileFormat }>> {
-  const found: Array<{ path: string; format: DataFileFormat }> = [];
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > MAX_WALK_DEPTH || found.length >= MAX_FILES) {
-      return;
-    }
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (found.length >= MAX_FILES) {
-        return;
-      }
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full, depth + 1);
-      } else if (entry.isFile()) {
-        const format = EXT_FORMAT[extOf(entry.name)];
-        if (format !== undefined) {
-          found.push({ path: full, format });
-        }
-      }
-    }
-  }
-  await walk(root, 0);
-  return found;
+function collectDataFiles(root: string): Promise<Array<{ path: string; format: DataFileFormat }>> {
+  return walkFiles(root, {
+    maxFiles: MAX_FILES,
+    maxDepth: MAX_WALK_DEPTH,
+    select: (entry, full) => {
+      const format = EXT_FORMAT[extOf(entry.name)];
+      return format === undefined ? undefined : { path: full, format };
+    },
+  });
 }
 
 /** Profile all data files under the configured dir into schema-only `DataModel` views. */

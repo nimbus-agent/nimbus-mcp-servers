@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isRecord, strField } from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -56,15 +57,6 @@ async function bqGet(token: string, path: string): Promise<unknown> {
     throw new Error(`BigQuery ${String(res.status)}: ${text.slice(0, 400)}`);
   }
   return JSON.parse(text) as unknown;
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-
-function strField(r: Record<string, unknown>, key: string): string {
-  const v = r[key];
-  return typeof v === "string" ? v : "";
 }
 
 function tableMatches(entry: unknown, q: string): boolean {

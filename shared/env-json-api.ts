@@ -111,6 +111,16 @@ export function envAuthHeaders(cfg: {
   };
 }
 
+/**
+ * The fetch this getter uses. Defaults to the global `fetch`.
+ *
+ * A seam because two connectors (argocd, flux) reach self-hosted control planes
+ * and use `fetchWithTimeout` instead: a cluster that stops answering should fail
+ * the tool call, not hang it. They were the only two still carrying a
+ * hand-written copy of this getter, and a timeout was the whole reason.
+ */
+export type JsonFetch = (url: string, init: RequestInit) => Promise<Response>;
+
 export interface JsonApiConfig {
   /**
    * Base URL the path is appended to. A function when the base itself comes
@@ -122,6 +132,8 @@ export interface JsonApiConfig {
   readonly headers: HeaderFactory;
   /** Body-snippet length in the error. Defaults to {@link DEFAULT_SNIPPET_MAX}. */
   readonly snippetMax?: number;
+  /** Overrides the global `fetch` — see {@link JsonFetch}. */
+  readonly fetch?: JsonFetch;
 }
 
 /**
@@ -134,9 +146,10 @@ export interface JsonApiConfig {
 export function createJsonGetter(config: JsonApiConfig): (path: string) => Promise<unknown> {
   const { base, label, headers } = config;
   const snippetMax = config.snippetMax ?? DEFAULT_SNIPPET_MAX;
+  const doFetch = config.fetch ?? ((url, init) => fetch(url, init));
   return async (path: string): Promise<unknown> => {
     const root = typeof base === "string" ? base : base();
-    const res = await fetch(`${root}${path}`, { headers: headers() });
+    const res = await doFetch(`${root}${path}`, { headers: headers() });
     const text = await res.text();
     if (!res.ok) {
       throw new Error(`${label} ${String(res.status)}: ${text.slice(0, snippetMax)}`);

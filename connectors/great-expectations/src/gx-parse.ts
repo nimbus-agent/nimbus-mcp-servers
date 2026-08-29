@@ -1,5 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isRecord } from "../../../shared/cli-json-kit.ts";
+import { byExtension, walkFiles } from "../../../shared/walk-files.ts";
 
 /**
  * Tier-3 no-row-data reader for Great Expectations validation-result JSON
@@ -51,10 +53,6 @@ export interface GxExpectationMeta {
   readonly externalId: string;
   /** Source artefact path (relative to the results dir). */
   readonly sourceFile: string;
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 function strField(r: Record<string, unknown>, key: string): string | null {
@@ -229,32 +227,12 @@ export function assertWithinResultsDir(candidate: string, root: string): void {
 }
 
 /** Recursively collect `*.json` artefact paths under `root` (bounded). */
-async function collectJsonFiles(root: string): Promise<string[]> {
-  const found: string[] = [];
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > MAX_WALK_DEPTH || found.length >= MAX_FILES) {
-      return;
-    }
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (found.length >= MAX_FILES) {
-        return;
-      }
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full, depth + 1);
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".json")) {
-        found.push(full);
-      }
-    }
-  }
-  await walk(root, 0);
-  return found;
+function collectJsonFiles(root: string): Promise<string[]> {
+  return walkFiles(root, {
+    maxFiles: MAX_FILES,
+    maxDepth: MAX_WALK_DEPTH,
+    select: byExtension(".json"),
+  });
 }
 
 async function readArtefact(path: string): Promise<unknown> {

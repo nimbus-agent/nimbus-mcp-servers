@@ -1,41 +1,36 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterArgocdApplications } from "./search-filter.ts";
-
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
 
 function apiBase(): string {
   const v = process.env["ARGOCD_URL"]?.trim();
   if (v === undefined || v === "") {
     throw new Error("ARGOCD_URL is not set");
   }
-  return `${trimTrailingSlash(v)}/api/v1`;
+  return `${stripTrailingSlashes(v)}/api/v1`;
 }
 
-function authHeader(): Record<string, string> {
-  const t = process.env["ARGOCD_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("ARGOCD_TOKEN is not set");
-  }
-  return { Authorization: `Bearer ${t}`, Accept: "application/json" };
-}
+/**
+ * `fetchWithTimeout`, not the global fetch: this is a self-hosted control plane,
+ * and one that stops answering must fail the tool call rather than hang it.
+ */
+/** Shared with the mutating request below, which adds its own Content-Type. */
+const authHeader = envAuthHeaders({ env: "ARGOCD_TOKEN" });
 
-async function agGet(path: string): Promise<unknown> {
-  const res = await fetchWithTimeout(`${apiBase()}${path}`, { headers: authHeader() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`ArgoCD ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
+const agGet = createJsonGetter({
+  base: apiBase,
+  label: "ArgoCD",
+  headers: authHeader,
+  fetch: fetchWithTimeout,
+});
 
 async function agPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetchWithTimeout(`${apiBase()}${path}`, {

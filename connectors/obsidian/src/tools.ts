@@ -180,6 +180,59 @@ export const OBSIDIAN_TOOL_NAMES = [
   "obsidian_append_to_daily_note",
 ] as const;
 
+/** The date tokens an Obsidian daily-note filename format may contain. */
+const SUPPORTED_TOKENS = ["YYYY", "YY", "MM", "DD", "HH", "mm"] as const;
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/**
+ * Expand an Obsidian daily-note filename format against a date, in UTC.
+ *
+ * Module scope, not nested in the registrar: it closes over nothing, and a
+ * helper reachable only from inside a registration is a helper no test can
+ * reach either.
+ */
+export function formatDailyNoteFilename(format: string, date: Date): string {
+  const r: Record<string, string> = {
+    YYYY: String(date.getUTCFullYear()),
+    YY: String(date.getUTCFullYear() % 100).padStart(2, "0"),
+    MM: pad2(date.getUTCMonth() + 1),
+    DD: pad2(date.getUTCDate()),
+    HH: pad2(date.getUTCHours()),
+    mm: pad2(date.getUTCMinutes()),
+  };
+  let out = format;
+  for (const tok of SUPPORTED_TOKENS) out = out.replaceAll(tok, r[tok] ?? "");
+  return out;
+}
+
+/**
+ * The vault-relative path of the daily note for `date`, honouring the vault's
+ * own `.obsidian/daily-notes.json` when it has one. An absent or malformed
+ * config falls back to a bare `YYYY-MM-DD.md` at the vault root.
+ */
+export function resolveDailyNoteRelativePath(vaultRoot: string, date: Date): string {
+  const cfgPath = join(vaultRoot, ".obsidian", "daily-notes.json");
+  let folder = "";
+  let format = "YYYY-MM-DD";
+  try {
+    const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj["folder"] === "string") folder = obj["folder"];
+      if (typeof obj["format"] === "string" && obj["format"] !== "") {
+        format = obj["format"];
+      }
+    }
+  } catch {
+    // fall through to defaults
+  }
+  const filename = `${formatDailyNoteFilename(format, date)}.md`;
+  return folder === "" ? filename : `${stripTrailingSlashes(folder)}/${filename}`;
+}
+
 export function registerObsidianTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
 ): void {
@@ -340,46 +393,6 @@ export function registerObsidianTools(
       .regex(/^\d{4}-\d{2}-\d{2}$/)
       .optional(),
   });
-
-  const SUPPORTED_TOKENS = ["YYYY", "YY", "MM", "DD", "HH", "mm"] as const;
-
-  function pad2(n: number): string {
-    return n < 10 ? `0${n}` : String(n);
-  }
-
-  function formatDailyNoteFilename(format: string, date: Date): string {
-    const r: Record<string, string> = {
-      YYYY: String(date.getUTCFullYear()),
-      YY: String(date.getUTCFullYear() % 100).padStart(2, "0"),
-      MM: pad2(date.getUTCMonth() + 1),
-      DD: pad2(date.getUTCDate()),
-      HH: pad2(date.getUTCHours()),
-      mm: pad2(date.getUTCMinutes()),
-    };
-    let out = format;
-    for (const tok of SUPPORTED_TOKENS) out = out.replaceAll(tok, r[tok] ?? "");
-    return out;
-  }
-
-  function resolveDailyNoteRelativePath(vaultRoot: string, date: Date): string {
-    const cfgPath = join(vaultRoot, ".obsidian", "daily-notes.json");
-    let folder = "";
-    let format = "YYYY-MM-DD";
-    try {
-      const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as unknown;
-      if (parsed !== null && typeof parsed === "object") {
-        const obj = parsed as Record<string, unknown>;
-        if (typeof obj["folder"] === "string") folder = obj["folder"];
-        if (typeof obj["format"] === "string" && obj["format"] !== "") {
-          format = obj["format"];
-        }
-      }
-    } catch {
-      // fall through to defaults
-    }
-    const filename = `${formatDailyNoteFilename(format, date)}.md`;
-    return folder === "" ? filename : `${stripTrailingSlashes(folder)}/${filename}`;
-  }
 
   registerWriteTool(
     "obsidian_append_to_daily_note",

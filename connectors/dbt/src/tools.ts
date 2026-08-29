@@ -2,17 +2,14 @@ import { z } from "zod";
 import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterDbtJobs } from "./search-filter.ts";
 
 const DEFAULT_API_BASE = "https://cloud.getdbt.com";
 
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
 function apiBase(): string {
   const v = process.env["DBT_API_BASE"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_API_BASE : trimTrailingSlash(v);
+  return v === undefined || v === "" ? DEFAULT_API_BASE : stripTrailingSlashes(v);
 }
 
 const dbtGet = createJsonGetter({

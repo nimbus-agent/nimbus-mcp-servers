@@ -1,5 +1,6 @@
 import { z } from "zod";
-
+import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -20,42 +21,24 @@ function authUrl(): string {
   return v === undefined || v === "" ? DEFAULT_AUTH : v;
 }
 
-async function fetchAccessToken(): Promise<string> {
-  const clientId = process.env["WIZ_CLIENT_ID"]?.trim();
-  const clientSecret = process.env["WIZ_CLIENT_SECRET"]?.trim();
-  if (clientId === undefined || clientId === "") {
-    throw new Error("WIZ_CLIENT_ID is not set");
-  }
-  if (clientSecret === undefined || clientSecret === "") {
-    throw new Error("WIZ_CLIENT_SECRET is not set");
-  }
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: clientId,
-    client_secret: clientSecret,
-    audience: "wiz-api",
-  });
-  const res = await fetch(authUrl(), {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Wiz auth ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  const parsed = JSON.parse(text) as { access_token?: string };
-  if (typeof parsed.access_token !== "string" || parsed.access_token === "") {
-    throw new Error("Wiz auth: missing access_token in response");
-  }
-  return parsed.access_token;
-}
-
-let cachedToken: string | undefined;
-async function getToken(): Promise<string> {
-  cachedToken ??= await fetchAccessToken();
-  return cachedToken;
-}
+/** OAuth2 client-credentials against the Wiz auth endpoint. */
+const getToken = createAccessTokenCache({
+  label: "Wiz auth",
+  exchange: async () => {
+    const body = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: requiredEnv("WIZ_CLIENT_ID"),
+      client_secret: requiredEnv("WIZ_CLIENT_SECRET"),
+      audience: "wiz-api",
+    });
+    const res = await fetch(authUrl(), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  },
+});
 
 async function wizGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const token = await getToken();

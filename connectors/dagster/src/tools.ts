@@ -2,18 +2,15 @@ import { z } from "zod";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterDagsterJobs } from "./search-filter.ts";
-
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
 
 function apiBase(): string {
   const v = process.env["DAGSTER_BASE_URL"]?.trim();
   if (v === undefined || v === "") {
     throw new Error("DAGSTER_BASE_URL is not set");
   }
-  return trimTrailingSlash(v);
+  return stripTrailingSlashes(v);
 }
 
 function apiToken(): string {

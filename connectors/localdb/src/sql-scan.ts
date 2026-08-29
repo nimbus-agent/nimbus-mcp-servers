@@ -1,5 +1,6 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { byExtension, walkFiles } from "../../../shared/walk-files.ts";
 
 /**
  * Local-only reader for saved SQL queries. This module is the MCP-server-side
@@ -62,32 +63,12 @@ export function assertWithinScriptsDir(candidate: string, root: string): void {
   }
 }
 
-async function collectSqlFiles(root: string): Promise<string[]> {
-  const found: string[] = [];
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > MAX_WALK_DEPTH || found.length >= MAX_FILES) {
-      return;
-    }
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (found.length >= MAX_FILES) {
-        return;
-      }
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full, depth + 1);
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".sql")) {
-        found.push(full);
-      }
-    }
-  }
-  await walk(root, 0);
-  return found;
+function collectSqlFiles(root: string): Promise<string[]> {
+  return walkFiles(root, {
+    maxFiles: MAX_FILES,
+    maxDepth: MAX_WALK_DEPTH,
+    select: byExtension(".sql"),
+  });
 }
 
 async function readSavedQuery(path: string, root: string): Promise<SavedQuery | null> {

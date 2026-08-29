@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -16,41 +17,26 @@ function requiredEnv(name: string): string {
   return v;
 }
 
-let cachedToken: string | null = null;
-
-async function token(): Promise<string> {
-  if (cachedToken !== null) {
-    return cachedToken;
-  }
-  const clientId = requiredEnv("RAMP_CLIENT_ID");
-  const clientSecret = requiredEnv("RAMP_CLIENT_SECRET");
-  const basic = Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64");
-  const body = new URLSearchParams({ grant_type: "client_credentials", scope: TOKEN_SCOPE });
-  const res = await fetch(`${BASE}${TOKEN_PATH}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: body.toString(),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Ramp token exchange ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  let parsed: { access_token?: unknown };
-  try {
-    parsed = JSON.parse(text) as { access_token?: unknown };
-  } catch {
-    throw new Error("Ramp token exchange: invalid JSON response");
-  }
-  if (typeof parsed.access_token !== "string" || parsed.access_token === "") {
-    throw new Error("Ramp token exchange: no access_token in response");
-  }
-  cachedToken = parsed.access_token;
-  return cachedToken;
-}
+/** OAuth2 client-credentials against Ramp's token endpoint. */
+const token = createAccessTokenCache({
+  label: "Ramp token exchange",
+  exchange: async () => {
+    const clientId = requiredEnv("RAMP_CLIENT_ID");
+    const clientSecret = requiredEnv("RAMP_CLIENT_SECRET");
+    const basic = Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64");
+    const body = new URLSearchParams({ grant_type: "client_credentials", scope: TOKEN_SCOPE });
+    const res = await fetch(`${BASE}${TOKEN_PATH}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basic}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: body.toString(),
+    });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  },
+});
 
 async function rampGet(path: string): Promise<unknown> {
   const t = await token();

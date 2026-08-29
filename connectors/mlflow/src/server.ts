@@ -6,18 +6,15 @@ import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterMlflowModels } from "./search-filter.ts";
-
-function trimTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
 
 function apiBase(): string {
   const v = process.env["MLFLOW_HOST"]?.trim();
   if (v === undefined || v === "") {
     throw new Error("MLFLOW_HOST is not set");
   }
-  return trimTrailingSlash(v);
+  return stripTrailingSlashes(v);
 }
 
 function authHeader(): Record<string, string> {

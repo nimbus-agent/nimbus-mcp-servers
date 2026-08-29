@@ -1,6 +1,7 @@
 import { FLUX_KINDS, type FluxKindEntry, trimTrailingSlash } from "@nimbus-dev/sdk";
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
@@ -26,22 +27,19 @@ function apiBase(): string {
   return trimTrailingSlash(v);
 }
 
-function authHeader(): Record<string, string> {
-  const t = process.env["FLUX_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("FLUX_TOKEN is not set");
-  }
-  return { Authorization: `Bearer ${t}`, Accept: "application/json" };
-}
+/**
+ * `fetchWithTimeout`, not the global fetch: this is a self-hosted control plane,
+ * and one that stops answering must fail the tool call rather than hang it.
+ */
+/** Shared with the mutating request below, which adds its own Content-Type. */
+const authHeader = envAuthHeaders({ env: "FLUX_TOKEN" });
 
-async function agGet(path: string): Promise<unknown> {
-  const res = await fetchWithTimeout(`${apiBase()}${path}`, { headers: authHeader() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Flux ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
+const agGet = createJsonGetter({
+  base: apiBase,
+  label: "Flux",
+  headers: authHeader,
+  fetch: fetchWithTimeout,
+});
 
 function itemsFrom(root: unknown): unknown[] {
   if (Array.isArray(root)) {
@@ -79,6 +77,24 @@ async function fluxReconcile(kind: string, namespace: string, name: string): Pro
   }
   return requestedAt;
 }
+
+/** The Flux CRs a reconcile can be requested on. */
+const RECONCILABLE = [
+  {
+    tool: "flux_kustomization_reconcile",
+    kind: "kustomization",
+    mutates: "flux.kustomization.reconcile",
+    description:
+      "Request a reconcile of a Flux Kustomization by annotating reconcile.fluxcd.io/requestedAt (PATCH the CR; requires HITL flux.kustomization.reconcile, and the SA's `patch` RBAC verb on kustomizations). Async — verify via the next metadata sync.",
+  },
+  {
+    tool: "flux_helmrelease_reconcile",
+    kind: "helm_release",
+    mutates: "flux.helmrelease.reconcile",
+    description:
+      "Request a reconcile of a Flux HelmRelease by annotating reconcile.fluxcd.io/requestedAt (PATCH the CR; requires HITL flux.helmrelease.reconcile, and the SA's `patch` RBAC verb on helmreleases). Async — verify via the next metadata sync.",
+  },
+] as const;
 
 export function registerFluxTools(reg: ZodToolRegistrar, server: unknown): void {
   // Despite the read-only helper's name, this connector exposes write tools. The consent
@@ -140,39 +156,25 @@ export function registerFluxTools(reg: ZodToolRegistrar, server: unknown): void 
     },
   );
 
-  registerWriteTool(
-    "flux_kustomization_reconcile",
-    {
-      mutates: "flux.kustomization.reconcile",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
-    },
-    "Request a reconcile of a Flux Kustomization by annotating reconcile.fluxcd.io/requestedAt (PATCH the CR; requires HITL flux.kustomization.reconcile, and the SA's `patch` RBAC verb on kustomizations). Async — verify via the next metadata sync.",
-    z.object({ namespace: z.string().min(1), name: z.string().min(1) }),
-    async (p) =>
-      jsonResult({
-        status: "requested",
-        name: p.name,
-        requestedAt: await fluxReconcile("kustomization", p.namespace, p.name),
-      }),
-  );
-
-  registerWriteTool(
-    "flux_helmrelease_reconcile",
-    {
-      mutates: "flux.helmrelease.reconcile",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
-    },
-    "Request a reconcile of a Flux HelmRelease by annotating reconcile.fluxcd.io/requestedAt (PATCH the CR; requires HITL flux.helmrelease.reconcile, and the SA's `patch` RBAC verb on helmreleases). Async — verify via the next metadata sync.",
-    z.object({ namespace: z.string().min(1), name: z.string().min(1) }),
-    async (p) =>
-      jsonResult({
-        status: "requested",
-        name: p.name,
-        requestedAt: await fluxReconcile("helm_release", p.namespace, p.name),
-      }),
-  );
+  // Both reconcile tools are the same annotation PATCH against a different CR.
+  for (const { tool, kind, mutates, description } of RECONCILABLE) {
+    registerWriteTool(
+      tool,
+      {
+        mutates,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
+      },
+      description,
+      z.object({ namespace: z.string().min(1), name: z.string().min(1) }),
+      async (p) =>
+        jsonResult({
+          status: "requested",
+          name: p.name,
+          requestedAt: await fluxReconcile(kind, p.namespace, p.name),
+        }),
+    );
+  }
 }
 
 export async function startConnector(): Promise<void> {
