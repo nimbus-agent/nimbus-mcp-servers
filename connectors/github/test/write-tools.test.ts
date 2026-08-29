@@ -7,6 +7,22 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const SERVER = resolve(fileURLToPath(import.meta.url), "../../src/server.ts");
+const TOOLS = resolve(fileURLToPath(import.meta.url), "../../src/tools.ts");
+
+/**
+ * Entry point + tool module, concatenated.
+ *
+ * The declaration assertions below are about the connector's SOURCE, not about
+ * which file it sits in. Reading only `server.ts` broke the moment the
+ * registrations moved to `tools.ts` even though every declaration they check
+ * was unchanged — the same "pins a path, not a guarantee" trap the repo has hit
+ * before. The launcher's eligibility check reads both files for the same
+ * reason.
+ */
+function connectorSource(): string {
+  return `${readFileSync(SERVER, "utf8")}
+${readFileSync(TOOLS, "utf8")}`;
+}
 
 const WRITE_TOOLS = [
   "github_pr_merge",
@@ -73,7 +89,7 @@ describe("github standalone write surface", () => {
 });
 
 describe("github write declarations", () => {
-  const src = readFileSync(SERVER, "utf8");
+  const src = connectorSource();
 
   test("every mutating tool declares a PER-CONNECTOR action type", () => {
     for (const mutates of [
@@ -88,7 +104,11 @@ describe("github write declarations", () => {
   });
 
   test("branch delete declares itself unrecoverable and captures pre-state", () => {
-    const idx = src.indexOf('"github_branch_delete"');
+    // Anchored on the REGISTRATION, not on the first mention: the connector's
+    // `GITHUB_TOOL_NAMES` export names the tool near the top of the file, and a
+    // bare `indexOf` found that list instead of the declaration it is checking.
+    const idx = src.indexOf('registerWriteTool(\n    "github_branch_delete"');
+    expect(idx).toBeGreaterThan(-1);
     const block = src.slice(idx, idx + 900);
     expect(block).toContain("recoverable: false");
     expect(block).toContain("capturePreState");

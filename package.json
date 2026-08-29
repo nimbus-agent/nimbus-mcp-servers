@@ -139,7 +139,9 @@
     "audit:connector-consent": "bun scripts/check-connector-consent.ts",
     "audit:connector-deps": "bun scripts/check-connector-deps.ts",
     "audit:connector-entrypoints": "bun scripts/check-connector-entrypoints.ts",
-    "check": "bun run lint && bun run typecheck && bun run audit:connector-consent && bun run audit:connector-deps && bun run audit:connector-entrypoints && bun run test"
+    "audit:tool-names": "bun scripts/sync-tool-names.ts --check",
+    "sync:tool-names": "bun scripts/sync-tool-names.ts",
+    "check": "bun run lint && bun run typecheck && bun run audit:connector-consent && bun run audit:connector-deps && bun run audit:connector-entrypoints && bun run audit:tool-names && bun run test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.10",

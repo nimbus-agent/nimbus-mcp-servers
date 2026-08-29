@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createCliJsonRunner, isRecord, strField } from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -32,15 +33,6 @@ export const VERTEX_AI_TOOL_NAMES = [
 
 const DEFAULT_REGION = "us-central1";
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-
-function strField(r: Record<string, unknown>, key: string): string {
-  const v = r[key];
-  return typeof v === "string" ? v : "";
-}
-
 function asArray(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [];
 }
@@ -69,21 +61,23 @@ function resolveRegion(explicit?: string): string {
  * spawn time. The `<region>` is `isSafeCliArg`-guarded before use (argv flag
  * smuggling). Throws on non-zero exit.
  */
+const runGcloudAi = createCliJsonRunner(
+  {
+    // The region has already been guarded by the caller below; everything else
+    // is a literal or a schema-validated argument.
+    argv: (args) => ["gcloud", "ai", ...args],
+    label: "gcloud ai",
+    emptyResult: [],
+  },
+  nimbusSpawn,
+);
+
 async function gcloudAi(args: string[], region: string): Promise<unknown> {
   const regionPreview = region.slice(0, 64);
   if (!isSafeCliArg(region)) {
     throw new Error(`Invalid region: ${regionPreview}`);
   }
-  const { code, stdout, stderr } = await nimbusSpawn(
-    ["gcloud", "ai", ...args, "--region", region, ...projectArgs(), "--format", "json"],
-    {},
-  );
-  const out = stdout.trim();
-  const err = stderr.trim();
-  if (code !== 0) {
-    throw new Error(`gcloud ai ${args[0] ?? ""} failed: ${err.slice(0, 400)}`);
-  }
-  return out === "" ? [] : (JSON.parse(out) as unknown);
+  return runGcloudAi([...args, "--region", region, ...projectArgs(), "--format", "json"]);
 }
 
 function modelMatches(entry: unknown, q: string): boolean {

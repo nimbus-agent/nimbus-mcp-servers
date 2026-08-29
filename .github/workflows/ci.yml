@@ -36,6 +36,7 @@ jobs:
       - run: bun run audit:connector-consent
       - run: bun run audit:connector-deps
       - run: bun run audit:connector-entrypoints
+      - run: bun run audit:tool-names
       - run: bun test
 
   required:

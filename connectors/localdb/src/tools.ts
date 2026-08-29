@@ -13,7 +13,7 @@ import {
  * configured local DB-tool scripts dir — a pure filesystem read. No database is
  * connected to and no query is executed; the SQL TEXT is returned for recall.
  */
-export const LOCALDB_TOOL_NAMES = ["localdb_list", "localdb_get", "localdb_search"] as const;
+export const LOCALDB_TOOL_NAMES = ["localdb_get", "localdb_list", "localdb_search"] as const;
 
 function toEnvelope(q: SavedQuery): Record<string, unknown> {
   return {
