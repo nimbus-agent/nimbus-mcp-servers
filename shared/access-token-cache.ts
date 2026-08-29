@@ -56,16 +56,21 @@ export const DEFAULT_SNIPPET_MAX = 400;
  * Only a SUCCESSFUL exchange is cached. Caching a failure would make one
  * transient 503 at startup poison every later call for the life of the process,
  * which for a long-running stdio connector means until the client restarts it.
+ *
+ * Concurrent first calls share ONE exchange. An MCP client may have several
+ * tool calls in flight at once, and each would otherwise find an empty cache
+ * and start its own token request — n simultaneous OAuth exchanges for one
+ * connector, which is both wasteful and a good way to meet a rate limit on the
+ * auth endpoint. The in-flight promise is cleared whichever way it settles, so
+ * a failed exchange stays retryable.
  */
 export function createAccessTokenCache(config: AccessTokenCacheConfig): () => Promise<string> {
   const field = config.tokenField ?? "access_token";
   const snippetMax = config.snippetMax ?? DEFAULT_SNIPPET_MAX;
   let cached: string | null = null;
+  let inFlight: Promise<string> | null = null;
 
-  return async (): Promise<string> => {
-    if (cached !== null) {
-      return cached;
-    }
+  async function exchangeOnce(): Promise<string> {
     const res = await config.exchange();
     if (!res.ok) {
       throw new Error(`${config.label} ${String(res.status)}: ${res.text.slice(0, snippetMax)}`);
@@ -82,5 +87,20 @@ export function createAccessTokenCache(config: AccessTokenCacheConfig): () => Pr
     }
     cached = token;
     return token;
+  }
+
+  return async (): Promise<string> => {
+    if (cached !== null) {
+      return cached;
+    }
+    inFlight ??= exchangeOnce();
+    try {
+      return await inFlight;
+    } finally {
+      // Cleared on BOTH paths. Keeping a rejected promise here would turn one
+      // failed exchange into a permanently failing connector, which is the same
+      // trap as caching the failure.
+      inFlight = null;
+    }
   };
 }

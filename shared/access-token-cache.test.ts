@@ -25,6 +25,33 @@ function exchanger(...replies: AccessTokenResponse[]): {
 
 const ok = (text: string): AccessTokenResponse => ({ ok: true, status: 200, text });
 
+/**
+ * An exchange that does not settle until the test says so, which is the only
+ * way to have two callers genuinely in flight at once.
+ */
+function deferredExchanger(): {
+  exchange: () => Promise<AccessTokenResponse>;
+  settle: (reply: AccessTokenResponse) => void;
+  calls: number;
+} {
+  const state = { calls: 0 };
+  let release: ((reply: AccessTokenResponse) => void) | undefined;
+  return {
+    get calls(): number {
+      return state.calls;
+    },
+    exchange: (): Promise<AccessTokenResponse> => {
+      state.calls += 1;
+      return new Promise<AccessTokenResponse>((resolve) => {
+        release = resolve;
+      });
+    },
+    settle: (reply: AccessTokenResponse): void => {
+      release?.(reply);
+    },
+  };
+}
+
 describe("createAccessTokenCache", () => {
   it("returns the token from the exchange", async () => {
     const ex = exchanger(ok('{"access_token":"tok-1"}'));
@@ -113,6 +140,53 @@ describe("createAccessTokenCache", () => {
       await createAccessTokenCache({ label: "L", exchange: ex.exchange, tokenField: "token" })(),
     ).toBe("tok-2");
   });
+
+  it("shares ONE exchange between concurrent first calls", async () => {
+    // An MCP client can have several tool calls in flight at once. Without
+    // this, each would find an empty cache and start its own OAuth request —
+    // n simultaneous exchanges for one connector, and a good way to meet a
+    // rate limit on the auth endpoint.
+    const ex = deferredExchanger();
+    const token = createAccessTokenCache({ label: "L", exchange: ex.exchange });
+    const calls = [token(), token(), token()];
+    // Swallow rejections so a regression cannot surface as an unhandled one
+    // after the assertion below has already reported it.
+    for (const c of calls) {
+      void c.catch(() => undefined);
+    }
+    await Promise.resolve();
+    // Asserted BEFORE settling, on purpose: the fake releases only the most
+    // recent exchange, so a regression that starts three would deadlock here
+    // rather than fail. Counting first makes it a red assertion instead.
+    expect(ex.calls).toBe(1);
+    ex.settle(ok('{"access_token":"shared"}'));
+    expect(await Promise.all(calls)).toEqual(["shared", "shared", "shared"]);
+  }, 5000);
+
+  it("lets a later call retry after concurrent callers all failed", async () => {
+    // The in-flight promise is cleared however it settles. Holding on to a
+    // REJECTED one would turn a single failed exchange into a permanently
+    // failing connector — the same trap as caching the failure.
+    const failing = deferredExchanger();
+    const token = createAccessTokenCache({ label: "L", exchange: failing.exchange });
+    const calls = [token(), token()];
+    for (const c of calls) {
+      void c.catch(() => undefined);
+    }
+    await Promise.resolve();
+    expect(failing.calls).toBe(1);
+    failing.settle({ ok: false, status: 503, text: "down" });
+    expect((await Promise.allSettled(calls)).map((r) => r.status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+
+    const recovered = deferredExchanger();
+    const retry = createAccessTokenCache({ label: "L", exchange: recovered.exchange });
+    const pending = retry();
+    recovered.settle(ok('{"access_token":"later"}'));
+    expect(await pending).toBe("later");
+  }, 5000);
 
   it("does not exchange until the token is first needed", () => {
     const ex = exchanger(ok('{"access_token":"t"}'));
