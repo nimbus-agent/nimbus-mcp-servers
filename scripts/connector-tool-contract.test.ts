@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resetConnectorModeForTests, setConnectorMode } from "../shared/connector-mode.ts";
 import {
+  byToolName,
   type CapturedTools,
   captureTools,
   stubFetch,
@@ -396,7 +397,7 @@ describe("connector tool surfaces", () => {
       const declared = surface.declaredNames;
       if (declared !== undefined) {
         it("registers exactly the tools its *_TOOL_NAMES export declares", () => {
-          expect(capture(surface).names()).toEqual([...declared].sort());
+          expect(capture(surface).names()).toEqual([...declared].sort(byToolName));
         });
       }
 

@@ -18,6 +18,18 @@ import { z } from "zod";
 import type { McpListResult } from "../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../shared/run-read-only-mcp-connector.ts";
 
+/**
+ * The one ordering used whenever tool names are sorted.
+ *
+ * Exported rather than inlined because `names()` is compared against a caller's
+ * own sorted `*_TOOL_NAMES` in several tests, and two different comparators on
+ * the two sides of an equality assertion is precisely the ordering bug a bare
+ * `.sort()` invites.
+ */
+export function byToolName(a: string, b: string): number {
+  return a.localeCompare(b);
+}
+
 /** One registration, as the connector made it. */
 export interface CapturedTool {
   readonly name: string;
@@ -36,7 +48,7 @@ export class CapturedTools {
 
   /** Registered tool names, sorted — the stable form for an equality assertion. */
   names(): string[] {
-    return [...this.tools.keys()].sort();
+    return [...this.tools.keys()].sort(byToolName);
   }
 
   /**

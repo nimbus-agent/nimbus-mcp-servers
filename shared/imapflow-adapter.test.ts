@@ -358,17 +358,41 @@ describe("createNodemailerMailer", () => {
       host: "smtp.example.test",
       port: 465,
       secure: true,
+      // Implicit TLS already encrypts the session, so STARTTLS is not demanded
+      // on top of it.
+      requireTLS: false,
       auth: { user: "u@example.test", pass: "secret" },
     });
   });
 
-  it("passes tls.rejectUnauthorized through when set", () => {
+  it("REQUIRES STARTTLS whenever TLS is not implicit, without being asked", () => {
+    // The gap this closes: `imap` computes `secure: port === 465`, so
+    // IMAP_SMTP_PORT=587 gave `secure: false` with no requireTLS, and
+    // nodemailer falls back to PLAINTEXT there when the server does not
+    // advertise STARTTLS — sending the SMTP password in the clear.
+    const fake = makeFakeTransport();
+    createNodemailerMailer({ ...smtpConfig, port: 587, secure: false }, fake.factory);
+    expect(fake.options[0]).toMatchObject({ secure: false, requireTLS: true });
+  });
+
+  it("lets a caller opt out of the STARTTLS requirement explicitly", () => {
+    const fake = makeFakeTransport();
+    createNodemailerMailer({ ...smtpConfig, secure: false, requireTLS: false }, fake.factory);
+    expect(fake.options[0]).toMatchObject({ secure: false, requireTLS: false });
+  });
+
+  it("passes tls.rejectUnauthorized through, still demanding STARTTLS", () => {
+    // The ProtonMail Bridge case: a self-signed certificate on loopback is not
+    // a reason to accept an unencrypted session.
     const fake = makeFakeTransport();
     createNodemailerMailer(
       { ...smtpConfig, secure: false, rejectUnauthorized: false },
       fake.factory,
     );
-    expect(fake.options[0]).toMatchObject({ tls: { rejectUnauthorized: false } });
+    expect(fake.options[0]).toMatchObject({
+      tls: { rejectUnauthorized: false },
+      requireTLS: true,
+    });
   });
 
   it("sends from the authenticated user and omits absent cc/bcc", async () => {

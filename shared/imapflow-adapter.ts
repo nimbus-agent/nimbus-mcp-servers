@@ -76,9 +76,18 @@ export interface SmtpEndpointConfig {
   /**
    * Refuse to send at all if the server does not advertise STARTTLS.
    *
-   * Only meaningful with `secure: false`, where nodemailer would otherwise fall
-   * back to plaintext and put the credentials on the wire. iCloud (port 587)
-   * sets it; it is the reason that endpoint is safe without implicit TLS.
+   * Only meaningful with `secure: false`. **Defaults to `true` there**, which is
+   * the safe default rather than nodemailer's: without it nodemailer falls back
+   * to plaintext when the server does not advertise STARTTLS, and the SMTP
+   * password goes out in the clear.
+   *
+   * That was a live gap, not a hypothetical one. `imap` computes
+   * `secure: port === 465`, so an operator setting `IMAP_SMTP_PORT=587` — the
+   * standard submission port — got `secure: false` and no `requireTLS`. Apple's
+   * copy of this mailer was the only one of the three that set it.
+   *
+   * Pass `false` only for an endpoint that genuinely cannot offer STARTTLS, and
+   * only where the connection cannot leave the host.
    */
   readonly requireTLS?: boolean;
 }
@@ -97,7 +106,8 @@ export interface SmtpTransportOptions {
   readonly port: number;
   readonly secure: boolean;
   readonly auth: { readonly user: string; readonly pass: string };
-  readonly requireTLS?: boolean;
+  /** Always set by this module: `true` whenever `secure` is false. */
+  readonly requireTLS: boolean;
   readonly tls?: { readonly rejectUnauthorized: boolean };
 }
 
@@ -292,14 +302,18 @@ class NodemailerMailer implements EmailSendMailer {
   private readonly from: string;
 
   constructor(config: SmtpEndpointConfig, makeTransport: TransportFactory) {
-    const { host, port, secure, user, pass, rejectUnauthorized, requireTLS } = config;
+    const { host, port, secure, user, pass, rejectUnauthorized } = config;
     this.from = user;
     this.transport = makeTransport({
       host,
       port,
       secure,
       auth: { user, pass },
-      ...(requireTLS === undefined ? {} : { requireTLS }),
+      // Implicit TLS already encrypts the session; otherwise STARTTLS is
+      // REQUIRED unless the caller has explicitly opted out. There is no
+      // configuration of this mailer that sends credentials in the clear by
+      // omission.
+      requireTLS: secure ? false : (config.requireTLS ?? true),
       ...(rejectUnauthorized === undefined ? {} : { tls: { rejectUnauthorized } }),
     });
   }

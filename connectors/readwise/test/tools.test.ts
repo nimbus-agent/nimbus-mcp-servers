@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  byToolName,
   type CapturedTools,
   captureTools,
   type FetchStub,
@@ -28,7 +29,7 @@ describe("readwise tools", () => {
   }
 
   it("registers exactly the tools it declares", () => {
-    expect(tools.names()).toEqual([...READWISE_TOOL_NAMES].sort());
+    expect(tools.names()).toEqual([...READWISE_TOOL_NAMES].sort(byToolName));
   });
 
   it("refuses every tool when READWISE_TOKEN is unset", async () => {

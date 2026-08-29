@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { captureTools } from "../scripts/connector-tool-harness.ts";
+import { byToolName, captureTools } from "../scripts/connector-tool-harness.ts";
 import {
   type CollectionToolsConfig,
   collectionToolNames,
@@ -92,7 +92,7 @@ describe("registerCollectionTools", () => {
     const tools = captureTools((reg) => {
       registerCollectionTools(reg, cfg);
     });
-    expect(tools.names()).toEqual(collectionToolNames(cfg).sort());
+    expect(tools.names()).toEqual(collectionToolNames(cfg).sort(byToolName));
   });
 
   it("passes each connector's own description through unchanged", () => {
