@@ -154,7 +154,7 @@
   "optionalDependencies": {
     "hyparquet": "^1.29.2",
     "imapflow": "^1.7.8",
-    "nodemailer": "^9.1.1",
+    "nodemailer": "^10.0.0",
     "tsdav": "^2.3.1"
   }
 }
