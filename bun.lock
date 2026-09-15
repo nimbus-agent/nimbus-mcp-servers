@@ -308,7 +308,7 @@
 
     "toidentifier": ["toidentifier@1.0.1", "", {}, "sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA=="],
 
-    "tsdav": ["tsdav@2.3.1", "", { "dependencies": { "debug": "4.4.3", "xml-js": "1.6.11" } }, "sha512-hrVYM0CCn8JmIXy7pPnA2VIw5MXtjBLDVtZMumBcXRXBVQranD5IRZ1AWV4Ig+RzrqQqFGnHJi94VB+J/aGwTw=="],
+    "tsdav": ["tsdav@2.3.3", "", { "dependencies": { "debug": "4.4.3", "xml-js": "1.6.11" } }, "sha512-MCsxZDYNy/ueyGzM5mrxZoYzToCYbCil0HDd7spGEMd/71cwviwJ6Ob/VbGVklzSg8Q1Tg//xAdyxVcVrzuEyQ=="],
 
     "type-is": ["type-is@2.1.0", "", { "dependencies": { "content-type": "^2.0.0", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA=="],
 
