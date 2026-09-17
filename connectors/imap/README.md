@@ -24,10 +24,22 @@ of headers / `BODYSTRUCTURE` / a truncated text part) and `nodemailer` (SMTP sen
 ## Quickstart
 
 IMAP/SMTP credentials are per-tenant (your mail host, port, username, password).
-Configure the connector, then query or send:
+Configure the connector, then query or send. `nimbus connector auth imap` does not work for this connector — set the Vault keys directly.
+`imap.host`, `imap.username` and `imap.password` are required; the rest are
+optional (`imap.port` defaults to 993, `imap.smtp_port` to 465, and the SMTP keys
+are only needed for `imap_mail_send`).
 
 ```bash
-nimbus connector auth imap
+nimbus vault set imap.host imap.example.com
+nimbus vault set imap.username <your-username>
+nimbus vault set imap.password <your-password>
+# Optional:
+# nimbus vault set imap.port 993
+# nimbus vault set imap.mailbox INBOX
+# nimbus vault set imap.smtp_host smtp.example.com
+# nimbus vault set imap.smtp_port 465
+# nimbus vault set imap.smtp_username <your-smtp-username>
+# nimbus vault set imap.smtp_password <your-smtp-password>
 nimbus ask "Summarize my unread email from this week"
 ```
 

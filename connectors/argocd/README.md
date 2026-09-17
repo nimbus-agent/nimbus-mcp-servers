@@ -5,7 +5,8 @@
 First-party Nimbus MCP connector for [ArgoCD](https://argo-cd.readthedocs.io/)
 GitOps. Indexes the user's **ArgoCD applications** as `argocd:application`
 items in the local index and exposes three read-only tools to the Nimbus
-agent (`argocd_list`, `argocd_get`, `argocd_search`). Useful for deployment
+agent (`argocd_list`, `argocd_get`, `argocd_search`) plus two HITL-gated
+write tools (`argocd_app_sync`, `argocd_app_rollback`). Useful for deployment
 correlation — "did this app go OutOfSync / Degraded when the alert fired?".
 
 v1 indexes **applications only** — AppProjects and per-application sync
@@ -56,9 +57,12 @@ Tools exposed:
 | `argocd_list` | List applications; optional `project` filter + `limit` cap. |
 | `argocd_get` | Fetch one application by `name`. |
 | `argocd_search` | Substring search across applications (name, project, repo, sync/health status). |
+| `argocd_app_sync` | Trigger a sync for an application (`POST /api/v1/applications/{name}/sync`). HITL `argocd.app.sync`; async — verify via the next metadata sync. |
+| `argocd_app_rollback` | Roll back an application to a prior deployment history id (`POST /api/v1/applications/{name}/rollback`). HITL `argocd.app.rollback`; async. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. The
-`argocd.app.sync` / `argocd.app.delete` write tools are deferred to Phase 6.
+The three list/get/search tools are read-only; the two write tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`). The destructive
+`argocd.app.delete` write tool is deferred.
 
 ## See also
 

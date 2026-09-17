@@ -11,7 +11,7 @@ Bundled with Nimbus — no separate install required.
 ## Quickstart
 
 ```bash
-nimbus connector auth discord
+nimbus connector auth discord --token <your-bot-token> --enable
 nimbus ask "Summarize my recent activity in Discord"
 ```
 

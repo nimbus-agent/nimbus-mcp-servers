@@ -18,10 +18,12 @@ Bundled with Nimbus — no separate install required.
 ## Quickstart
 
 Elasticsearch uses its own credentials and a per-tenant host (self-hosted or
-Elastic Cloud). Configure the connector with your cluster URL and an API key:
+Elastic Cloud). Configure the connector with your cluster URL and an API key
+(both keys are required). `nimbus connector auth elasticsearch` does not work for this connector — set the Vault keys directly.
 
 ```bash
-nimbus connector auth elasticsearch
+nimbus vault set elasticsearch.url https://your-cluster.example.com:9200
+nimbus vault set elasticsearch.api_key <your-elasticsearch-api-key>
 nimbus ask "Which Elasticsearch indices are red?"
 ```
 

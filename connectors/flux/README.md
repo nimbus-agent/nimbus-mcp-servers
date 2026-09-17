@@ -6,7 +6,9 @@ First-party Nimbus MCP connector for [Flux](https://fluxcd.io/) (the GitOps
 Toolkit). Reads Flux **Custom Resources** directly from the Kubernetes API
 server and indexes them as a single `flux:resource` item type (with a `kind`
 discriminator in metadata) in the local index, exposing three read-only tools
-to the Nimbus agent (`flux_list`, `flux_get`, `flux_search`). Useful for
+to the Nimbus agent (`flux_list`, `flux_get`, `flux_search`) plus two
+HITL-gated reconcile tools (`flux_kustomization_reconcile`,
+`flux_helmrelease_reconcile`). Useful for
 deployment correlation — "did this Kustomization / HelmRelease go
 NotReady when the alert fired?" — and complements the ArgoCD connector for
 teams mixing both.
@@ -14,8 +16,8 @@ teams mixing both.
 v1 indexes nine GitOps-Toolkit kinds: Kustomizations, HelmReleases, the
 sources (GitRepository / OCIRepository / HelmRepository / Bucket), and the
 image-automation objects (ImageRepository / ImagePolicy /
-ImageUpdateAutomation). The `flux reconcile` / `flux suspend` write tools are
-deferred to Phase 6.
+ImageUpdateAutomation). The `flux suspend` / `resume` write tools are
+deferred.
 
 ## Install
 
@@ -35,7 +37,9 @@ nimbus ask "Which Flux Kustomizations are NotReady right now?"
 The token is a **read-only Kubernetes ServiceAccount JWT** that must have
 cluster read (`get` / `list`) RBAC on the Flux CRD groups
 (`kustomize.toolkit.fluxcd.io`, `helm.toolkit.fluxcd.io`,
-`source.toolkit.fluxcd.io`, `image.toolkit.fluxcd.io`). The Gateway injects
+`source.toolkit.fluxcd.io`, `image.toolkit.fluxcd.io`). The two reconcile write
+tools additionally need the `patch` verb on the target CR (kustomizations /
+helmreleases); without it they fail at the Kubernetes API. The Gateway injects
 `flux.api_url` as `FLUX_API_URL` and `flux.token` as `FLUX_TOKEN` at spawn
 time; the connector itself never touches the vault. The token is sent as the
 `Authorization: Bearer <token>` header.
@@ -74,9 +78,12 @@ Tools exposed:
 | `flux_list` | List resources of one `kind` (default `kustomization`); optional `namespace` + `limit`. |
 | `flux_get` | Fetch one resource by `kind`, `namespace`, `name`. |
 | `flux_search` | Substring search across resources of one `kind` (name, namespace, Ready reason/message). |
+| `flux_kustomization_reconcile` | Request a reconcile of a Kustomization by annotating `reconcile.fluxcd.io/requestedAt` (PATCH). HITL `flux.kustomization.reconcile`; async. |
+| `flux_helmrelease_reconcile` | Request a reconcile of a HelmRelease the same way. HITL `flux.helmrelease.reconcile`; async. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. The
-`flux reconcile` / `flux suspend` write tools are deferred to Phase 6.
+The three list/get/search tools are read-only; the two reconcile tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`). The `flux suspend` /
+`resume` write tools are deferred.
 
 ## See also
 

@@ -31,10 +31,21 @@ Bridge's loopback listeners.
 
 In ProtonMail Bridge, copy the Bridge-generated IMAP/SMTP username and password
 (Bridge → your account → Mailbox details). Configure the connector, then query
-or send:
+or send. `nimbus connector auth protonmail` does not work for this connector — set the Vault keys directly. `protonmail.username` and
+`protonmail.password` are required; host/port keys default to the Bridge loopback
+listeners, and the SMTP username/password are only needed for `protonmail_mail_send`.
 
 ```bash
-nimbus connector auth protonmail
+nimbus vault set protonmail.username <bridge-username>
+nimbus vault set protonmail.password <bridge-password>
+# Optional (defaults shown):
+# nimbus vault set protonmail.imap_host 127.0.0.1
+# nimbus vault set protonmail.imap_port 1143
+# nimbus vault set protonmail.mailbox INBOX
+# nimbus vault set protonmail.smtp_host 127.0.0.1
+# nimbus vault set protonmail.smtp_port 1025
+# nimbus vault set protonmail.smtp_username <bridge-username>
+# nimbus vault set protonmail.smtp_password <bridge-password>
 nimbus ask "Summarize my unread ProtonMail from this week"
 ```
 

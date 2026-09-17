@@ -5,8 +5,9 @@
 First-party Nimbus MCP connector for [Snowflake](https://www.snowflake.com/).
 Indexes the user's **Snowflake tables** as `snowflake:data_model` items in the
 local index and exposes three read-only tools to the Nimbus agent
-(`snowflake_list`, `snowflake_get`, `snowflake_search`). Indexes column names
-and tags only — **NEVER row data or cell values**.
+(`snowflake_list`, `snowflake_get`, `snowflake_search`) plus two HITL-gated
+governance write tools (`snowflake_tag_set`, `snowflake_comment_set`). Indexes
+column names and tags only — **NEVER row data or cell values**.
 
 Uses the Snowflake SQL REST API (`POST /api/v2/statements`) with OAuth token
 or key-pair JWT auth. v1 indexes tables from `information_schema.tables` across
@@ -61,9 +62,12 @@ Tools exposed:
 | `snowflake_list` | List tables; optional `limit` cap (default 200, max 500). |
 | `snowflake_get` | Fetch one table by fully-qualified id (`database.schema.table`). |
 | `snowflake_search` | Substring search across tables (name, schema, database). |
+| `snowflake_tag_set` | Set or unset a governance TAG on a table (`ALTER TABLE <object> SET TAG <tag> = '<value>'`; omit `value` to UNSET). HITL-gated. |
+| `snowflake_comment_set` | Set a COMMENT on a table (`COMMENT ON TABLE <object> IS '<comment>'`). HITL-gated. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Column
-statistics, query history, and write tools are deferred.
+The three list/get/search tools are read-only; the two governance write tools
+require Gateway HITL approval (`hitlRequired` is `["write"]`). Column
+statistics and query history are deferred.
 
 ## See also
 

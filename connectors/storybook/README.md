@@ -27,10 +27,11 @@ beyond the MCP SDK.
 ## Quickstart
 
 Build your Storybook (`storybook build`) so it emits a manifest, then point the
-connector at the output directory (e.g. `storybook-static`):
+connector at the output directory (e.g. `storybook-static`).
+`nimbus connector auth storybook` does not work for this connector — set the Vault keys directly.
 
 ```bash
-nimbus connector auth storybook
+nimbus vault set storybook.dir /path/to/your/storybook-static
 nimbus ask "which Storybook stories cover the Button component?"
 ```
 
