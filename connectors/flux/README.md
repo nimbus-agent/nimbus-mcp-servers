@@ -29,13 +29,16 @@ Bundled with Nimbus — no separate install required.
 # Flux is always self-hosted: both keys are required (no defaults).
 # flux.api_url is the Kubernetes API server base (or a TLS-terminating proxy).
 nimbus vault set flux.api_url https://k8s.example.com:6443
-nimbus vault set flux.token <your-read-only-serviceaccount-jwt>
+# One token serves both: get/list is enough read-only, the reconcile tools also need patch.
+nimbus vault set flux.token <your-serviceaccount-jwt>
 
 nimbus ask "Which Flux Kustomizations are NotReady right now?"
 ```
 
-The token is a **read-only Kubernetes ServiceAccount JWT** that must have
-cluster read (`get` / `list`) RBAC on the Flux CRD groups
+The token is a **Kubernetes ServiceAccount JWT**, and ONE token serves every
+request the connector makes — the reads and the reconcile `PATCH`es alike, so it
+is only a read-only credential if you keep it to read RBAC. For read-only use it
+needs cluster read (`get` / `list`) RBAC on the Flux CRD groups
 (`kustomize.toolkit.fluxcd.io`, `helm.toolkit.fluxcd.io`,
 `source.toolkit.fluxcd.io`, `image.toolkit.fluxcd.io`). The two reconcile write
 tools additionally need the `patch` verb on the target CR (kustomizations /
@@ -69,7 +72,7 @@ Vault keys:
 | Key | Required | Purpose |
 | --- | --- | --- |
 | `flux.api_url` | yes | Kubernetes API server base (e.g. `https://k8s.example.com:6443`); requests go to `${api_url}/apis/...`. Must be CA-trusted (TLS caveat above). |
-| `flux.token` | yes | Read-only Kubernetes ServiceAccount JWT (sent as `Authorization: Bearer <token>`). |
+| `flux.token` | yes | Kubernetes ServiceAccount JWT (sent as `Authorization: Bearer <token>`). `get`/`list` RBAC covers the read tools; the reconcile tools send `PATCH` with this same token and also need `patch` on the target CRs. |
 
 Tools exposed:
 
