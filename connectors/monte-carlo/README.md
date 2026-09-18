@@ -6,7 +6,8 @@ First-party Nimbus MCP connector for [Monte Carlo](https://www.montecarlodata.co
 Indexes the user's **Monte Carlo data-quality incidents** as
 `montecarlo:data_quality_test` items in the local index and exposes three
 read-only tools to the Nimbus agent (`montecarlo_list`, `montecarlo_get`,
-`montecarlo_search`). Each incident's monitored table is normalized into a
+`montecarlo_search`) plus two HITL-gated write tools
+(`montecarlo_incident_acknowledge`, `montecarlo_incident_resolve`). Each incident's monitored table is normalized into a
 `monitoredDataModelKeys` metadata field so the graph populator automatically
 emits `data_quality_test --monitors--> data_model` lineage edges to the
 corresponding warehouse tables.
@@ -51,9 +52,11 @@ Tools exposed:
 | `montecarlo_list` | List incidents; optional `limit` cap (default 200, max 500). |
 | `montecarlo_get` | Fetch one incident by id. |
 | `montecarlo_search` | Substring search across incidents (id, status, severity, table). |
+| `montecarlo_incident_acknowledge` | Acknowledge a Monte Carlo incident. HITL-gated. |
+| `montecarlo_incident_resolve` | Resolve a Monte Carlo incident. HITL-gated. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Write
-tools and incident remediation are deferred.
+The three list/get/search tools are read-only; the two write tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`).
 
 ## See also
 

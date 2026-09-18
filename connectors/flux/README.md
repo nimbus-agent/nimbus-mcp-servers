@@ -6,7 +6,9 @@ First-party Nimbus MCP connector for [Flux](https://fluxcd.io/) (the GitOps
 Toolkit). Reads Flux **Custom Resources** directly from the Kubernetes API
 server and indexes them as a single `flux:resource` item type (with a `kind`
 discriminator in metadata) in the local index, exposing three read-only tools
-to the Nimbus agent (`flux_list`, `flux_get`, `flux_search`). Useful for
+to the Nimbus agent (`flux_list`, `flux_get`, `flux_search`) plus two
+HITL-gated reconcile tools (`flux_kustomization_reconcile`,
+`flux_helmrelease_reconcile`). Useful for
 deployment correlation — "did this Kustomization / HelmRelease go
 NotReady when the alert fired?" — and complements the ArgoCD connector for
 teams mixing both.
@@ -14,8 +16,8 @@ teams mixing both.
 v1 indexes nine GitOps-Toolkit kinds: Kustomizations, HelmReleases, the
 sources (GitRepository / OCIRepository / HelmRepository / Bucket), and the
 image-automation objects (ImageRepository / ImagePolicy /
-ImageUpdateAutomation). The `flux reconcile` / `flux suspend` write tools are
-deferred to Phase 6.
+ImageUpdateAutomation). The `flux suspend` / `resume` write tools are
+deferred.
 
 ## Install
 
@@ -27,15 +29,20 @@ Bundled with Nimbus — no separate install required.
 # Flux is always self-hosted: both keys are required (no defaults).
 # flux.api_url is the Kubernetes API server base (or a TLS-terminating proxy).
 nimbus vault set flux.api_url https://k8s.example.com:6443
-nimbus vault set flux.token <your-read-only-serviceaccount-jwt>
+# One token serves both: get/list is enough read-only, the reconcile tools also need patch.
+nimbus vault set flux.token <your-serviceaccount-jwt>
 
 nimbus ask "Which Flux Kustomizations are NotReady right now?"
 ```
 
-The token is a **read-only Kubernetes ServiceAccount JWT** that must have
-cluster read (`get` / `list`) RBAC on the Flux CRD groups
+The token is a **Kubernetes ServiceAccount JWT**, and ONE token serves every
+request the connector makes — the reads and the reconcile `PATCH`es alike, so it
+is only a read-only credential if you keep it to read RBAC. For read-only use it
+needs cluster read (`get` / `list`) RBAC on the Flux CRD groups
 (`kustomize.toolkit.fluxcd.io`, `helm.toolkit.fluxcd.io`,
-`source.toolkit.fluxcd.io`, `image.toolkit.fluxcd.io`). The Gateway injects
+`source.toolkit.fluxcd.io`, `image.toolkit.fluxcd.io`). The two reconcile write
+tools additionally need the `patch` verb on the target CR (kustomizations /
+helmreleases); without it they fail at the Kubernetes API. The Gateway injects
 `flux.api_url` as `FLUX_API_URL` and `flux.token` as `FLUX_TOKEN` at spawn
 time; the connector itself never touches the vault. The token is sent as the
 `Authorization: Bearer <token>` header.
@@ -65,7 +72,7 @@ Vault keys:
 | Key | Required | Purpose |
 | --- | --- | --- |
 | `flux.api_url` | yes | Kubernetes API server base (e.g. `https://k8s.example.com:6443`); requests go to `${api_url}/apis/...`. Must be CA-trusted (TLS caveat above). |
-| `flux.token` | yes | Read-only Kubernetes ServiceAccount JWT (sent as `Authorization: Bearer <token>`). |
+| `flux.token` | yes | Kubernetes ServiceAccount JWT (sent as `Authorization: Bearer <token>`). `get`/`list` RBAC covers the read tools; the reconcile tools send `PATCH` with this same token and also need `patch` on the target CRs. |
 
 Tools exposed:
 
@@ -74,9 +81,12 @@ Tools exposed:
 | `flux_list` | List resources of one `kind` (default `kustomization`); optional `namespace` + `limit`. |
 | `flux_get` | Fetch one resource by `kind`, `namespace`, `name`. |
 | `flux_search` | Substring search across resources of one `kind` (name, namespace, Ready reason/message). |
+| `flux_kustomization_reconcile` | Request a reconcile of a Kustomization by annotating `reconcile.fluxcd.io/requestedAt` (PATCH). HITL `flux.kustomization.reconcile`; async. |
+| `flux_helmrelease_reconcile` | Request a reconcile of a HelmRelease the same way. HITL `flux.helmrelease.reconcile`; async. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. The
-`flux reconcile` / `flux suspend` write tools are deferred to Phase 6.
+The three list/get/search tools are read-only; the two reconcile tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`). The `flux suspend` /
+`resume` write tools are deferred.
 
 ## See also
 

@@ -11,7 +11,7 @@ Bundled with Nimbus — no separate install required.
 ## Quickstart
 
 ```bash
-nimbus connector auth iac
+nimbus connector auth iac --enable
 nimbus ask "Summarize my recent activity in Iac"
 ```
 

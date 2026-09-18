@@ -26,10 +26,10 @@ beyond the MCP SDK.
 
 Point the connector at the directory your DB tool stores scripts/consoles in (for
 example DBeaver project script folders, or a DataGrip `consoles/` directory).
-Configure the connector, then query:
+Configure the connector, then query. `nimbus connector auth localdb` does not work for this connector — set the Vault keys directly.
 
 ```bash
-nimbus connector auth localdb
+nimbus vault set localdb.scripts_dir /path/to/your/db-tool/scripts
 nimbus ask "find the SQL query I wrote that joins orders and customers"
 ```
 
