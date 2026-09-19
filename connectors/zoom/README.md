@@ -23,9 +23,12 @@ Bundled with Nimbus — no separate install required.
 ## Quickstart
 
 ```bash
+export NIMBUS_OAUTH_ZOOM_CLIENT_ID=<your-zoom-app-client-id>
+export NIMBUS_OAUTH_ZOOM_CLIENT_SECRET=<your-zoom-app-client-secret>
 # The Gateway manages the full Zoom OAuth flow — credentials arrive as
 # ZOOM_TOKEN at spawn time via getValidZoomAccessToken; you do not need
 # to set vault keys manually for normal use.
+nimbus connector auth zoom
 nimbus ask "What Zoom meetings do I have scheduled?"
 ```
 
@@ -44,7 +47,10 @@ Vault keys:
 
 | Key | Required | Purpose |
 | --- | --- | --- |
-| `zoom.oauth.access_token` | yes (managed by Gateway) | Short-lived Zoom OAuth access token. Refreshed automatically via the 3-legged OAuth flow; injected as `ZOOM_TOKEN` at spawn time. |
+| `zoom.oauth` | yes (managed by Gateway) | Zoom OAuth access + refresh tokens (written by `nimbus connector auth zoom`). The short-lived access token is refreshed automatically and injected as `ZOOM_TOKEN` at spawn time. |
+
+The client id + secret are read from the `NIMBUS_OAUTH_ZOOM_CLIENT_ID` /
+`NIMBUS_OAUTH_ZOOM_CLIENT_SECRET` environment variables (not the vault).
 
 The API host is fixed at `https://api.zoom.us` (no host override key).
 

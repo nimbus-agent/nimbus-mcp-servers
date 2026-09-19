@@ -31,10 +31,12 @@ Bundled with Nimbus — no separate install required. Uses native JMAP over HTTP
 
 Authentication is a single Fastmail API token (create one under Fastmail
 Settings → Privacy & Security → API tokens, with mail read/write scope).
-Configure the connector, then query or send:
+Configure the connector, then query or send. `nimbus connector auth fastmail` does not work for this connector — set the Vault keys directly.
 
 ```bash
-nimbus connector auth fastmail
+nimbus vault set fastmail.api_token <your-fastmail-api-token>
+# Optional — only for a JMAP-compatible host other than api.fastmail.com:
+# nimbus vault set fastmail.base_url https://api.example.com
 nimbus ask "Summarize my unread Fastmail from this week"
 ```
 

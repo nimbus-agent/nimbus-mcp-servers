@@ -10,8 +10,16 @@ Bundled with Nimbus — no separate install required.
 
 ## Quickstart
 
+Obsidian has no credential: `nimbus connector auth obsidian` does not work. The
+Gateway discovers vaults (directories containing `.obsidian/`) under the
+`[[filesystem.roots]]` entries in your `nimbus.toml`:
+
+```toml
+[[filesystem.roots]]
+path = "~/Documents/MyVault"
+```
+
 ```bash
-nimbus connector auth obsidian
 nimbus ask "Summarize my recent activity in Obsidian"
 ```
 

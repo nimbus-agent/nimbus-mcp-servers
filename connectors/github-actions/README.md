@@ -10,8 +10,12 @@ Bundled with Nimbus — no separate install required.
 
 ## Quickstart
 
+GitHub Actions reuses the GitHub connector's personal access token (`github.pat`);
+there is no separate GitHub Actions credential, and `nimbus connector auth github-actions`
+does not work.
+
 ```bash
-nimbus connector auth github-actions
+nimbus connector auth github --token <your-github-pat>
 nimbus ask "Summarize my recent activity in Github Actions"
 ```
 

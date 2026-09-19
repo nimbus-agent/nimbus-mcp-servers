@@ -29,10 +29,11 @@ Parquet footer reader) for Parquet schema.
 
 ## Quickstart
 
-Point the connector at the directory holding your data files, then query:
+Point the connector at the directory holding your data files, then query.
+`nimbus connector auth dataprofile` does not work for this connector — set the Vault keys directly.
 
 ```bash
-nimbus connector auth dataprofile
+nimbus vault set dataprofile.dir /path/to/your/data-files
 nimbus ask "which local dataset has an order_id column?"
 ```
 

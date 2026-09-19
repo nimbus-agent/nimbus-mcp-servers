@@ -52,14 +52,15 @@ password is not accepted). To generate one:
 3. Click **+** (Generate an App-Specific Password).
 4. Label it (e.g. "Nimbus") and copy the generated password.
 
-Store it in Nimbus with:
+Store your iCloud email and the app-specific password in the Nimbus Vault.
+`nimbus connector auth apple` does not work for this connector — set the Vault keys directly.
 
 ```bash
-nimbus connector auth apple
+nimbus vault set apple.icloud_email you@icloud.com
+nimbus vault set apple.icloud_app_password <app-specific-password>
 ```
 
-Nimbus will prompt for your iCloud email and the app-specific password. The
-single app-specific password authenticates all three protocols: IMAP, SMTP,
+The single app-specific password authenticates all three protocols: IMAP, SMTP,
 and CalDAV.
 
 ### Fixed iCloud endpoints
@@ -76,7 +77,8 @@ host/port configuration:
 ## Quickstart
 
 ```bash
-nimbus connector auth apple
+nimbus vault set apple.icloud_email you@icloud.com
+nimbus vault set apple.icloud_app_password <app-specific-password>
 nimbus ask "Summarize my unread iCloud mail from this week"
 nimbus ask "What meetings do I have next week in my iCloud Calendar?"
 ```

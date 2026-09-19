@@ -5,7 +5,9 @@
 First-party Nimbus MCP connector for [Tableau](https://www.tableau.com/).
 Indexes the user's **Tableau views and dashboards** as `tableau:dashboard` items in the
 local index and exposes three read-only tools to the Nimbus agent
-(`tableau_list`, `tableau_get`, `tableau_search`). Indexes view metadata
+(`tableau_list`, `tableau_get`, `tableau_search`) plus two HITL-gated
+extract-refresh tools (`tableau_datasource_refresh`, `tableau_workbook_refresh`).
+Indexes view metadata
 only — **NEVER underlying data or cell values**.
 
 Uses the Tableau REST API v3.4 with Personal Access Token (PAT) auth.
@@ -56,9 +58,12 @@ Tools exposed:
 | `tableau_list` | List views/dashboards; optional `limit` cap (default 200, max 500). |
 | `tableau_get` | Fetch one view by luid. |
 | `tableau_search` | Substring search across views (name, luid). |
+| `tableau_datasource_refresh` | Trigger an extract refresh for a published datasource. Async — returns the job id. HITL-gated. |
+| `tableau_workbook_refresh` | Trigger an extract refresh for a workbook. Async — returns the job id. HITL-gated. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Write
-tools and workbook-level metadata are deferred.
+The three list/get/search tools are read-only; the two refresh tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`). Workbook-level metadata
+is deferred.
 
 ## See also
 

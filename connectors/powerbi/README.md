@@ -5,7 +5,8 @@
 First-party Nimbus MCP connector for [Microsoft Power BI](https://powerbi.microsoft.com/).
 Indexes the user's **Power BI reports** as `powerbi:dashboard` items in the
 local index and exposes three read-only tools to the Nimbus agent
-(`powerbi_list`, `powerbi_get`, `powerbi_search`). Indexes report metadata and
+(`powerbi_list`, `powerbi_get`, `powerbi_search`) plus two HITL-gated
+write tools (`powerbi_dataset_refresh`, `powerbi_dataflow_refresh`). Indexes report metadata and
 dataset table names for cross-connector lineage — **NEVER row data or cell values**.
 
 Uses the Azure AD client-credentials flow to mint an OAuth 2.0 access token, then
@@ -54,9 +55,12 @@ Tools exposed:
 | `powerbi_list` | List Power BI reports; optional `limit` cap (default 200, max 500). |
 | `powerbi_get` | Fetch one report by id. |
 | `powerbi_search` | Substring search across reports by name. |
+| `powerbi_dataset_refresh` | Trigger a dataset refresh (`groupId` optional; omit for My Workspace). Async. HITL-gated. |
+| `powerbi_dataflow_refresh` | Trigger a dataflow refresh. Async. HITL-gated. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Write
-tools (publish, update dataset) are deferred.
+The three list/get/search tools are read-only; the two refresh tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`). Other write tools
+(publish, update dataset) are deferred.
 
 ## See also
 

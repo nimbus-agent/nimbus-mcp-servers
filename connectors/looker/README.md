@@ -4,8 +4,10 @@
 
 First-party Nimbus MCP connector for [Looker](https://cloud.google.com/looker).
 Indexes the user's **Looker dashboards and LookML views** as `looker:dashboard` and
-`looker:data_model` items in the local index and exposes three read-only tools to
-the Nimbus agent (`looker_list`, `looker_get`, `looker_search`). Indexes metadata
+`looker:data_model` items in the local index and exposes four read-only tools to
+the Nimbus agent (`looker_list`, `looker_models_list`, `looker_get`,
+`looker_search`) plus two HITL-gated write tools (`looker_datagroup_trigger`,
+`looker_schedule_run_once`). Indexes metadata
 only — **NEVER underlying data or cell values**.
 
 Uses the Looker API 4.0 with OAuth2 client-credentials auth.
@@ -52,12 +54,16 @@ Tools exposed:
 
 | Tool | Purpose |
 | --- | --- |
-| `looker_list` | List dashboards and LookML views; optional `limit` cap (default 200, max 500). |
-| `looker_get` | Fetch one dashboard or view by id. |
-| `looker_search` | Substring search across dashboards and views (title, id, model name). |
+| `looker_list` | List dashboards (`GET /api/4.0/dashboards`); paginated `cursor` + `limit` (default 200, max 500). |
+| `looker_models_list` | List LookML models (`GET /api/4.0/lookml_models`) for dashboard→table lineage; same pagination. |
+| `looker_get` | Fetch one dashboard by id. |
+| `looker_search` | Substring search across dashboards (title, id). |
+| `looker_datagroup_trigger` | Invalidate a datagroup to force a PDT/cache rebuild (`PATCH /api/4.0/datagroups/{datagroupId}`). HITL-gated. |
+| `looker_schedule_run_once` | Run a scheduled plan immediately (`POST /api/4.0/scheduled_plans/{scheduledPlanId}/run_once`). HITL-gated. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Write
-tools and Explore-level metadata are deferred.
+The four list/get/search tools are read-only; the two write tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`). Explore-level metadata
+is deferred.
 
 ## See also
 

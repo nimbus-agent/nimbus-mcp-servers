@@ -5,7 +5,8 @@
 First-party Nimbus MCP connector for [Bigeye](https://www.bigeye.com/).
 Indexes the user's **Bigeye data-quality issues** as `data_quality_test` items in the
 local index and exposes three read-only tools to the Nimbus agent
-(`bigeye_list`, `bigeye_get`, `bigeye_search`). Indexes issue metadata and
+(`bigeye_list`, `bigeye_get`, `bigeye_search`) plus two HITL-gated
+issue-lifecycle write tools (`bigeye_issue_acknowledge`, `bigeye_issue_resolve`). Indexes issue metadata and
 monitored table names for cross-connector lineage — **NEVER row data or cell values**.
 
 Uses a Bearer API key against a per-tenant Bigeye instance (`base_url`).
@@ -47,9 +48,11 @@ Tools exposed:
 | `bigeye_list` | List Bigeye data-quality issues; optional `limit` cap (default 200, max 500). |
 | `bigeye_get` | Fetch one issue by id. |
 | `bigeye_search` | Substring search across issues by summary. |
+| `bigeye_issue_acknowledge` | Acknowledge a Bigeye issue. HITL-gated. |
+| `bigeye_issue_resolve` | Resolve (close) a Bigeye issue. HITL-gated. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Write
-tools are deferred.
+The three list/get/search tools are read-only; the two write tools require
+Gateway HITL approval (`hitlRequired` is `["write"]`).
 
 ## See also
 

@@ -5,15 +5,15 @@
 First-party Nimbus MCP connector for [MLflow](https://mlflow.org/).
 Indexes the user's **MLflow registered models** as `mlflow:ml_model` items in
 the local index and exposes three read-only tools to the Nimbus agent
-(`mlflow_list`, `mlflow_get`, `mlflow_search`). Each registered model surfaces
+(`mlflow_list`, `mlflow_get`, `mlflow_search`) plus two HITL-gated
+stage-transition tools (`mlflow_model_promote`, `mlflow_model_transition_stage`). Each registered model surfaces
 its **latest version** (version number, stage, status, run id) — preferring the
 `Production`-stage entry, else the highest numeric version — plus its
 description, created + updated timestamps, and tags. Useful for model-registry
 discovery — "which models are in Production?".
 
 v1 indexes **registered models only** — experiments, runs, metrics, params, and
-artifacts are a deferred follow-up. `ml.model.promote` /
-`ml.model.transition-stage` (HITL) writes are deferred to Phase 6.
+artifacts are a deferred follow-up.
 
 ## Install
 
@@ -59,11 +59,12 @@ Tools exposed:
 | `mlflow_list` | List registered models (`GET /api/2.0/mlflow/registered-models/search`); optional `limit` (1..100) page-size cap. |
 | `mlflow_get` | Fetch one registered model by `name`. |
 | `mlflow_search` | Substring search across registered models (`name`, `description`, tags). |
+| `mlflow_model_promote` | Promote a model version to Production (`POST /api/2.0/mlflow/model-versions/transition-stage`). HITL `mlflow.model.promote`; `archiveExisting` defaults to true. |
+| `mlflow_model_transition_stage` | Transition a model version to a chosen stage (same endpoint). HITL `mlflow.model.transition_stage`; `archiveExisting` defaults to false. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty.
-Experiments, runs, metrics, params, and artifacts — plus
-`ml.model.promote` / `ml.model.transition-stage` (HITL) write tools — are a
-deferred follow-up.
+The three list/get/search tools are read-only; the two stage-transition tools
+require Gateway HITL approval (`hitlRequired` is `["write"]`). Experiments,
+runs, metrics, params, and artifacts are a deferred follow-up.
 
 ## See also
 
