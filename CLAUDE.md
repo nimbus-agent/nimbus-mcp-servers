@@ -64,6 +64,10 @@ Before hand-rolling plumbing, check the kits — `env-json-api.ts` (env-token JS
 | `bun run sync:tool-names` | Rewrites the stale ones. Run after adding or renaming a tool. |
 | `bun test` | Full suite (2100+ tests). |
 
+Dependencies are updated by hand, in periodic bulk PRs; Dependabot opens none here (its alerts stay
+on). The procedure, and the traps it has to avoid, are in
+[CONTRIBUTING § Updating dependencies](./CONTRIBUTING.md#updating-dependencies).
+
 ## Traps that have already cost time here
 
 - **A green audit can mean an empty scan.** `audit:connector-consent` reports `ok` both when nothing

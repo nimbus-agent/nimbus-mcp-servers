@@ -42,6 +42,37 @@ compiles these sources, so any `@types/*` they need is a real `dependency`, not 
 `scripts/consumer-types.test.ts` enforces that — it exists because `@types/nodemailer` sat in
 `devDependencies` through two releases and broke the gateway's typecheck.
 
+### Updating dependencies
+
+Dependabot opens no pull requests here. A maintainer updates dependencies in periodic bulk PRs:
+`bun outdated`, edit the ranges in the root `package.json`, `bun install`, then `bun run check`.
+Dependabot **alerts** stay on, so start from the open ones in the repository's Security tab — fixing
+one is the same manual bump as any other update.
+
+What that PR has to get right:
+
+- **Let Bun write the lockfile, and commit `bun.lock` with the manifest.** CI installs with
+  `bun install --frozen-lockfile`, which fails when the two disagree. npm does not read `bun.lock`:
+  when Dependabot updated this repo through its npm ecosystem, it bumped `package.json`, left the
+  lockfile stale, and every PR it opened failed that step
+  ([#11](https://github.com/nimbus-agent/nimbus-mcp-servers/pull/11)).
+- **Bump the per-connector manifests too.** They install nothing, but GitHub's dependency graph
+  scans them, so a stale range there raises a security alert even after the root is patched. The
+  root moved to `nodemailer` 10 in mid-September 2026, yet an advisory published two weeks later
+  still opened three alerts — against `connectors/{imap,apple,protonmail}/package.json`, which
+  declared `^9`.
+- **Move `github/codeql-action` as one unit.** Its `init` and `analyze` steps must be pinned to the
+  same commit, or CodeQL fails with "Loaded a configuration file for version X, but running version
+  Y". Third-party actions are pinned to a full commit SHA with the tag in a trailing comment; update
+  both together.
+- **Keep shared majors in step with the gateway.** The Nimbus gateway installs this package from npm
+  and depends directly on some of the same libraries (`imapflow`, for one). When the two disagree on
+  a major, its compiled binary carries both copies.
+
+Turning Dependabot pull requests back on needs `.github/workflows/cla.yml` changed first: a run
+Dependabot triggers gets no Actions secrets, so the CLA token mint fails and the required `cla`
+check never passes.
+
 ## Commits and releases
 
 Conventional commits. The **PR title** is what release-please reads, because squash is the only
