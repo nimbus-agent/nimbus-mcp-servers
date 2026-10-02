@@ -26,7 +26,12 @@
  * or attachment bytes.
  */
 
-import { type FetchMessageObject, type FetchQueryObject, ImapFlow } from "imapflow";
+import {
+  type FetchMessageObject,
+  type FetchQueryObject,
+  ImapFlow,
+  type MessageAddressObject,
+} from "imapflow";
 import { createTransport, type Transporter } from "nodemailer";
 import {
   type BodyStructureNode,
@@ -115,8 +120,14 @@ export type TransportFactory = (options: SmtpTransportOptions) => Transporter;
  * Build a {@link MailAddress} from an imapflow envelope address, omitting
  * `name`/`address` when absent — the interface uses `exactOptionalPropertyTypes`,
  * so an explicit `undefined` is not assignable.
+ *
+ * The parameter is imapflow's own `MessageAddressObject`, not a restated
+ * `{ name?: string; address?: string }`. imapflow 2 generates its declarations,
+ * which spell the fields `name?: string | undefined`, and under
+ * `exactOptionalPropertyTypes` a hand-written shape without the `| undefined`
+ * stops accepting the library's value.
  */
-function toMailAddress(a: { name?: string; address?: string }): MailAddress {
+function toMailAddress(a: MessageAddressObject): MailAddress {
   const out: { name?: string; address?: string } = {};
   if (a.name !== undefined) {
     out.name = a.name;
@@ -175,6 +186,21 @@ export function previewFetchQuery(): FetchQueryObject {
       { key: "TEXT", start: 0, maxLength: PREVIEW_FETCH_BYTES },
     ],
   };
+}
+
+/**
+ * imapflow answers `undefined` from `fetchOne` and `search` when it has no
+ * mailbox selected — reachable under the lock `withMailbox` holds only if the
+ * connection closed after it was taken.
+ *
+ * imapflow 1.x did the same at runtime but declared no such return, so the
+ * value reached `toMessageMeta` / `.length` and failed as a bare TypeError. The
+ * generated declarations of 2.x surface it. It stays a FAILURE, now one that
+ * says what happened — not "no such message" or "no results", which would
+ * report a dropped connection as an answer.
+ */
+function mailboxNotSelected(mailbox: string): Error {
+  return new Error(`imap: mailbox "${mailbox}" is no longer selected (connection closed?)`);
 }
 
 /**
@@ -237,7 +263,10 @@ class ImapFlowClient implements EmailReadClient {
     return this.withMailbox(mailbox, async (client, uidValidity) => {
       const out: EmailMessageMeta[] = [];
       const status = await client.status(mailbox, { messages: true });
-      const total = status.messages ?? 0;
+      // `false` is a STATUS the server rejected, read as an empty mailbox. That
+      // is what this did under imapflow 1.x too, which returned the same `false`
+      // but declared only `StatusObject`, so `status.messages ?? 0` made it 0.
+      const total = status === false ? 0 : (status.messages ?? 0);
       if (total === 0) {
         return out;
       }
@@ -256,6 +285,9 @@ class ImapFlowClient implements EmailReadClient {
     const box = mailbox ?? this.defaultMailbox;
     return this.withMailbox(box, async (client, uidValidity) => {
       const msg = await client.fetchOne(String(uid), previewFetchQuery(), { uid: true });
+      if (msg === undefined) {
+        throw mailboxNotSelected(box);
+      }
       return msg === false ? null : toMessageMeta(msg, box, uidValidity);
     });
   }
@@ -273,6 +305,9 @@ class ImapFlowClient implements EmailReadClient {
         { or: [{ subject: q }, { from: q }, { to: q }] },
         { uid: true },
       );
+      if (uids === undefined) {
+        throw mailboxNotSelected(mailbox);
+      }
       if (uids === false || uids.length === 0) {
         return [];
       }

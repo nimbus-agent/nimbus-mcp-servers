@@ -53,6 +53,13 @@ interface FakeImapOptions {
   readonly fetchOneThrows?: boolean;
   /** Make `getMailboxLock` reject, to drive the connection-close-on-failure path. */
   readonly lockThrows?: boolean;
+  /** Make `status` answer `false`, as imapflow does for a STATUS the server rejected. */
+  readonly statusRejected?: boolean;
+  /**
+   * Make `fetchOne` and `search` answer `undefined`, as imapflow does when it has
+   * no mailbox selected — the connection closed after the lock was taken.
+   */
+  readonly noMailboxSelected?: boolean;
 }
 
 function makeFakeImap(opts: FakeImapOptions = {}): {
@@ -86,7 +93,7 @@ function makeFakeImap(opts: FakeImapOptions = {}): {
     },
     status: async (mailbox: string, query: unknown) => {
       calls.push({ op: "status", args: [mailbox, query] });
-      return { messages: opts.total ?? 0 };
+      return opts.statusRejected === true ? false : { messages: opts.total ?? 0 };
     },
     fetch: async function* (range: unknown, query: unknown, options?: unknown) {
       calls.push({ op: "fetch", args: [range, query, options] });
@@ -99,10 +106,16 @@ function makeFakeImap(opts: FakeImapOptions = {}): {
       if (opts.fetchOneThrows === true) {
         throw new Error("boom");
       }
+      if (opts.noMailboxSelected === true) {
+        return undefined;
+      }
       return opts.fetchOne ?? false;
     },
     search: async (query: unknown, options?: unknown) => {
       calls.push({ op: "search", args: [query, options] });
+      if (opts.noMailboxSelected === true) {
+        return undefined;
+      }
       return opts.searchUids ?? [];
     },
   };
@@ -237,6 +250,15 @@ describe("createImapFlowClient", () => {
       expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
     });
 
+    it("reads a STATUS the server rejected as an empty mailbox, without fetching", async () => {
+      // imapflow answers `false` there. Its 2.x declarations made that visible;
+      // the read is the one 1.x already produced at runtime. The fetch would
+      // yield a message, so a missed `false` branch would not return [].
+      const fake = makeFakeImap({ statusRejected: true, messages: [makeMessage(1, "a")] });
+      expect(await createImapFlowClient(imapConfig, fake.factory).list({})).toEqual([]);
+      expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
+    });
+
     it("fetches the last `limit` messages and returns them most-recent first", async () => {
       const fake = makeFakeImap({
         total: 100,
@@ -275,6 +297,17 @@ describe("createImapFlowClient", () => {
       expect(await createImapFlowClient(imapConfig, fake.factory).get(404)).toBeNull();
     });
 
+    it("fails, rather than answering 'no such message', when no mailbox is selected", async () => {
+      // A dropped connection is not an answer. Under imapflow 1.x this reached
+      // toMessageMeta and failed as a TypeError; it must still fail.
+      const fake = makeFakeImap({ noMailboxSelected: true });
+      await expect(createImapFlowClient(imapConfig, fake.factory).get(7, "Sent")).rejects.toThrow(
+        'mailbox "Sent" is no longer selected',
+      );
+      expect(fake.released).toBe(1);
+      expect(fake.loggedOut).toBe(1);
+    });
+
     it("fetches by uid and stamps the mailbox it was read from", async () => {
       const fake = makeFakeImap({ fetchOne: makeMessage(12, "hi") });
       const meta = await createImapFlowClient(imapConfig, fake.factory).get(12, "Sent");
@@ -302,6 +335,15 @@ describe("createImapFlowClient", () => {
       expect(await createImapFlowClient(imapConfig, fake.factory).search({ query: "q" })).toEqual(
         [],
       );
+    });
+
+    it("fails, rather than answering 'no results', when no mailbox is selected", async () => {
+      const fake = makeFakeImap({ noMailboxSelected: true });
+      await expect(
+        createImapFlowClient(imapConfig, fake.factory).search({ query: "q" }),
+      ).rejects.toThrow('mailbox "INBOX" is no longer selected');
+      expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
+      expect(fake.loggedOut).toBe(1);
     });
 
     it("takes the newest `limit` uids and fetches them descending", async () => {
