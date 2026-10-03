@@ -1,8 +1,13 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { checkConnectorConsent, connectorDirs } from "./check-connector-consent.ts";
+import {
+  type ConsentViolation,
+  checkConnectorConsent,
+  connectorDirs,
+  report,
+} from "./check-connector-consent.ts";
 
 /** A one-connector fixture tree whose sources use `eol` as their line ending. */
 function fixture(eol: "\n" | "\r\n", opts: { registers: boolean }): string {
@@ -138,5 +143,84 @@ describe("checkConnectorConsent — rules over a whole tree", () => {
       "connectors/acme/nimbus.extension.json": JSON.stringify({ hitlRequired: ["delete"] }),
     });
     expect(checkConnectorConsent(root).map((v) => v.rule)).toEqual(["mutation-declared"]);
+  });
+
+  test("a scanned base that is a file rather than a directory contributes nothing", () => {
+    // `shared` exists but is a plain file: there is nothing under it to walk, and its own
+    // content is not a source file of the tree.
+    const root = tree({
+      "connectors/acme/src/server.ts": READ_ONLY_SERVER,
+      "connectors/acme/nimbus.extension.json": READ_ONLY_MANIFEST,
+      shared: 'setConnectorMode("gateway");\n',
+    });
+    expect(checkConnectorConsent(root)).toEqual([]);
+  });
+});
+
+describe("report", () => {
+  const MODE: ConsentViolation = {
+    rule: "mode-setter-confined",
+    file: "connectors/acme/src/regate.ts",
+    reason: "names setConnectorMode outside its sanctioned callers",
+  };
+  const MUTATION: ConsentViolation = {
+    rule: "mutation-declared",
+    file: "connectors/beta/nimbus.extension.json",
+    reason: "declares write or delete in hitlRequired but no file in the connector registers one",
+  };
+
+  /** Run `report` with the console captured; return its exit code and what it printed. */
+  function captured(
+    violations: readonly ConsentViolation[],
+    mutationBlocking?: boolean,
+  ): { code: number; errors: unknown[][]; logs: unknown[][] } {
+    const error = spyOn(console, "error").mockImplementation(() => undefined);
+    const log = spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const code =
+        mutationBlocking === undefined ? report(violations) : report(violations, mutationBlocking);
+      return { code, errors: [...error.mock.calls], logs: [...log.mock.calls] };
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+    }
+  }
+
+  test("a clean tree exits 0 with an ok verdict and no annotations", () => {
+    expect(captured([])).toEqual({
+      code: 0,
+      errors: [],
+      logs: [["connector consent: ok (0 advisory)"]],
+    });
+  });
+
+  test("every finding is an ::error annotation, and any one of them fails the gate", () => {
+    expect(captured([MODE, MUTATION])).toEqual({
+      code: 1,
+      errors: [
+        [`::error file=${MODE.file}::${MODE.reason}`],
+        [`::error file=${MUTATION.file}::${MUTATION.reason}`],
+      ],
+      logs: [["connector consent: 2 violation(s)"]],
+    });
+  });
+
+  test("an advisory mutation rule warns about its findings without failing the gate", () => {
+    expect(captured([MUTATION], false)).toEqual({
+      code: 0,
+      errors: [[`::warning file=${MUTATION.file}::${MUTATION.reason}`]],
+      logs: [["connector consent: ok (1 advisory)"]],
+    });
+  });
+
+  test("an advisory mutation rule never softens a mode-setter finding", () => {
+    expect(captured([MODE, MUTATION], false)).toEqual({
+      code: 1,
+      errors: [
+        [`::error file=${MODE.file}::${MODE.reason}`],
+        [`::warning file=${MUTATION.file}::${MUTATION.reason}`],
+      ],
+      logs: [["connector consent: 1 violation(s)"]],
+    });
   });
 });

@@ -65,18 +65,49 @@ export function runBanner(count: number): string {
   );
 }
 
-if (import.meta.main) {
-  const files = await findSandboxTests();
+/** What {@link runSandboxContract} needs from the outside world. Replaced in tests. */
+export interface SandboxRunDeps {
+  readonly findTests: () => Promise<string[]>;
+  readonly spawn: (
+    argv: string[],
+    opts: { readonly cwd: string; readonly env: Record<string, string | undefined> },
+  ) => { readonly exited: Promise<number> };
+  readonly log: (line: string) => void;
+}
+
+const REAL_DEPS: SandboxRunDeps = {
+  findTests: () => findSandboxTests(),
+  spawn: (argv, opts) => Bun.spawn(argv, { ...opts, stdout: "inherit", stderr: "inherit" }),
+  log: (line) => {
+    console.error(line);
+  },
+};
+
+/**
+ * Discover the sandbox tests, announce the run, and `bun test` them with the harness flag set.
+ * Returns the exit code: 1 when discovery found nothing, otherwise whatever the run exited with.
+ *
+ * Split out of the `import.meta.main` block for the same reason as {@link targetsFor}, with the
+ * spawn injected: the env passthrough is the reason this script exists, and asserting it should
+ * not need ~79 live vendor endpoints.
+ */
+export async function runSandboxContract(
+  argv: readonly string[],
+  deps: SandboxRunDeps = REAL_DEPS,
+): Promise<number> {
+  const files = await deps.findTests();
   if (files.length === 0) {
-    console.error(`No sandbox tests matched ${CONNECTOR_GLOB} under ${REPO_ROOT}.`);
-    process.exit(1);
+    deps.log(`No sandbox tests matched ${CONNECTOR_GLOB} under ${REPO_ROOT}.`);
+    return 1;
   }
-  console.error(runBanner(files.length));
-  const proc = Bun.spawn(["bun", "test", ...targetsFor(files, process.argv.slice(2))], {
+  deps.log(runBanner(files.length));
+  const proc = deps.spawn(["bun", "test", ...targetsFor(files, argv)], {
     cwd: REPO_ROOT,
-    stdout: "inherit",
-    stderr: "inherit",
     env: { ...process.env, NIMBUS_TEST_HARNESS: "1" },
   });
-  process.exit(await proc.exited);
+  return await proc.exited;
+}
+
+if (import.meta.main) {
+  process.exit(await runSandboxContract(process.argv.slice(2)));
 }

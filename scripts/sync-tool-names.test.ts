@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findToolNamesDrift, syncToolNames } from "./sync-tool-names.ts";
+import { findToolNamesDrift, main, syncToolNames } from "./sync-tool-names.ts";
 
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 
@@ -122,5 +122,67 @@ describe("syncToolNames", () => {
     const before = readFileSync(path, "utf8");
     expect(await syncToolNames(root)).toEqual([]);
     expect(readFileSync(path, "utf8")).toBe(before);
+  });
+});
+
+describe("main (the script's two modes)", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Run the script against a one-connector fixture; return its exit code, output and file. */
+  async function run(
+    argv: readonly string[],
+    opts: { declared: readonly string[]; registered: readonly string[] },
+  ): Promise<{ code: number; out: string[]; file: string; before: string }> {
+    const root = fixture(opts);
+    roots.push(root);
+    const file = join(root, "connectors", "acme", "src", "tools.ts");
+    const before = readFileSync(file, "utf8");
+    const out: string[] = [];
+    const code = await main(argv, root, (text) => {
+      out.push(text);
+    });
+    return { code, out, file, before };
+  }
+
+  test("--check names each drifted connector, rewrites nothing, and exits 1", async () => {
+    const r = await run(["bun", "sync-tool-names.ts", "--check"], {
+      declared: ["acme_list"],
+      registered: ["acme_list", "acme_get"],
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([
+      `::error file=${r.file}::acme declares [acme_list] but registers [acme_list, acme_get]\n`,
+      "tool names: 1 out of date — run `bun run sync:tool-names`\n",
+    ]);
+    expect(readFileSync(r.file, "utf8")).toBe(r.before);
+  });
+
+  test("--check on declarations in step reports ok and exits 0", async () => {
+    const r = await run(["--check"], { declared: ["acme_list"], registered: ["acme_list"] });
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual(["tool names: ok\n"]);
+  });
+
+  test("without --check it rewrites the drifted declaration and names it", async () => {
+    const r = await run(["bun", "sync-tool-names.ts"], {
+      declared: ["acme_list"],
+      registered: ["acme_list", "acme_get"],
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual(["tool names: updated acme\n"]);
+    expect(readFileSync(r.file, "utf8")).toContain(
+      'export const ACME_TOOL_NAMES = [\n  "acme_list",\n  "acme_get",\n] as const;',
+    );
+  });
+
+  test("without --check on declarations in step says so and leaves the file alone", async () => {
+    const r = await run([], { declared: ["acme_list"], registered: ["acme_list"] });
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual(["tool names: already in sync\n"]);
+    expect(readFileSync(r.file, "utf8")).toBe(r.before);
   });
 });

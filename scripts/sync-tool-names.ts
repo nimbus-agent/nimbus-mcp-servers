@@ -146,25 +146,44 @@ export async function syncToolNames(root: string = ROOT): Promise<string[]> {
   return drift.map((d) => d.connector);
 }
 
-if (import.meta.main) {
-  const drift = await findToolNamesDrift();
-  if (process.argv.includes("--check")) {
+/**
+ * The script: with `--check`, report the drift and return 1 when there is any; without it,
+ * rewrite the stale declarations. Returns the process exit code.
+ *
+ * Split out of the `import.meta.main` block so it can be tested — that guard is false under an
+ * import, so anything inside it is unreachable to every in-process test (the reason
+ * `check-connector-deps.ts` has `report()`).
+ */
+export async function main(
+  argv: readonly string[],
+  root: string = ROOT,
+  write: (text: string) => void = (text) => {
+    process.stdout.write(text);
+  },
+): Promise<number> {
+  if (argv.includes("--check")) {
+    const drift = await findToolNamesDrift(root);
     for (const item of drift) {
-      process.stdout.write(
+      write(
         `::error file=${item.file}::${item.connector} declares [${item.declared.join(", ")}] but registers [${item.registered.join(", ")}]\n`,
       );
     }
-    process.stdout.write(
+    write(
       drift.length === 0
         ? "tool names: ok\n"
         : `tool names: ${String(drift.length)} out of date — run \`bun run sync:tool-names\`\n`,
     );
-    process.exit(drift.length === 0 ? 0 : 1);
+    return drift.length === 0 ? 0 : 1;
   }
-  const updated = await syncToolNames();
-  process.stdout.write(
+  const updated = await syncToolNames(root);
+  write(
     updated.length === 0
       ? "tool names: already in sync\n"
       : `tool names: updated ${updated.join(", ")}\n`,
   );
+  return 0;
+}
+
+if (import.meta.main) {
+  process.exit(await main(process.argv));
 }

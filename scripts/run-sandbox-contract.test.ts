@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { findSandboxTests } from "./run-sandbox-contract.ts";
+import { join, resolve } from "node:path";
+import { withEnv } from "./connector-tool-harness.ts";
+import {
+  findSandboxTests,
+  runBanner,
+  runSandboxContract,
+  type SandboxRunDeps,
+} from "./run-sandbox-contract.ts";
 
 describe("findSandboxTests", () => {
   test("finds every connector's sandbox test in the real tree", async () => {
@@ -40,5 +46,77 @@ describe("findSandboxTests", () => {
     writeFileSync(join(testDir, "server.test.ts"), "");
     writeFileSync(join(testDir, "sandbox-helpers.test.ts"), "");
     expect(await findSandboxTests(root)).toEqual(["connectors/demo/test/sandbox.test.ts"]);
+  });
+});
+
+describe("runSandboxContract", () => {
+  const REPO_ROOT = resolve(import.meta.dir, "..");
+
+  interface Spawned {
+    readonly argv: string[];
+    readonly cwd: string;
+    readonly env: Record<string, string | undefined>;
+  }
+
+  /** Recording deps: discovery answers `found`, and the spawned run exits with `exitCode`. */
+  function deps(
+    found: string[],
+    exitCode = 0,
+  ): { deps: SandboxRunDeps; spawned: Spawned[]; logged: string[] } {
+    const spawned: Spawned[] = [];
+    const logged: string[] = [];
+    return {
+      spawned,
+      logged,
+      deps: {
+        findTests: () => Promise.resolve(found),
+        spawn: (argv, opts) => {
+          spawned.push({ argv, cwd: opts.cwd, env: opts.env });
+          return { exited: Promise.resolve(exitCode) };
+        },
+        log: (line) => {
+          logged.push(line);
+        },
+      },
+    };
+  }
+
+  test("refuses to run, and spawns nothing, when discovery finds no sandbox test", async () => {
+    const d = deps([]);
+    expect(await runSandboxContract([], d.deps)).toBe(1);
+    expect(d.spawned).toEqual([]);
+    expect(d.logged).toEqual([
+      `No sandbox tests matched connectors/*/test/sandbox.test.ts under ${REPO_ROOT}.`,
+    ]);
+  });
+
+  test("runs every discovered file under bun test from the repo root, with the harness flag", async () => {
+    const d = deps(["connectors/a/test/sandbox.test.ts", "connectors/b/test/sandbox.test.ts"], 3);
+    // The flag is forced on even when the caller's environment says otherwise; everything else
+    // in the environment is passed through.
+    await withEnv({ NIMBUS_TEST_HARNESS: "0", NIMBUS_SANDBOX_PROBE_MARKER: "kept" }, async () => {
+      // The run's own exit code is what the script exits with.
+      expect(await runSandboxContract([], d.deps)).toBe(3);
+    });
+    expect(d.logged).toEqual([runBanner(2)]);
+    expect(d.spawned).toHaveLength(1);
+    const [run] = d.spawned;
+    expect(run?.argv).toEqual([
+      "bun",
+      "test",
+      join("connectors", "a", "test", "sandbox.test.ts"),
+      join("connectors", "b", "test", "sandbox.test.ts"),
+    ]);
+    expect(run?.cwd).toBe(REPO_ROOT);
+    expect(run?.env["NIMBUS_TEST_HARNESS"]).toBe("1");
+    expect(run?.env["NIMBUS_SANDBOX_PROBE_MARKER"]).toBe("kept");
+  });
+
+  test("extra argv scopes the run to exactly those paths", async () => {
+    const d = deps(["connectors/a/test/sandbox.test.ts", "connectors/b/test/sandbox.test.ts"]);
+    expect(await runSandboxContract(["connectors/b/test/sandbox.test.ts"], d.deps)).toBe(0);
+    expect(d.spawned.map((s) => s.argv)).toEqual([
+      ["bun", "test", "connectors/b/test/sandbox.test.ts"],
+    ]);
   });
 });

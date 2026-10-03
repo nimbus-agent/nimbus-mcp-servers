@@ -231,11 +231,20 @@ export function checkConnectorConsent(
   return out;
 }
 
-if (import.meta.main) {
-  const violations = checkConnectorConsent();
-  const blocking = violations.filter(
-    (v) => v.rule !== "mutation-declared" || MUTATION_RULE_BLOCKING,
-  );
+/**
+ * Print the verdict and return the process exit code. A `mutation-declared` finding blocks only
+ * while `mutationBlocking` (default {@link MUTATION_RULE_BLOCKING}) holds; otherwise it is printed
+ * as a warning and counted as advisory.
+ *
+ * Split out of the `import.meta.main` block so it can be tested — that guard is false under an
+ * import, so anything inside it is unreachable to every in-process test (the reason
+ * `check-connector-deps.ts` has `report()`).
+ */
+export function report(
+  violations: readonly ConsentViolation[],
+  mutationBlocking: boolean = MUTATION_RULE_BLOCKING,
+): number {
+  const blocking = violations.filter((v) => v.rule !== "mutation-declared" || mutationBlocking);
   for (const v of violations) {
     const level = blocking.includes(v) ? "error" : "warning";
     console.error(`::${level} file=${v.file}::${v.reason}`);
@@ -246,5 +255,9 @@ if (import.meta.main) {
       ? `connector consent: ok (${String(advisory)} advisory)`
       : `connector consent: ${String(blocking.length)} violation(s)`,
   );
-  process.exit(blocking.length > 0 ? 1 : 0);
+  return blocking.length > 0 ? 1 : 0;
+}
+
+if (import.meta.main) {
+  process.exit(report(checkConnectorConsent()));
 }
