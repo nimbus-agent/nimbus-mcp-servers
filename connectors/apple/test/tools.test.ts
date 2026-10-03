@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+  captureStandaloneTools,
+  type StandaloneCapture,
+  withEnv,
+} from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import type { CalDavClient } from "../src/caldav-core.ts";
 import { APPLE_TOOL_NAMES, registerAppleTools } from "../src/tools.ts";
@@ -245,5 +250,89 @@ describe("registerAppleTools (all 8 tools — Task C3)", () => {
     expect(result.deleted).toBe(true);
     expect(deleteCalls).toHaveLength(1);
     expect(deleteCalls[0]).toBe("/calendars/work/c3-uid-001.ics");
+  });
+});
+
+describe("registerAppleTools standalone: one write scope and one budget for mail and calendar", () => {
+  // The file-level hook locked gateway mode; these cases are about the standalone gate.
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+
+  /** Register for an eliciting client that approves, under `env`; record what reached the fakes. */
+  async function standalone(env: Record<string, string | undefined>) {
+    const sent: unknown[] = [];
+    const cal = fakeCalendar();
+    let capture: StandaloneCapture | undefined;
+    await withEnv(
+      { NIMBUS_MCP_AUDIT_LOG: undefined, NIMBUS_MCP_WRITE_BUDGET: undefined, ...env },
+      () => {
+        capture = captureStandaloneTools(
+          (server: never) =>
+            registerAppleTools(server, {
+              client: { list: async () => [], get: async () => null, search: async () => [] },
+              mailer: {
+                send: async (i) => {
+                  sent.push(i);
+                  return { messageId: "m1", accepted: ["ada@example.com"], rejected: [] };
+                },
+              },
+              draftAppender: { appendDraft: async () => ({ uid: 1, mailbox: "Drafts" }) },
+              calendar: cal.client,
+              now: () => "20260601T000000Z",
+            }),
+          { elicitation: true },
+        );
+      },
+    );
+    if (capture === undefined) throw new Error("registration did not run");
+    return { ...capture, sent, putCalls: cal.putCalls };
+  }
+
+  const MAIL = { to: "ada@example.com", subject: "s", body: "b" };
+  const EVENT = {
+    calendar: "Work",
+    summary: "Standup",
+    start: "20260601T100000Z",
+    end: "20260601T103000Z",
+    uid: "u1",
+  };
+
+  it("accepts a scope naming a recipient AND a calendar, and gates each write by its term", async () => {
+    // Two registrars declaring one kind each made this scope fatal at startup: the calendar
+    // registrar rejected the recipient term, and the mail registrar the calendar one.
+    const { tools, prompts, sent, putCalls } = await standalone({
+      NIMBUS_MCP_APPLE_WRITE_SCOPE: "recipient:ada@example.com,calendar:Work",
+    });
+    expect(await tools.callJson("apple_mail_send", MAIL)).toEqual({
+      messageId: "m1",
+      accepted: ["ada@example.com"],
+      rejected: [],
+    });
+    expect(await tools.callJson("apple_calendar_event_create", EVENT)).toMatchObject({ uid: "u1" });
+    expect(await tools.callJson("apple_mail_send", { ...MAIL, to: "bob@example.com" })).toEqual({
+      ok: false,
+      error: "out of scope: recipient:bob@example.com is not in NIMBUS_MCP_APPLE_WRITE_SCOPE",
+    });
+    expect(sent).toHaveLength(1);
+    expect(putCalls.map((c) => c.uid)).toEqual(["u1"]);
+    expect(prompts.map((p) => p.split("\n")[0])).toEqual([
+      "Nimbus is about to perform apple.mail.send with:",
+      "Nimbus is about to perform apple.calendar.event.create with:",
+    ]);
+  });
+
+  it("spends one write budget across mail and calendar, not one per kind", async () => {
+    const { tools, putCalls } = await standalone({
+      NIMBUS_MCP_APPLE_WRITE_SCOPE: "recipient:ada@example.com,calendar:Work",
+      NIMBUS_MCP_WRITE_BUDGET: "1",
+    });
+    await tools.call("apple_mail_send", MAIL);
+    expect(await tools.callJson("apple_calendar_event_create", EVENT)).toEqual({
+      ok: false,
+      error: "write budget exhausted for this session",
+    });
+    expect(putCalls).toEqual([]);
   });
 });

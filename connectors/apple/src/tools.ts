@@ -12,7 +12,11 @@ import {
   formatAddress,
 } from "./apple-mail-core.ts";
 import type { CalDavClient } from "./caldav-core.ts";
-import { type CalendarToolConfig, registerAppleCalendarTools } from "./calendar-tools.ts";
+import {
+  APPLE_WRITE_SCOPE,
+  type CalendarToolConfig,
+  registerAppleCalendarTools,
+} from "./calendar-tools.ts";
 
 // ---------------------------------------------------------------------------
 // Tool descriptions
@@ -54,13 +58,10 @@ export function registerAppleTools(
 ): void {
   const { client, mailer, draftAppender, calendar, now, calendarConfig } = params;
 
-  // The four shared email tools (list/get/search/mail_send) via the shared kit.
-  const registerWriteTool = createWriteToolRegistrar(server, {
-    connector: "apple",
-    scopeEnv: "NIMBUS_MCP_APPLE_WRITE_SCOPE",
-    scopeKinds: ["recipient"],
-  });
+  // ONE registrar for every apple write, mail and calendar alike: see APPLE_WRITE_SCOPE.
+  const registerWriteTool = createWriteToolRegistrar(server, APPLE_WRITE_SCOPE);
 
+  // The four shared email tools (list/get/search/mail_send) via the shared kit.
   registerEmailConnectorTools({
     server,
     registerWriteTool,
@@ -94,6 +95,7 @@ export function registerAppleTools(
     calendar,
     now,
     config: calendarConfig,
+    registerWriteTool,
   });
 }
 
