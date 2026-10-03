@@ -10,7 +10,10 @@ const ID_RE = /^[a-z0-9-]+$/;
  *
  * A registration CALL, or the registrar handed to a shared kit — not a bare substring, which the
  * registrar's own `const registerWriteTool = ...` would satisfy even with nothing registered.
- * Kept in step with the twin in check-connector-consent.ts.
+ *
+ * The ONE copy. `audit:connector-consent` (scripts/check-connector-consent.ts) imports it rather
+ * than keeping a twin, so the launcher's runtime verdict and the audit's static one cannot drift.
+ * They had: the audit's twin learned to tolerate a carriage return (below) and this copy never did.
  *
  * Deliberately NOT a regular expression. The previous pattern was
  * `^\s*register[A-Za-z]*WriteTool\(` under `/m`, and it drew two rounds of ReDoS reports. The
@@ -25,9 +28,15 @@ const ID_RE = /^[a-z0-9-]+$/;
  * bounded work, no star sits next to an overlapping literal, and the accepted language is
  * unchanged — including the trailing-comma form, which still requires the comma to end the line.
  */
-function registersWriteTool(src: string): boolean {
+export function registersWriteTool(src: string): boolean {
   for (const line of src.split("\n")) {
-    const t = line.trimStart();
+    // trim(), not trimStart(): the equality below is exact, and a CRLF checkout leaves a trailing
+    // carriage return that breaks it. Observed in the consent audit on the first run of this repo
+    // on its own, before .gitattributes existed: it reported imap and protonmail as declaring
+    // ungated writes while both register through the kit, on a line reading `registerWriteTool,`
+    // plus a CR. That failed SAFE (a false finding there, a false refusal here — never a false
+    // green), but a verdict that depends on the checkout's line endings is waiting to be wrong.
+    const t = line.trim();
     if (t === "registerWriteTool,") return true;
     if (!t.startsWith("register")) continue;
     const at = t.indexOf("WriteTool(");

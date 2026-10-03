@@ -1,6 +1,10 @@
 #!/usr/bin/env bun
 import { type Dirent, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+// The launcher's own line scan, not a twin of it, so the two cannot disagree about what a
+// registration line looks like. Which FILES they scan still differs: this audit reads every source
+// file of a connector, the launcher only its server.ts and tools.ts.
+import { registersWriteTool } from "../standalone/src/launcher.ts";
 
 export type ConsentViolation = {
   readonly rule: "mode-setter-confined" | "mutation-declared";
@@ -80,47 +84,6 @@ function codeOnly(src: string): string {
       return !(t.startsWith("*") || t.startsWith("//") || t.startsWith("/*"));
     })
     .join("\n");
-}
-
-/**
- * Does this source register a write tool?
- *
- * A registration CALL, or the registrar handed to a shared kit — not a bare substring, which the
- * registrar's own `const registerWriteTool = ...` would satisfy even with nothing registered.
- * Kept in step with the twin in the standalone launcher's copy.
- *
- * Deliberately NOT a regular expression. The previous pattern was
- * `^\s*register[A-Za-z]*WriteTool\(` under `/m`, and it drew two rounds of ReDoS reports. The
- * first was real: `\s` matches a newline, so under `/m` a run of n newlines gave n start
- * positions each able to consume the whole run — quadratic, measured at 21s for 128k newlines.
- * Narrowing the class to horizontal whitespace made it linear, and bounding the star to
- * `{0,40}` kept it linear, but `typescript:S8786` reported both: a star immediately followed by
- * a literal built from the same character class is the shape the rule looks for, bounded or not,
- * and the shape is worth avoiding even where this engine happens not to backtrack.
- *
- * Scanning line by line removes the construct rather than arguing with the analyser. Each line is
- * bounded work, no star sits next to an overlapping literal, and the accepted language is
- * unchanged — including the trailing-comma form, which still requires the comma to end the line.
- */
-function registersWriteTool(src: string): boolean {
-  for (const line of src.split("\n")) {
-    // trim(), not trimStart(): the equality below is exact, and a CRLF checkout leaves a trailing
-    // carriage return that breaks it. Observed on the first standalone run of this repo, before .gitattributes
-    // existed — imap and protonmail were both reported as declaring ungated writes while both do
-    // register through the kit, on a line reading `registerWriteTool,` plus a CR. It failed SAFE (a false
-    // finding, not a false green) because every other check here is substring-based, but a gate
-    // whose verdict depends on the checkout's line endings is a gate waiting to be wrong.
-    const t = line.trim();
-    if (t === "registerWriteTool,") return true;
-    if (!t.startsWith("register")) continue;
-    const at = t.indexOf("WriteTool(");
-    if (at < 0) continue;
-    // Everything between `register` and `WriteTool(` must be letters, so `registerFoo.WriteTool(`
-    // does not count. Anchored at BOTH ends with nothing following, so it carries none of the
-    // ambiguity the old pattern did.
-    if (/^[A-Za-z]*$/.test(t.slice("register".length, at))) return true;
-  }
-  return false;
 }
 
 /** `connectors/<name>/src/...` → `<name>`. */

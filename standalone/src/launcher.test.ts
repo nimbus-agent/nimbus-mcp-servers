@@ -14,7 +14,12 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { resolveConnectorEntry, runStandalone, standaloneEligibility } from "./launcher.ts";
+import {
+  registersWriteTool,
+  resolveConnectorEntry,
+  runStandalone,
+  standaloneEligibility,
+} from "./launcher.ts";
 
 describe("resolveConnectorEntry", () => {
   test("resolves a known connector id to its server entry", () => {
@@ -128,6 +133,32 @@ describe("the hardened-registration scan runs in linear time", () => {
     const root = fixture("const registerWriteTool = makeRegistrar();\n");
     expect(standaloneEligibility("c", root).eligible).toBe(false);
   });
+
+  test("a CRLF checkout's registrar-handed-to-a-kit line still counts as hardened", () => {
+    // trim(), not trimStart(): `registerWriteTool,` plus a carriage return was refused here, while
+    // the consent audit's own copy of this scan — which already trimmed both ends — called the
+    // same source hardened. The audit now imports this one.
+    const root = fixture("runKit({\r\n  registerWriteTool,\r\n});\r\n");
+    expect(standaloneEligibility("c", root)).toEqual({ eligible: true, reason: "hardened" });
+  });
+});
+
+describe("registersWriteTool, the one scan the launcher and audit:connector-consent share", () => {
+  const CASES: readonly (readonly [label: string, src: string, expected: boolean])[] = [
+    ["a registration call", "registerWriteTool(\n", true],
+    ["a connector-named registrar call", "\t  registerJiraWriteTool(server, {});", true],
+    ["the registrar handed to a kit", "runKit({\n  registerWriteTool,\n});", true],
+    ["the registrar handed to a kit, CRLF", "runKit({\r\n  registerWriteTool,\r\n});\r\n", true],
+    ["the registrar's own declaration", "const registerWriteTool = makeRegistrar();", false],
+    ["a dotted name between register and WriteTool(", "registerFoo.WriteTool(x);", false],
+    ["the trailing-comma form not ending its line", "registerWriteTool, other", false],
+    ["no source at all", "", false],
+  ];
+  for (const [label, src, expected] of CASES) {
+    test(label, () => {
+      expect(registersWriteTool(src)).toBe(expected);
+    });
+  }
 });
 
 describe("runStandalone", () => {
