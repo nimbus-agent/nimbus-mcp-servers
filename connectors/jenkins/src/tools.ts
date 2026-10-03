@@ -160,6 +160,21 @@ export function registerJenkinsTools(
     },
   );
 
+  /**
+   * A state-changing POST to `<job root><suffix>`, carrying the CSRF crumb Jenkins requires for
+   * one. A failure throws `Jenkins <action> <status>: <body>`.
+   */
+  async function postToJob(jobName: string, suffix: string, action: string): Promise<void> {
+    const base = jenkinsBaseUrl();
+    const auth = jenkinsAuthHeader();
+    const crumb = await getJenkinsCrumb(base, auth);
+    const url = `${jobApiRoot(base, jobName)}${suffix}`;
+    const res = await jenkinsPost(url, auth, crumb);
+    if (!res.ok) {
+      throw new Error(`Jenkins ${action} ${String(res.status)}: ${res.text.slice(0, 400)}`);
+    }
+  }
+
   registerWriteTool(
     "jenkins_build_trigger",
     {
@@ -170,14 +185,7 @@ export function registerJenkinsTools(
     "Trigger a new build for a job.",
     jobNameSchema,
     async (parsed) => {
-      const base = jenkinsBaseUrl();
-      const auth = jenkinsAuthHeader();
-      const crumb = await getJenkinsCrumb(base, auth);
-      const url = `${jobApiRoot(base, parsed.jobName)}/build`;
-      const res = await jenkinsPost(url, auth, crumb);
-      if (!res.ok) {
-        throw new Error(`Jenkins trigger ${String(res.status)}: ${res.text.slice(0, 400)}`);
-      }
+      await postToJob(parsed.jobName, "/build", "trigger");
       return jsonResult({ ok: true, jobName: parsed.jobName });
     },
   );
@@ -195,14 +203,7 @@ export function registerJenkinsTools(
       buildNumber: z.number().int().min(1),
     }),
     async (parsed) => {
-      const base = jenkinsBaseUrl();
-      const auth = jenkinsAuthHeader();
-      const crumb = await getJenkinsCrumb(base, auth);
-      const url = `${jobApiRoot(base, parsed.jobName)}/${String(parsed.buildNumber)}/stop`;
-      const res = await jenkinsPost(url, auth, crumb);
-      if (!res.ok) {
-        throw new Error(`Jenkins abort ${String(res.status)}: ${res.text.slice(0, 400)}`);
-      }
+      await postToJob(parsed.jobName, `/${String(parsed.buildNumber)}/stop`, "abort");
       return jsonResult({ ok: true, jobName: parsed.jobName, buildNumber: parsed.buildNumber });
     },
   );

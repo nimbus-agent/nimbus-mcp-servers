@@ -6,6 +6,7 @@ import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   encodeBasicAuthHeader,
+  type McpListResult,
   mcpJsonResultIfOk,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
@@ -27,6 +28,12 @@ function splitRepoFull(full: string): { workspace: string; repoSlug: string } {
   return { workspace: full.slice(0, i), repoSlug: full.slice(i + 1) };
 }
 
+/** `/repositories/<workspace>/<repo_slug>` for a `workspace/repo_slug` full name, both encoded. */
+function repoPath(repoFull: string): string {
+  const { workspace, repoSlug } = splitRepoFull(repoFull);
+  return `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}`;
+}
+
 async function bbFetch(path: string, init?: RequestInit): Promise<RestFetchResult> {
   const url = joinApiPath(BB_API, path);
   const baseHeaders: Record<string, string> = {
@@ -40,6 +47,20 @@ async function bbFetch(path: string, init?: RequestInit): Promise<RestFetchResul
     headers,
   });
   return toRestFetchResult(res);
+}
+
+/** A Bitbucket request answered as the tool result; Bitbucket's status and body on failure. */
+async function bbResult(path: string, init?: RequestInit): Promise<McpListResult> {
+  const res = await bbFetch(path, init);
+  return mcpJsonResultIfOk("Bitbucket", res);
+}
+
+/**
+ * One page of a paged list: the `next` URL from an earlier response when the caller passes one
+ * back, otherwise the first page — which `firstPage` builds only in that case.
+ */
+async function bbPage(page: string | undefined, firstPage: () => string): Promise<McpListResult> {
+  return bbResult(page?.startsWith("http") ? page : firstPage());
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
@@ -90,17 +111,13 @@ export function registerBitbucketTools(
     "bitbucket_repo_list",
     "List repositories where the authenticated user is a member.",
     bitbucketRepoListSchema,
-    async (parsed) => {
-      if (parsed.page?.startsWith("http")) {
-        const res = await bbFetch(parsed.page);
-        return mcpJsonResultIfOk("Bitbucket", res);
-      }
-      const qs = new URLSearchParams();
-      qs.set("role", "member");
-      qs.set("pagelen", String(parsed.pagelen ?? 30));
-      const res = await bbFetch(`/repositories?${qs.toString()}`);
-      return mcpJsonResultIfOk("Bitbucket", res);
-    },
+    async (parsed) =>
+      bbPage(parsed.page, () => {
+        const qs = new URLSearchParams();
+        qs.set("role", "member");
+        qs.set("pagelen", String(parsed.pagelen ?? 30));
+        return `/repositories?${qs.toString()}`;
+      }),
   );
 
   const bitbucketPrListSchema = repoFullArg.extend({
@@ -113,22 +130,17 @@ export function registerBitbucketTools(
     "bitbucket_pr_list",
     "List pull requests for a repository.",
     bitbucketPrListSchema,
-    async (parsed) => {
-      if (parsed.page?.startsWith("http")) {
-        const res = await bbFetch(parsed.page);
-        return mcpJsonResultIfOk("Bitbucket", res);
-      }
-      const { workspace, repoSlug } = splitRepoFull(parsed.repoFull);
-      const base = `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}/pullrequests`;
-      const qs = new URLSearchParams();
-      qs.set("pagelen", String(parsed.pagelen ?? 30));
-      qs.set("sort", "-updated_on");
-      if (parsed.state !== undefined) {
-        qs.set("q", `state="${parsed.state}"`);
-      }
-      const res = await bbFetch(`${base}?${qs.toString()}`);
-      return mcpJsonResultIfOk("Bitbucket", res);
-    },
+    async (parsed) =>
+      bbPage(parsed.page, () => {
+        const base = `${repoPath(parsed.repoFull)}/pullrequests`;
+        const qs = new URLSearchParams();
+        qs.set("pagelen", String(parsed.pagelen ?? 30));
+        qs.set("sort", "-updated_on");
+        if (parsed.state !== undefined) {
+          qs.set("q", `state="${parsed.state}"`);
+        }
+        return `${base}?${qs.toString()}`;
+      }),
   );
 
   const bitbucketPrGetSchema = repoFullArg.extend({
@@ -139,12 +151,8 @@ export function registerBitbucketTools(
     "bitbucket_pr_get",
     "Get a single pull request by numeric id.",
     bitbucketPrGetSchema,
-    async (parsed) => {
-      const { workspace, repoSlug } = splitRepoFull(parsed.repoFull);
-      const path = `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}/pullrequests/${String(parsed.pullRequestId)}`;
-      const res = await bbFetch(path);
-      return mcpJsonResultIfOk("Bitbucket", res);
-    },
+    async (parsed) =>
+      bbResult(`${repoPath(parsed.repoFull)}/pullrequests/${String(parsed.pullRequestId)}`),
   );
 
   const bitbucketPrMergeSchema = repoFullArg.extend({
@@ -163,8 +171,7 @@ export function registerBitbucketTools(
     "Merge a pull request.",
     bitbucketPrMergeSchema,
     async (parsed) => {
-      const { workspace, repoSlug } = splitRepoFull(parsed.repoFull);
-      const path = `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}/pullrequests/${String(parsed.pullRequestId)}/merge`;
+      const path = `${repoPath(parsed.repoFull)}/pullrequests/${String(parsed.pullRequestId)}/merge`;
       const body: Record<string, unknown> = { type: "pullrequest" };
       if (parsed.mergeStrategy !== undefined) {
         body["merge_strategy"] = parsed.mergeStrategy;
@@ -172,12 +179,11 @@ export function registerBitbucketTools(
       if (parsed.message !== undefined) {
         body["message"] = parsed.message;
       }
-      const res = await bbFetch(path, {
+      return bbResult(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      return mcpJsonResultIfOk("Bitbucket", res);
     },
   );
 
@@ -190,18 +196,13 @@ export function registerBitbucketTools(
     "bitbucket_pipeline_list",
     "List Pipelines runs for a repository.",
     bitbucketRepoPagedSchema,
-    async (parsed) => {
-      if (parsed.page?.startsWith("http")) {
-        const res = await bbFetch(parsed.page);
-        return mcpJsonResultIfOk("Bitbucket", res);
-      }
-      const { workspace, repoSlug } = splitRepoFull(parsed.repoFull);
-      const base = `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}/pipelines/`;
-      const qs = new URLSearchParams();
-      qs.set("pagelen", String(parsed.pagelen ?? 30));
-      const res = await bbFetch(`${base}?${qs.toString()}`);
-      return mcpJsonResultIfOk("Bitbucket", res);
-    },
+    async (parsed) =>
+      bbPage(parsed.page, () => {
+        const base = `${repoPath(parsed.repoFull)}/pipelines/`;
+        const qs = new URLSearchParams();
+        qs.set("pagelen", String(parsed.pagelen ?? 30));
+        return `${base}?${qs.toString()}`;
+      }),
   );
 
   const bitbucketPipelineGetSchema = repoFullArg.extend({
@@ -213,11 +214,9 @@ export function registerBitbucketTools(
     "Get a single pipeline run by UUID.",
     bitbucketPipelineGetSchema,
     async (parsed) => {
-      const { workspace, repoSlug } = splitRepoFull(parsed.repoFull);
+      const base = repoPath(parsed.repoFull);
       const encUuid = encodeURIComponent(parsed.pipelineUuid);
-      const path = `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}/pipelines/${encUuid}`;
-      const res = await bbFetch(path);
-      return mcpJsonResultIfOk("Bitbucket", res);
+      return bbResult(`${base}/pipelines/${encUuid}`);
     },
   );
 
@@ -225,17 +224,12 @@ export function registerBitbucketTools(
     "bitbucket_issue_list",
     "List issues for a repository (issue tracker must be enabled).",
     bitbucketRepoPagedSchema,
-    async (parsed) => {
-      if (parsed.page?.startsWith("http")) {
-        const res = await bbFetch(parsed.page);
-        return mcpJsonResultIfOk("Bitbucket", res);
-      }
-      const { workspace, repoSlug } = splitRepoFull(parsed.repoFull);
-      const base = `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}/issues`;
-      const qs = new URLSearchParams();
-      qs.set("pagelen", String(parsed.pagelen ?? 30));
-      const res = await bbFetch(`${base}?${qs.toString()}`);
-      return mcpJsonResultIfOk("Bitbucket", res);
-    },
+    async (parsed) =>
+      bbPage(parsed.page, () => {
+        const base = `${repoPath(parsed.repoFull)}/issues`;
+        const qs = new URLSearchParams();
+        qs.set("pagelen", String(parsed.pagelen ?? 30));
+        return `${base}?${qs.toString()}`;
+      }),
   );
 }
