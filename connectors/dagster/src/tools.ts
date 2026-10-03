@@ -1,26 +1,14 @@
 import { z } from "zod";
+import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterDagsterJobs } from "./search-filter.ts";
-
-function apiBase(): string {
-  const v = process.env["DAGSTER_BASE_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("DAGSTER_BASE_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
 
 function apiToken(): string {
   // Required for Dagster Cloud; self-hosted OSS may use a placeholder. The
   // gateway injects it regardless to keep spawn wiring uniform.
-  const v = process.env["DAGSTER_API_TOKEN"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("DAGSTER_API_TOKEN is not set");
-  }
-  return v;
+  return requiredEnv("DAGSTER_API_TOKEN");
 }
 
 const JOBS_QUERY = `
@@ -40,7 +28,7 @@ query NimbusJobs {
 `;
 
 async function dagsterGraphql<T>(query: string): Promise<T> {
-  const res = await fetch(`${apiBase()}/graphql`, {
+  const res = await fetch(`${requiredBaseUrl("DAGSTER_BASE_URL")}/graphql`, {
     method: "POST",
     headers: {
       "Dagster-Cloud-Api-Token": apiToken(),

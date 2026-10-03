@@ -1,18 +1,14 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, optionalEnv } from "../../../shared/env-json-api.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterFlagsmithFeatures } from "./search-filter.ts";
 
 const DEFAULT_API_BASE = "https://api.flagsmith.com";
 
-function apiBase(): string {
-  const v = process.env["FLAGSMITH_API_BASE"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_API_BASE : v;
-}
-
 const fsGet = createJsonGetter({
-  base: () => `${apiBase()}/api/v1`,
+  // `optionalEnv`, not `optionalBaseUrl`: a trailing slash on the override is left as given.
+  base: () => `${optionalEnv("FLAGSMITH_API_BASE", DEFAULT_API_BASE)}/api/v1`,
   label: "Flagsmith",
   headers: envAuthHeaders({ env: "FLAGSMITH_TOKEN", scheme: "Token" }),
 });

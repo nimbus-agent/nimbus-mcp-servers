@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
@@ -34,14 +35,6 @@ const GET_INCIDENTS_QUERY = `
     }
   }
 `.trim();
-
-function requireEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error(`${name} is not set`);
-  }
-  return v;
-}
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -156,8 +149,8 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
       limit: z.number().int().min(1).max(500).optional(),
     }),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const first = p.limit ?? 200;
       const after = p.cursor === undefined || p.cursor === "" ? null : p.cursor;
       const page = await fetchIncidentsPage(apiId, apiToken, first, after);
@@ -173,8 +166,8 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
       id: z.string().min(1),
     }),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const incidents = await fetchIncidents(apiId, apiToken);
       const found = incidents.find((inc) => asObject(inc)?.["incidentId"] === p.id);
       if (found === undefined) {
@@ -189,8 +182,8 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
     "Substring search across Monte Carlo incidents. Matches the query (case-insensitive) against incidentId, status, severity, and monitoredTable. Returns a `{ matches: [...] }` envelope.",
     searchToolInputSchema(200),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const incidents = await fetchIncidents(apiId, apiToken);
       const matches = filterMonteCarloIncidents(incidents, { query: p.query, limit: p.limit });
       return jsonResult({ matches });
@@ -207,8 +200,8 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
     "Acknowledge a Monte Carlo incident.",
     z.object({ incidentId: z.string().min(1) }),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       await setIncidentFeedback(apiId, apiToken, p.incidentId, "ACKNOWLEDGED");
       return jsonResult({ status: "ok", incidentId: p.incidentId });
     },
@@ -224,8 +217,8 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
     "Resolve a Monte Carlo incident.",
     z.object({ incidentId: z.string().min(1) }),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       await setIncidentFeedback(apiId, apiToken, p.incidentId, "RESOLVED");
       return jsonResult({ status: "ok", incidentId: p.incidentId });
     },

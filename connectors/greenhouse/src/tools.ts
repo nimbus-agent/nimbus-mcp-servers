@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import {
   encodeBasicAuthHeader,
@@ -10,16 +10,12 @@ import { filterGreenhouseJobs } from "./search-filter.ts";
 
 const BASE = "https://harvest.greenhouse.io";
 
-function apiKey(): string {
-  const t = process.env["GREENHOUSE_API_KEY"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("GREENHOUSE_API_KEY is not set");
-  }
-  return t;
-}
-
+/** HTTP Basic with the API key as the username and an empty password. */
 function authHeader(): Record<string, string> {
-  return { Authorization: encodeBasicAuthHeader(apiKey(), ""), Accept: "application/json" };
+  return {
+    Authorization: encodeBasicAuthHeader(requiredEnv("GREENHOUSE_API_KEY"), ""),
+    Accept: "application/json",
+  };
 }
 
 const greenhouseGet = createJsonGetter({

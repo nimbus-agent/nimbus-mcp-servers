@@ -1,41 +1,23 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterLookerDashboards } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["LOOKER_BASE_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("LOOKER_BASE_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
-function clientId(): string {
-  const v = process.env["LOOKER_CLIENT_ID"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("LOOKER_CLIENT_ID is not set");
-  }
-  return v;
-}
-
-function clientSecret(): string {
-  const v = process.env["LOOKER_CLIENT_SECRET"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("LOOKER_CLIENT_SECRET is not set");
-  }
-  return v;
+  return requiredBaseUrl("LOOKER_BASE_URL");
 }
 
 async function lookerLogin(): Promise<string> {
   const base = apiBase();
-  const body = `client_id=${encodeURIComponent(clientId())}&client_secret=${encodeURIComponent(clientSecret())}`;
+  const clientId = encodeURIComponent(requiredEnv("LOOKER_CLIENT_ID"));
+  const clientSecret = encodeURIComponent(requiredEnv("LOOKER_CLIENT_SECRET"));
+  const body = `client_id=${clientId}&client_secret=${clientSecret}`;
   const res = await fetchWithTimeout(`${base}/api/4.0/login`, {
     method: "POST",
     headers: {

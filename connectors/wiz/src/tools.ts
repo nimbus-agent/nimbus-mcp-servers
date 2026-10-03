@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
-import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { optionalEnv, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -12,13 +12,11 @@ const SEVERITIES = ["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as con
 const STATUSES = ["OPEN", "IN_PROGRESS", "RESOLVED", "REJECTED"] as const;
 
 function apiUrl(): string {
-  const v = process.env["WIZ_API_URL"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_API : v;
+  return optionalEnv("WIZ_API_URL", DEFAULT_API);
 }
 
 function authUrl(): string {
-  const v = process.env["WIZ_AUTH_URL"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_AUTH : v;
+  return optionalEnv("WIZ_AUTH_URL", DEFAULT_AUTH);
 }
 
 /** OAuth2 client-credentials against the Wiz auth endpoint. */

@@ -1,38 +1,31 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterMlflowModels } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["MLFLOW_HOST"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("MLFLOW_HOST is not set");
-  }
-  return stripTrailingSlashes(v);
+  return requiredBaseUrl("MLFLOW_HOST");
 }
 
-function authHeader(): Record<string, string> {
-  const k = process.env["MLFLOW_TOKEN"]?.trim();
-  if (k === undefined || k === "") {
-    throw new Error("MLFLOW_TOKEN is not set");
-  }
-  return { Authorization: `Bearer ${k}`, Accept: "application/json" };
-}
+/** Shared with the mutating request below, which adds its own Content-Type. */
+const authHeader = envAuthHeaders({ env: "MLFLOW_TOKEN" });
 
-async function mlflowGet(path: string): Promise<unknown> {
-  const res = await fetchWithTimeout(`${apiBase()}${path}`, { headers: authHeader() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`MLflow ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
+/**
+ * `fetchWithTimeout`, not the global fetch: MLflow is a self-hosted tracking server, and one that
+ * stops answering must fail the tool call rather than hang it.
+ */
+const mlflowGet = createJsonGetter({
+  base: apiBase,
+  label: "MLflow",
+  headers: authHeader,
+  fetch: fetchWithTimeout,
+});
 
 async function mlflowPost(path: string, body: unknown): Promise<unknown> {
   const res = await fetchWithTimeout(`${apiBase()}${path}`, {

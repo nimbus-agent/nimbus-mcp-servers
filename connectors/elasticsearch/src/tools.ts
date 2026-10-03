@@ -1,9 +1,8 @@
 import { z } from "zod";
 import { isRecord, strField } from "../../../shared/cli-json-kit.ts";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 
 /**
  * Elasticsearch / Kibana (Tier-3, metadata-only) MCP tool surface. ALL tools
@@ -21,26 +20,10 @@ export const ELASTICSEARCH_TOOL_NAMES = [
   "elasticsearch_search",
 ] as const;
 
-function baseUrl(): string {
-  const v = process.env["ELASTICSEARCH_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("ELASTICSEARCH_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
-function authHeaders(): Record<string, string> {
-  const k = process.env["ELASTICSEARCH_API_KEY"]?.trim();
-  if (k === undefined || k === "") {
-    throw new Error("ELASTICSEARCH_API_KEY is not set");
-  }
-  return { Authorization: `ApiKey ${k}`, Accept: "application/json" };
-}
-
 const esGet = createJsonGetter({
-  base: baseUrl,
+  base: () => requiredBaseUrl("ELASTICSEARCH_URL"),
   label: "Elasticsearch",
-  headers: authHeaders,
+  headers: envAuthHeaders({ env: "ELASTICSEARCH_API_KEY", scheme: "ApiKey" }),
 });
 
 function indexEntries(parsed: unknown): unknown[] {

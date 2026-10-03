@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -7,25 +7,9 @@ import { filterZoteroItems } from "./search-filter.ts";
 
 const BASE = "https://api.zotero.org";
 
-function apiKey(): string {
-  const k = process.env["ZOTERO_API_KEY"]?.trim();
-  if (k === undefined || k === "") {
-    throw new Error("ZOTERO_API_KEY is not set");
-  }
-  return k;
-}
-
-function library(): string {
-  const l = process.env["ZOTERO_LIBRARY"]?.trim();
-  if (l === undefined || l === "") {
-    throw new Error("ZOTERO_LIBRARY is not set");
-  }
-  return l;
-}
-
 function authHeader(): Record<string, string> {
   return {
-    "Zotero-API-Key": apiKey(),
+    "Zotero-API-Key": requiredEnv("ZOTERO_API_KEY"),
     "Zotero-API-Version": "3",
     Accept: "application/json",
   };
@@ -38,7 +22,7 @@ const zoteroGet = createJsonGetter({
 });
 
 function itemsBasePath(): string {
-  return `/${library()}/items`;
+  return `/${requiredEnv("ZOTERO_LIBRARY")}/items`;
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */

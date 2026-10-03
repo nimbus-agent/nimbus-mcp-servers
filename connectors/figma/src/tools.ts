@@ -1,19 +1,11 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterFigmaFiles } from "./search-filter.ts";
 
 const BASE = "https://api.figma.com";
-
-function teamId(): string {
-  const t = process.env["FIGMA_TEAM_ID"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("FIGMA_TEAM_ID is not set");
-  }
-  return t;
-}
 
 const figmaGet = createJsonGetter({
   base: BASE,
@@ -52,7 +44,8 @@ function filesFrom(root: unknown): unknown[] {
  * each project.
  */
 async function listTeamFiles(): Promise<unknown[]> {
-  const projectsRoot = await figmaGet(`/v1/teams/${encodeURIComponent(teamId())}/projects`);
+  const teamId = encodeURIComponent(requiredEnv("FIGMA_TEAM_ID"));
+  const projectsRoot = await figmaGet(`/v1/teams/${teamId}/projects`);
   const projects = projectsFrom(projectsRoot);
   const out: unknown[] = [];
   for (const project of projects) {

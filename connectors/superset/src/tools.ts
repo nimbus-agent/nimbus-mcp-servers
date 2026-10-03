@@ -1,25 +1,13 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
+import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterSupersetDashboards } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["SUPERSET_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("SUPERSET_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
-function requiredEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error(`${name} is not set`);
-  }
-  return v;
+  return requiredBaseUrl("SUPERSET_URL");
 }
 
 /** Superset issues its own JWT from a username/password POST, not OAuth. */

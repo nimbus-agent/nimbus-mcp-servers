@@ -1,36 +1,16 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterTableauViews } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["TABLEAU_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("TABLEAU_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
-function patName(): string {
-  const v = process.env["TABLEAU_PAT_NAME"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("TABLEAU_PAT_NAME is not set");
-  }
-  return v;
-}
-
-function patSecret(): string {
-  const v = process.env["TABLEAU_PAT_SECRET"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("TABLEAU_PAT_SECRET is not set");
-  }
-  return v;
+  return requiredBaseUrl("TABLEAU_URL");
 }
 
 interface SigninResult {
@@ -45,8 +25,8 @@ async function tableauSignin(): Promise<SigninResult> {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
       credentials: {
-        personalAccessTokenName: patName(),
-        personalAccessTokenSecret: patSecret(),
+        personalAccessTokenName: requiredEnv("TABLEAU_PAT_NAME"),
+        personalAccessTokenSecret: requiredEnv("TABLEAU_PAT_SECRET"),
         site: { contentUrl: "" },
       },
     }),

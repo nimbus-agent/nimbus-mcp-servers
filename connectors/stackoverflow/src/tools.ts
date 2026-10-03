@@ -1,19 +1,11 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterStackOverflowQuestions } from "./search-filter.ts";
 
 const BASE = "https://api.stackoverflowteams.com";
-
-function teamSlug(): string {
-  const t = process.env["STACKOVERFLOW_TEAM"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("STACKOVERFLOW_TEAM is not set");
-  }
-  return t;
-}
 
 const stackOverflowGet = createJsonGetter({
   base: BASE,
@@ -22,7 +14,7 @@ const stackOverflowGet = createJsonGetter({
 });
 
 function questionsBasePath(): string {
-  return `/v3/teams/${encodeURIComponent(teamSlug())}/questions`;
+  return `/v3/teams/${encodeURIComponent(requiredEnv("STACKOVERFLOW_TEAM"))}/questions`;
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */

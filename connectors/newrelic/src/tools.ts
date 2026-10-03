@@ -1,28 +1,16 @@
 import { z } from "zod";
+import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 
-function apiKey(): string {
-  const k = process.env["NEW_RELIC_API_KEY"]?.trim();
-  if (k === undefined || k === "") {
-    throw new Error("NEW_RELIC_API_KEY is not set");
-  }
-  return k;
-}
-
-async function nrGet(path: string): Promise<unknown> {
-  const res = await fetch(`https://api.newrelic.com${path}`, {
-    headers: { "X-Api-Key": apiKey(), Accept: "application/json" },
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`New Relic ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
+const nrGet = createJsonGetter({
+  base: "https://api.newrelic.com",
+  label: "New Relic",
+  headers: envAuthHeaders({ env: "NEW_RELIC_API_KEY", scheme: "", header: "X-Api-Key" }),
+});
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const NEWRELIC_TOOL_NAMES = [

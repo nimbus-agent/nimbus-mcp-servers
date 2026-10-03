@@ -1,31 +1,16 @@
 import { z } from "zod";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import {
   encodeBasicAuthHeader,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterZendeskTickets } from "./search-filter.ts";
 
-function baseUrl(): string {
-  const v = process.env["ZENDESK_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("ZENDESK_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
 function authHeader(): Record<string, string> {
-  const email = process.env["ZENDESK_EMAIL"]?.trim();
-  if (email === undefined || email === "") {
-    throw new Error("ZENDESK_EMAIL is not set");
-  }
-  const token = process.env["ZENDESK_API_TOKEN"]?.trim();
-  if (token === undefined || token === "") {
-    throw new Error("ZENDESK_API_TOKEN is not set");
-  }
+  const email = requiredEnv("ZENDESK_EMAIL");
+  const token = requiredEnv("ZENDESK_API_TOKEN");
   return {
     Authorization: encodeBasicAuthHeader(`${email}/token`, token),
     Accept: "application/json",
@@ -33,7 +18,7 @@ function authHeader(): Record<string, string> {
 }
 
 const zendeskGet = createJsonGetter({
-  base: baseUrl,
+  base: () => requiredBaseUrl("ZENDESK_URL"),
   label: "Zendesk",
   headers: authHeader,
 });

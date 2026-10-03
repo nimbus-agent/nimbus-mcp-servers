@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -6,21 +7,9 @@ import { filterVercelDeployments } from "./search-filter.ts";
 
 const BASE = "https://api.vercel.com";
 
-function token(): string {
-  const t = process.env["VERCEL_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("VERCEL_TOKEN is not set");
-  }
-  return t;
-}
-
 function teamId(): string | undefined {
   const v = process.env["VERCEL_TEAM_ID"]?.trim();
   return v === undefined || v === "" ? undefined : v;
-}
-
-function authHeader(): Record<string, string> {
-  return { Authorization: `Bearer ${token()}`, Accept: "application/json" };
 }
 
 function withTeam(path: string): string {
@@ -32,13 +21,15 @@ function withTeam(path: string): string {
   return `${path}${sep}teamId=${encodeURIComponent(team)}`;
 }
 
+const getJson = createJsonGetter({
+  base: BASE,
+  label: "Vercel",
+  headers: envAuthHeaders({ env: "VERCEL_TOKEN" }),
+});
+
+/** Every request is scoped to `VERCEL_TEAM_ID` when one is configured. */
 async function vercelGet(path: string): Promise<unknown> {
-  const res = await fetch(`${BASE}${withTeam(path)}`, { headers: authHeader() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Vercel ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
+  return getJson(withTeam(path));
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */

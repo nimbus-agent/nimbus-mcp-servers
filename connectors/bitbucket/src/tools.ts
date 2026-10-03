@@ -5,32 +5,17 @@ import { joinApiPath } from "../../../shared/join-api-path.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
+  encodeBasicAuthHeader,
   mcpJsonResultIfOk,
+  requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
 
 const BB_API = "https://api.bitbucket.org/2.0";
 
-function requireUsername(): string {
-  const t = process.env["BITBUCKET_USERNAME"];
-  if (t === undefined || t === "") {
-    throw new Error("BITBUCKET_USERNAME is not set");
-  }
-  return t;
-}
-
-function requireAppPassword(): string {
-  const t = process.env["BITBUCKET_APP_PASSWORD"];
-  if (t === undefined || t === "") {
-    throw new Error("BITBUCKET_APP_PASSWORD is not set");
-  }
-  return t;
-}
-
 function basicAuthHeader(): string {
-  const user = requireUsername();
-  const pass = requireAppPassword();
-  const b = Buffer.from(`${user}:${pass}`, "utf8").toString("base64");
-  return `Basic ${b}`;
+  const user = requireProcessEnv("BITBUCKET_USERNAME");
+  const pass = requireProcessEnv("BITBUCKET_APP_PASSWORD");
+  return encodeBasicAuthHeader(user, pass);
 }
 
 function splitRepoFull(full: string): { workspace: string; repoSlug: string } {

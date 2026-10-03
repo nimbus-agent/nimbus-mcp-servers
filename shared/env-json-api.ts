@@ -114,10 +114,10 @@ export function envAuthHeaders(cfg: {
 /**
  * The fetch this getter uses. Defaults to the global `fetch`.
  *
- * A seam because two connectors (argocd, flux) reach self-hosted control planes
- * and use `fetchWithTimeout` instead: a cluster that stops answering should fail
- * the tool call, not hang it. They were the only two still carrying a
- * hand-written copy of this getter, and a timeout was the whole reason.
+ * A seam because the connectors that reach a self-hosted control plane (argocd,
+ * flux, mlflow) use `fetchWithTimeout` instead: a server that stops answering
+ * should fail the tool call, not hang it. A timeout was the whole reason they
+ * had carried hand-written copies of this getter.
  */
 export type JsonFetch = (url: string, init: RequestInit) => Promise<Response>;
 

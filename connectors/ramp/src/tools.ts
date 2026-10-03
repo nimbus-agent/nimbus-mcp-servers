@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
-import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
+import {
+  encodeBasicAuthHeader,
+  mcpJsonResult as jsonResult,
+} from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterRampTransactions } from "./search-filter.ts";
 
@@ -9,26 +13,17 @@ const BASE = "https://api.ramp.com";
 const TOKEN_PATH = "/developer/v1/token";
 const TOKEN_SCOPE = "transactions:read";
 
-function requiredEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error(`${name} is not set`);
-  }
-  return v;
-}
-
 /** OAuth2 client-credentials against Ramp's token endpoint. */
 const token = createAccessTokenCache({
   label: "Ramp token exchange",
   exchange: async () => {
     const clientId = requiredEnv("RAMP_CLIENT_ID");
     const clientSecret = requiredEnv("RAMP_CLIENT_SECRET");
-    const basic = Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64");
     const body = new URLSearchParams({ grant_type: "client_credentials", scope: TOKEN_SCOPE });
     const res = await fetch(`${BASE}${TOKEN_PATH}`, {
       method: "POST",
       headers: {
-        Authorization: `Basic ${basic}`,
+        Authorization: encodeBasicAuthHeader(clientId, clientSecret),
         "Content-Type": "application/x-www-form-urlencoded",
         Accept: "application/json",
       },

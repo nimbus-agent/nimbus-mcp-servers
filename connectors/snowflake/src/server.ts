@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
@@ -8,21 +9,9 @@ import {
 } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterSnowflakeTables } from "./search-filter.ts";
 
-function snowflakeAccount(): string {
-  const v = process.env["SNOWFLAKE_ACCOUNT"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("SNOWFLAKE_ACCOUNT is not set");
-  }
-  return v;
-}
-
 function authHeader(): Record<string, string> {
-  const t = process.env["SNOWFLAKE_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("SNOWFLAKE_TOKEN is not set");
-  }
   return {
-    Authorization: `Bearer ${t}`,
+    Authorization: `Bearer ${requiredEnv("SNOWFLAKE_TOKEN")}`,
     "Content-Type": "application/json",
     Accept: "application/json",
   };
@@ -34,7 +23,7 @@ function authHeader(): Record<string, string> {
  * the read-only `fetchTables` path and the HITL-gated write tools so auth/transport stays in one place.
  */
 async function executeStatement(statement: string): Promise<unknown> {
-  const url = `https://${snowflakeAccount()}.snowflakecomputing.com/api/v2/statements`;
+  const url = `https://${requiredEnv("SNOWFLAKE_ACCOUNT")}.snowflakecomputing.com/api/v2/statements`;
   const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: authHeader(),

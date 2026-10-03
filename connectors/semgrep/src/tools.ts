@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -9,11 +9,6 @@ const SEMGREP_API = "https://semgrep.dev/api/v1";
 const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 const STATUSES = ["open", "ignored", "fixed", "removed"] as const;
 
-function deploymentSlug(): string | undefined {
-  const v = process.env["SEMGREP_DEPLOYMENT_SLUG"]?.trim();
-  return v === undefined || v === "" ? undefined : v;
-}
-
 const semgrepGet = createJsonGetter({
   base: SEMGREP_API,
   label: "Semgrep",
@@ -21,11 +16,7 @@ const semgrepGet = createJsonGetter({
 });
 
 function requireSlug(): string {
-  const slug = deploymentSlug();
-  if (slug === undefined) {
-    throw new Error("SEMGREP_DEPLOYMENT_SLUG is not set");
-  }
-  return slug;
+  return requiredEnv("SEMGREP_DEPLOYMENT_SLUG");
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */

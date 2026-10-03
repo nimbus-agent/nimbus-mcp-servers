@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, optionalBaseUrl } from "../../../shared/env-json-api.ts";
 import { matchesResult } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -9,22 +9,8 @@ const DEFAULT_API = "https://sonarcloud.io";
 const ISSUE_TYPES = ["BUG", "VULNERABILITY", "CODE_SMELL"] as const;
 const OPEN_STATUSES = ["OPEN", "CONFIRMED", "REOPENED"] as const;
 
-function stripTrailingSlashes(s: string): string {
-  let end = s.length;
-  while (end > 0 && s.codePointAt(end - 1) === 47) end -= 1;
-  return s.slice(0, end);
-}
-
-function apiBase(): string {
-  const raw = process.env["SONARQUBE_URL"]?.trim();
-  if (raw === undefined || raw === "") {
-    return DEFAULT_API;
-  }
-  return stripTrailingSlashes(raw);
-}
-
 const sonarGet = createJsonGetter({
-  base: apiBase,
+  base: () => optionalBaseUrl("SONARQUBE_URL", DEFAULT_API),
   label: "SonarQube",
   headers: envAuthHeaders({ env: "SONARQUBE_TOKEN" }),
 });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
@@ -7,14 +8,6 @@ import {
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterPowerBiReports } from "./search-filter.ts";
-
-function requireEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error(`${name} is not set`);
-  }
-  return v;
-}
 
 async function fetchAccessToken(
   tenantId: string,
@@ -55,9 +48,9 @@ const POWERBI_API_BASE = "https://api.powerbi.com";
 /** Mint an AAD access token from the connector's client-credentials env. */
 async function accessToken(): Promise<string> {
   return fetchAccessToken(
-    requireEnv("POWERBI_TENANT_ID"),
-    requireEnv("POWERBI_CLIENT_ID"),
-    requireEnv("POWERBI_CLIENT_SECRET"),
+    requiredEnv("POWERBI_TENANT_ID"),
+    requiredEnv("POWERBI_CLIENT_ID"),
+    requiredEnv("POWERBI_CLIENT_SECRET"),
   );
 }
 
@@ -125,14 +118,11 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
       limit: z.number().int().min(1).max(500).optional(),
     }),
     async (_p) => {
-      const tenantId = requireEnv("POWERBI_TENANT_ID");
-      const clientId = requireEnv("POWERBI_CLIENT_ID");
-      const clientSecret = requireEnv("POWERBI_CLIENT_SECRET");
-      const accessToken = await fetchAccessToken(tenantId, clientId, clientSecret);
+      const token = await accessToken();
       // Return EVERY report: slicing to `limit` would silently drop reports (nextCursor is null, so
       // the gateway drain stops) and lose them from the index for orgs with many reports.
-      const reports = await listReports(accessToken);
-      const items = await Promise.all(reports.map((r) => expandReport(accessToken, r)));
+      const reports = await listReports(token);
+      const items = await Promise.all(reports.map((r) => expandReport(token, r)));
       return jsonResult({ items, nextCursor: null });
     },
   );
@@ -144,11 +134,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
       id: z.string().min(1),
     }),
     async (p) => {
-      const tenantId = requireEnv("POWERBI_TENANT_ID");
-      const clientId = requireEnv("POWERBI_CLIENT_ID");
-      const clientSecret = requireEnv("POWERBI_CLIENT_SECRET");
-      const accessToken = await fetchAccessToken(tenantId, clientId, clientSecret);
-      const reports = await listReports(accessToken);
+      const reports = await listReports(await accessToken());
       const found = reports.find((r) => {
         if (r === null || typeof r !== "object" || Array.isArray(r)) return false;
         return (r as Record<string, unknown>)["id"] === p.id;
@@ -165,11 +151,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
     "Substring search across Power BI reports. Matches the query (case-insensitive) against report name and description. Returns a `{ matches: [...] }` envelope.",
     searchToolInputSchema(200),
     async (p) => {
-      const tenantId = requireEnv("POWERBI_TENANT_ID");
-      const clientId = requireEnv("POWERBI_CLIENT_ID");
-      const clientSecret = requireEnv("POWERBI_CLIENT_SECRET");
-      const accessToken = await fetchAccessToken(tenantId, clientId, clientSecret);
-      const reports = await listReports(accessToken);
+      const reports = await listReports(await accessToken());
       const matches = filterPowerBiReports(reports, { query: p.query, limit: p.limit });
       return jsonResult({ matches });
     },

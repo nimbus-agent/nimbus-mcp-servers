@@ -1,12 +1,8 @@
+import { requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { encodeBasicAuthHeader } from "../../../shared/mcp-tool-kit.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 
 export function jenkinsBaseUrl(): string {
-  const raw = process.env["JENKINS_BASE_URL"]?.trim() ?? "";
-  if (raw === "") {
-    throw new Error("JENKINS_BASE_URL is not set");
-  }
-  return stripTrailingSlashes(raw);
+  return requiredBaseUrl("JENKINS_BASE_URL");
 }
 
 export function jenkinsAuthHeader(): string {

@@ -4,6 +4,7 @@ import {
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
+import { optionalBaseUrl } from "../../../shared/env-json-api.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -12,14 +13,9 @@ import {
   requireProcessEnv,
   type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 
 function apiBase(): string {
-  const b = process.env["GITLAB_API_BASE_URL"];
-  if (b !== undefined && b.trim() !== "") {
-    return stripTrailingSlashes(b);
-  }
-  return "https://gitlab.com/api/v4";
+  return optionalBaseUrl("GITLAB_API_BASE_URL", "https://gitlab.com/api/v4");
 }
 
 async function glFetch(

@@ -1,21 +1,12 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterDependencyTrackProjects } from "./search-filter.ts";
 
-function apiBase(): string {
-  const v = process.env["DEPENDENCYTRACK_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("DEPENDENCYTRACK_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
 const dtGet = createJsonGetter({
-  base: apiBase,
+  base: () => requiredBaseUrl("DEPENDENCYTRACK_URL"),
   label: "Dependency-Track",
   headers: envAuthHeaders({ env: "DEPENDENCYTRACK_API_KEY", scheme: "", header: "X-Api-Key" }),
 });

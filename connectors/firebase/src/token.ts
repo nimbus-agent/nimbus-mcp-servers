@@ -1,4 +1,5 @@
 import { type GoogleServiceAccount, parseServiceAccountJson } from "@nimbus-dev/sdk";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 
 /**
  * Firebase App Distribution credential plumbing.
@@ -21,11 +22,7 @@ export function projectNumberFromAppId(appId: string): string | null {
  * throws if unset or malformed. The Gateway sets this at spawn time.
  */
 export function serviceAccountFromEnv(): GoogleServiceAccount {
-  const json = process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]?.trim();
-  if (json === undefined || json === "") {
-    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is not set");
-  }
-  const sa = parseServiceAccountJson(json);
+  const sa = parseServiceAccountJson(requiredEnv("FIREBASE_SERVICE_ACCOUNT_JSON"));
   if (sa === null) {
     throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is not a valid service-account key");
   }

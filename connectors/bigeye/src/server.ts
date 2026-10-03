@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
@@ -8,21 +9,13 @@ import {
 } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterBigeyeIssues } from "./search-filter.ts";
 
+/** Only ONE trailing slash is dropped here — not `requiredBaseUrl`'s strip-them-all. */
 function apiBase(): string {
-  const v = process.env["BIGEYE_BASE_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("BIGEYE_BASE_URL is not set");
-  }
+  const v = requiredEnv("BIGEYE_BASE_URL");
   return v.endsWith("/") ? v.slice(0, -1) : v;
 }
 
-function authHeader(): Record<string, string> {
-  const k = process.env["BIGEYE_API_KEY"]?.trim();
-  if (k === undefined || k === "") {
-    throw new Error("BIGEYE_API_KEY is not set");
-  }
-  return { Authorization: `Bearer ${k}`, Accept: "application/json" };
-}
+const authHeader = envAuthHeaders({ env: "BIGEYE_API_KEY" });
 
 /** One page of issues (`GET /api/v1/issues?limit&offset`), tolerant of array / `{issues}` / `{data}`. */
 async function fetchIssues(limit: number, offset: number): Promise<unknown[]> {

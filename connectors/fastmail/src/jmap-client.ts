@@ -7,6 +7,7 @@
  * request building below was reachable from one.
  */
 
+import { optionalEnv } from "../../../shared/env-json-api.ts";
 import { requireProcessEnv } from "../../../shared/mcp-tool-kit.ts";
 import {
   asRecord,
@@ -54,8 +55,8 @@ class FetchJmapClient implements JmapClient {
 
   constructor() {
     this.token = requireProcessEnv("FASTMAIL_API_TOKEN");
-    const base = process.env["FASTMAIL_BASE_URL"]?.trim();
-    this.baseUrl = (base === undefined || base === "" ? DEFAULT_BASE_URL : base).replace(/\/$/, "");
+    // Only ONE trailing slash is dropped here — not `optionalBaseUrl`'s strip-them-all.
+    this.baseUrl = optionalEnv("FASTMAIL_BASE_URL", DEFAULT_BASE_URL).replace(/\/$/, "");
   }
 
   private headers(): Record<string, string> {
