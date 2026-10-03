@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
 import { optionalEnv, requiredEnv } from "../../../shared/env-json-api.ts";
+import { postGraphql } from "../../../shared/graphql-json.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -40,27 +41,13 @@ const getToken = createAccessTokenCache({
 
 async function wizGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const token = await getToken();
-  const res = await fetch(apiUrl(), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
+  return postGraphql<T>({
+    url: apiUrl(),
+    label: "Wiz",
+    headers: { Authorization: `Bearer ${token}` },
+    query,
+    variables,
   });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Wiz ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  const parsed = JSON.parse(text) as { data?: T; errors?: unknown };
-  if (parsed.errors !== undefined) {
-    throw new Error(`Wiz GraphQL error: ${JSON.stringify(parsed.errors).slice(0, 400)}`);
-  }
-  if (parsed.data === undefined) {
-    throw new Error("Wiz GraphQL: response missing `data` field");
-  }
-  return parsed.data;
 }
 
 const ISSUES_QUERY = `

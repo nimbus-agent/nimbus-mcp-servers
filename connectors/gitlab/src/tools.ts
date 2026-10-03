@@ -13,16 +13,18 @@ import {
   requireProcessEnv,
   type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
+import {
+  makeRestToolRegistrar,
+  makeRestWriteToolRegistrar,
+  type RestFetchResult,
+  toRestFetchResult,
+} from "../../../shared/rest-tool-kit.ts";
 
 function apiBase(): string {
   return optionalBaseUrl("GITLAB_API_BASE_URL", "https://gitlab.com/api/v4");
 }
 
-async function glFetch(
-  token: string,
-  path: string,
-  init?: RequestInit,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+async function glFetch(token: string, path: string, init?: RequestInit): Promise<RestFetchResult> {
   const base = apiBase();
   const relativePath = path.startsWith("/") ? path : `/${path}`;
   const url = path.startsWith("http") ? path : `${base}${relativePath}`;
@@ -35,14 +37,7 @@ async function glFetch(
     ...init,
     headers: mergedHeaders,
   });
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = JSON.parse(text) as unknown;
-  } catch {
-    json = null;
-  }
-  return { ok: res.ok, status: res.status, json, text };
+  return toRestFetchResult(res);
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
@@ -69,13 +64,6 @@ export function registerGitlabTools(
   const reg = createZodToolRegistrar(registerSimpleTool);
 
   /**
-   * Register a standard GitLab read/write tool whose body is the repeated shape
-   * `token → glFetch(buildUrl[, buildInit]) → mcpJsonResultIfOk("GitLab", res)`.
-   * `buildUrl` returns the relative path (or absolute URL) and `buildInit` the
-   * optional fetch init (method/body). Tools with a non-standard tail (raw text
-   * trace, custom error text) stay hand-written below.
-   */
-  /**
    * Every MUTATING gitlab tool goes through here. Outside the gateway this adds the
    * consent gate, the write-scope allow-list, the mutation budget and the audit record; inside
    * the gateway it is a pass-through, because executor.ts (I2) is the gate there.
@@ -87,9 +75,19 @@ export function registerGitlabTools(
   });
 
   /**
-   * The write-tool equivalent of `registerGitlabTool`: identical fetch and result handling, routed
-   * through the write registrar. `scopeTargetOf` is supplied here rather than per tool — every
-   * GitLab mutation is scoped to one project — so a new write tool cannot forget it.
+   * Standard GitLab tool, read or write: `token → glFetch(buildUrl[, buildInit]) →
+   * mcpJsonResultIfOk("GitLab", res)`. `buildUrl` returns the relative path (or absolute URL) and
+   * `buildInit` the optional fetch init (method/body). Tools with a non-standard tail (raw text
+   * trace, custom error text) stay hand-written below.
+   */
+  const gitlabRest = { tokenEnv: "GITLAB_PAT", serviceLabel: "GitLab", fetch: glFetch } as const;
+  const registerGitlabTool = makeRestToolRegistrar({ registrar: reg, ...gitlabRest });
+  const registerRestWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...gitlabRest });
+
+  /**
+   * The write-tool equivalent of `registerGitlabTool`, routed through the write registrar.
+   * `scopeTargetOf` is supplied here rather than per tool — every GitLab mutation is scoped to one
+   * project — so a new write tool cannot forget it.
    */
   function registerGitlabWriteTool<T extends { projectPath: string }>(
     name: string,
@@ -99,31 +97,14 @@ export function registerGitlabTools(
     buildUrl: (p: T) => string,
     buildInit?: (p: T) => RequestInit,
   ): void {
-    registerWriteTool(
+    registerRestWriteTool(
       name,
       { ...cfg, scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }) },
       description,
       schema,
-      async (parsed) => {
-        const token = requireProcessEnv("GITLAB_PAT");
-        const res = await glFetch(token, buildUrl(parsed), buildInit?.(parsed));
-        return mcpJsonResultIfOk("GitLab", res);
-      },
+      buildUrl,
+      buildInit,
     );
-  }
-
-  function registerGitlabTool<T>(
-    name: string,
-    description: string,
-    schema: ZodObjectSchema<T>,
-    buildUrl: (p: T) => string,
-    buildInit?: (p: T) => RequestInit,
-  ): void {
-    reg(name, description, schema, async (parsed) => {
-      const token = requireProcessEnv("GITLAB_PAT");
-      const res = await glFetch(token, buildUrl(parsed), buildInit?.(parsed));
-      return mcpJsonResultIfOk("GitLab", res);
-    });
   }
 
   const projectPathArg = z.object({

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
+import { postGraphql } from "../../../shared/graphql-json.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -29,27 +30,12 @@ query NimbusJobs {
 `;
 
 async function dagsterGraphql<T>(query: string): Promise<T> {
-  const res = await fetch(`${requiredBaseUrl("DAGSTER_BASE_URL")}/graphql`, {
-    method: "POST",
-    headers: {
-      "Dagster-Cloud-Api-Token": apiToken(),
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ query }),
+  return postGraphql<T>({
+    url: `${requiredBaseUrl("DAGSTER_BASE_URL")}/graphql`,
+    label: "Dagster",
+    headers: { "Dagster-Cloud-Api-Token": apiToken() },
+    query,
   });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Dagster ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  const parsed = JSON.parse(text) as { data?: T; errors?: unknown };
-  if (parsed.errors !== undefined) {
-    throw new Error(`Dagster GraphQL error: ${JSON.stringify(parsed.errors).slice(0, 400)}`);
-  }
-  if (parsed.data === undefined) {
-    throw new Error("Dagster GraphQL: response missing `data` field");
-  }
-  return parsed.data;
 }
 
 interface FlatJob {

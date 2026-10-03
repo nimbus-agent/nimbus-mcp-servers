@@ -4,29 +4,18 @@ import {
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
+import { GH_API, ghFetch, ghRepoPath } from "../../../shared/github-rest.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
-  mcpJsonResultIfOk,
   requireProcessEnv,
   type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
-import { makeRestFetcher, makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
-
-const GH_API = "https://api.github.com";
-const GH_HEADERS: Record<string, string> = {
-  Accept: "application/vnd.github+json",
-  "X-GitHub-Api-Version": "2022-11-28",
-};
-
-function ghFetch(
-  token: string,
-  path: string,
-  init?: RequestInit,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
-  return makeRestFetcher({ apiBase: GH_API, token, defaultHeaders: GH_HEADERS })(path, init);
-}
+import {
+  makeRestToolRegistrar,
+  makeRestWriteToolRegistrar,
+} from "../../../shared/rest-tool-kit.ts";
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const GITHUB_TOOL_NAMES = [
@@ -63,11 +52,15 @@ export function registerGithubTools(
     scopeKinds: ["repo"],
   });
 
+  /** Standard GitHub tool, read or write: token → ghFetch(buildPath[, buildInit]) → mcpJsonResultIfOk("GitHub"). */
+  const githubRest = { tokenEnv: "GITHUB_PAT", serviceLabel: "GitHub", fetch: ghFetch } as const;
+  const registerGithubTool = makeRestToolRegistrar({ registrar: reg, ...githubRest });
+  const registerRestWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...githubRest });
+
   /**
-   * The write-tool equivalent of `registerGithubTool`: same buildPath/buildInit shape, same fetch and
-   * result handling, routed through the write registrar. `scopeTargetOf` is supplied here rather
-   * than per tool — every GitHub mutation is scoped to one `owner/repo`, and deriving it centrally
-   * means a new write tool cannot forget it.
+   * The write-tool equivalent of `registerGithubTool`, routed through the write registrar.
+   * `scopeTargetOf` is supplied here rather than per tool — every GitHub mutation is scoped to one
+   * `owner/repo`, and deriving it centrally means a new write tool cannot forget it.
    */
   function registerGithubWriteTool<T extends { owner: string; repo: string }>(
     name: string,
@@ -77,29 +70,15 @@ export function registerGithubTools(
     buildPath: (parsed: T) => string,
     buildInit?: (parsed: T) => RequestInit,
   ): void {
-    registerWriteTool(
+    registerRestWriteTool(
       name,
       { ...cfg, scopeTargetOf: (p) => ({ kind: "repo", value: `${p.owner}/${p.repo}` }) },
       description,
       schema,
-      async (parsed) => {
-        const token = requireProcessEnv("GITHUB_PAT");
-        const res = await ghFetch(token, buildPath(parsed), buildInit?.(parsed));
-        return mcpJsonResultIfOk("GitHub", res);
-      },
+      buildPath,
+      buildInit,
     );
   }
-
-  /** Standard GitHub tool: token → ghFetch(buildPath[, buildInit]) → mcpJsonResultIfOk("GitHub"). */
-  const registerGithubTool = makeRestToolRegistrar({
-    registrar: reg,
-    tokenEnv: "GITHUB_PAT",
-    serviceLabel: "GitHub",
-    fetch: ghFetch,
-  });
-
-  const slug = (owner: string, repo: string): string =>
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 
   const jsonInit = (method: string, body: unknown): RequestInit => ({
     method,
@@ -137,7 +116,7 @@ export function registerGithubTools(
     "github_repo_get",
     "Get repository metadata (owner/repo).",
     repoSlugArgs,
-    (parsed) => slug(parsed.owner, parsed.repo),
+    (parsed) => ghRepoPath(parsed.owner, parsed.repo),
   );
 
   const githubPrListSchema = repoSlugArgs.extend({
@@ -151,7 +130,7 @@ export function registerGithubTools(
     "List pull requests for a repository.",
     githubPrListSchema,
     (parsed) => {
-      const u = new URL(`${GH_API}${slug(parsed.owner, parsed.repo)}/pulls`);
+      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/pulls`);
       u.searchParams.set("state", parsed.state ?? "open");
       u.searchParams.set("per_page", String(parsed.perPage ?? 30));
       if (parsed.page !== undefined) {
@@ -171,7 +150,7 @@ export function registerGithubTools(
     "github_pr_get",
     "Get a single pull request by number.",
     githubPrNumberSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}`,
   );
 
   const githubPrMergeSchema = repoSlugArgs.extend({
@@ -185,7 +164,7 @@ export function registerGithubTools(
     { mutates: "github.pr.merge", recoverable: true },
     "Merge a pull request.",
     githubPrMergeSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}/merge`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}/merge`,
     (parsed) => {
       const body: Record<string, string> = {};
       if (parsed.mergeMethod !== undefined) {
@@ -203,7 +182,7 @@ export function registerGithubTools(
     { mutates: "github.pr.close", recoverable: true },
     "Close a pull request without merging.",
     githubPrNumberSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}`,
     () => jsonInit("PATCH", { state: "closed" }),
   );
 
@@ -218,7 +197,7 @@ export function registerGithubTools(
     "List issues for a repository.",
     githubIssueListSchema,
     (parsed) => {
-      const u = new URL(`${GH_API}${slug(parsed.owner, parsed.repo)}/issues`);
+      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/issues`);
       u.searchParams.set("state", parsed.state ?? "open");
       u.searchParams.set("per_page", String(parsed.perPage ?? 30));
       if (parsed.page !== undefined) {
@@ -238,7 +217,7 @@ export function registerGithubTools(
     "github_issue_get",
     "Get a single issue by number.",
     githubIssueGetSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/issues/${String(parsed.issueNumber)}`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/issues/${String(parsed.issueNumber)}`,
   );
 
   const githubIssueCreateSchema = repoSlugArgs.extend({
@@ -251,7 +230,7 @@ export function registerGithubTools(
     { mutates: "github.issue.create", recoverable: true },
     "Create a new issue in a repository.",
     githubIssueCreateSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/issues`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/issues`,
     (parsed) => jsonInit("POST", { title: parsed.title, body: parsed.body }),
   );
 
@@ -265,7 +244,7 @@ export function registerGithubTools(
     "List GitHub Actions workflow runs for a repository.",
     githubCiRunsSchema,
     (parsed) => {
-      const u = new URL(`${GH_API}${slug(parsed.owner, parsed.repo)}/actions/runs`);
+      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs`);
       u.searchParams.set("per_page", String(parsed.perPage ?? 30));
       if (parsed.page !== undefined) {
         u.searchParams.set("page", String(parsed.page));
@@ -282,7 +261,7 @@ export function registerGithubTools(
     "github_ci_run_get",
     "Get a single workflow run including jobs URL reference.",
     githubCiRunGetSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}`,
   );
 
   const githubBranchDeleteSchema = repoSlugArgs.extend({
@@ -302,7 +281,7 @@ export function registerGithubTools(
         const ref = `heads/${parsed.branch}`;
         const res = await ghFetch(
           token,
-          `${slug(parsed.owner, parsed.repo)}/git/ref/${encodeURIComponent(ref)}`,
+          `${ghRepoPath(parsed.owner, parsed.repo)}/git/ref/${encodeURIComponent(ref)}`,
         );
         return { ref, resolved: res.ok, sha: res.json };
       },
@@ -313,7 +292,7 @@ export function registerGithubTools(
     async (parsed) => {
       const token = requireProcessEnv("GITHUB_PAT");
       const ref = `heads/${parsed.branch}`;
-      const path = `${slug(parsed.owner, parsed.repo)}/git/refs/${encodeURIComponent(ref)}`;
+      const path = `${ghRepoPath(parsed.owner, parsed.repo)}/git/refs/${encodeURIComponent(ref)}`;
       const res = await ghFetch(token, path, { method: "DELETE" });
       if (!res.ok && res.status !== 204) {
         throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
@@ -332,7 +311,7 @@ export function registerGithubTools(
     { mutates: "github.tag.create", recoverable: true },
     "Create a lightweight tag pointing at a commit SHA.",
     githubTagCreateSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/git/refs`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/git/refs`,
     (parsed) => jsonInit("POST", { ref: `refs/tags/${parsed.tag}`, sha: parsed.sha }),
   );
 

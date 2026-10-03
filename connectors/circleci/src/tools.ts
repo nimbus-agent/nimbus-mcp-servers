@@ -7,7 +7,11 @@ import {
   mcpJsonResult as jsonResult,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
-import { makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
+import {
+  makeRestToolRegistrar,
+  type RestFetchResult,
+  toRestFetchResult,
+} from "../../../shared/rest-tool-kit.ts";
 
 const CCI_API = "https://circleci.com/api/v2";
 
@@ -24,7 +28,7 @@ async function circleciFetch(
   token: string,
   path: string,
   init?: RequestInit,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+): Promise<RestFetchResult> {
   const url = path.startsWith("http") ? path : `${CCI_API}${path}`;
   const res = await fetch(url, {
     ...init,
@@ -34,14 +38,7 @@ async function circleciFetch(
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = JSON.parse(text) as unknown;
-  } catch {
-    json = null;
-  }
-  return { ok: res.ok, status: res.status, json, text };
+  return toRestFetchResult(res);
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */

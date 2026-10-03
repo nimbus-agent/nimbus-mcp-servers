@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
-import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
+import {
+  createJsonGetter,
+  createJsonPoster,
+  envAuthHeaders,
+  type JsonApiConfig,
+  requiredBaseUrl,
+} from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
@@ -9,36 +15,20 @@ import {
 } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterMlflowModels } from "./search-filter.ts";
 
-function apiBase(): string {
-  return requiredBaseUrl("MLFLOW_HOST");
-}
-
-/** Shared with the mutating request below, which adds its own Content-Type. */
-const authHeader = envAuthHeaders({ env: "MLFLOW_TOKEN" });
-
 /**
- * `fetchWithTimeout`, not the global fetch: MLflow is a self-hosted tracking server, and one that
- * stops answering must fail the tool call rather than hang it.
+ * One config for reads and the mutating requests alike. `fetchWithTimeout`, not the global
+ * fetch: MLflow is a self-hosted tracking server, and one that stops answering must fail the
+ * tool call rather than hang it.
  */
-const mlflowGet = createJsonGetter({
-  base: apiBase,
+const api: JsonApiConfig = {
+  base: () => requiredBaseUrl("MLFLOW_HOST"),
   label: "MLflow",
-  headers: authHeader,
+  headers: envAuthHeaders({ env: "MLFLOW_TOKEN" }),
   fetch: fetchWithTimeout,
-});
+};
 
-async function mlflowPost(path: string, body: unknown): Promise<unknown> {
-  const res = await fetchWithTimeout(`${apiBase()}${path}`, {
-    method: "POST",
-    headers: { ...authHeader(), "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`MLflow ${path} ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return text === "" ? {} : (JSON.parse(text) as unknown);
-}
+const mlflowGet = createJsonGetter(api);
+const mlflowPost = createJsonPoster(api);
 
 const TRANSITION_PATH = "/api/2.0/mlflow/model-versions/transition-stage";
 

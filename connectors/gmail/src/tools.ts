@@ -1,18 +1,12 @@
 import { z } from "zod";
-import {
-  type ConsentServer,
-  createWriteToolRegistrar,
-  type WriteToolConfig,
-} from "../../../shared/consent-kit.ts";
+import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { headerLine } from "../../../shared/header-safe.ts";
+import { createRegisterSimpleTool, createZodToolRegistrar } from "../../../shared/mcp-tool-kit.ts";
 import {
-  createRegisterSimpleTool,
-  createZodToolRegistrar,
-  mcpJsonResultIfOk,
-  requireProcessEnv,
-  type ZodObjectSchema,
-} from "../../../shared/mcp-tool-kit.ts";
-import { makeRestFetcher, makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
+  makeRestFetcher,
+  makeRestToolRegistrar,
+  makeRestWriteToolRegistrar,
+} from "../../../shared/rest-tool-kit.ts";
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -52,8 +46,6 @@ export function registerGmailTools(
 ): void {
   const reg = createZodToolRegistrar(createRegisterSimpleTool(server));
 
-  /** Standard Gmail tool: token → gmailFetch(buildPath[, buildInit]) → mcpJsonResultIfOk("Gmail API", …, 200). */
-
   /**
    * Every MUTATING gmail tool goes through here. Outside the gateway this adds the
    * consent gate, the write-scope allow-list, the mutation budget and the audit record; inside
@@ -66,31 +58,19 @@ export function registerGmailTools(
   });
 
   /**
-   * The write-tool equivalent of `registerGmailTool`: identical fetch and result handling, routed
-   * through the write registrar.
+   * Standard Gmail tool, read or write: token → gmailFetch(buildPath[, buildInit]) →
+   * mcpJsonResultIfOk("Gmail API", …, 200).
    */
-  function registerGmailWriteTool<T>(
-    name: string,
-    cfg: WriteToolConfig<T>,
-    description: string,
-    schema: ZodObjectSchema<T>,
-    buildPath: (p: T) => string,
-    buildInit?: (p: T) => RequestInit,
-  ): void {
-    registerWriteTool(name, cfg, description, schema, async (parsed) => {
-      const token = requireProcessEnv("GOOGLE_OAUTH_ACCESS_TOKEN");
-      const res = await gmailFetch(token, buildPath(parsed), buildInit?.(parsed));
-      return mcpJsonResultIfOk("Gmail API", res, 200);
-    });
-  }
-
-  const registerGmailTool = makeRestToolRegistrar({
-    registrar: reg,
+  const gmailRest = {
     tokenEnv: "GOOGLE_OAUTH_ACCESS_TOKEN",
     serviceLabel: "Gmail API",
     fetch: gmailFetch,
     snippetMax: 200,
-  });
+  } as const;
+
+  const registerGmailTool = makeRestToolRegistrar({ registrar: reg, ...gmailRest });
+  /** The write-tool equivalent of `registerGmailTool`, routed through the write registrar. */
+  const registerGmailWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...gmailRest });
 
   const gmailMessageListArgs = z.object({
     maxResults: z.number().int().min(1).max(100).optional(),

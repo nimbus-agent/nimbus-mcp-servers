@@ -9,6 +9,7 @@ import {
   mcpJsonResultIfOk,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
+import { type RestFetchResult, toRestFetchResult } from "../../../shared/rest-tool-kit.ts";
 
 const BB_API = "https://api.bitbucket.org/2.0";
 
@@ -26,10 +27,7 @@ function splitRepoFull(full: string): { workspace: string; repoSlug: string } {
   return { workspace: full.slice(0, i), repoSlug: full.slice(i + 1) };
 }
 
-async function bbFetch(
-  path: string,
-  init?: RequestInit,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+async function bbFetch(path: string, init?: RequestInit): Promise<RestFetchResult> {
   const url = joinApiPath(BB_API, path);
   const baseHeaders: Record<string, string> = {
     Authorization: basicAuthHeader(),
@@ -41,14 +39,7 @@ async function bbFetch(
     ...init,
     headers,
   });
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = JSON.parse(text) as unknown;
-  } catch {
-    json = null;
-  }
-  return { ok: res.ok, status: res.status, json, text };
+  return toRestFetchResult(res);
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
