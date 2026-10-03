@@ -14,7 +14,11 @@
  * published to consumers, while anything under `shared/` would be.
  */
 
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
+import { type AuditEntry, verifyAuditChain } from "../shared/audit-chain.ts";
 import type { McpListResult } from "../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../shared/run-read-only-mcp-connector.ts";
 
@@ -506,5 +510,57 @@ export async function withEnv(
         process.env[key] = value;
       }
     }
+  }
+}
+
+/**
+ * The entries of a `NIMBUS_MCP_AUDIT_LOG` file the consent kit wrote, in order — how a standalone
+ * test sees what a write recorded (its target, and the pre-state an unrecoverable write captured).
+ * The chain's own integrity is `verifyAuditChain`'s job, not this one's.
+ */
+function auditEntries(auditLog: string): AuditEntry[] {
+  return readFileSync(auditLog, "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => (JSON.parse(line) as { entry: AuditEntry }).entry);
+}
+
+/** What {@link approvedStandaloneWrite} saw. */
+export interface ApprovedWrite {
+  /** The tool's JSON answer. */
+  readonly answer: unknown;
+  /** Every audit entry the call recorded, in order. */
+  readonly audit: AuditEntry[];
+  /** Whether the audit log the call wrote verifies as an intact chain. */
+  readonly chain: Awaited<ReturnType<typeof verifyAuditChain>>;
+}
+
+/**
+ * Make ONE write the way an operator would see it run standalone: registered for a client that can
+ * prompt, under `scopeEnv`, approved, with a fresh audit log that is read back, verified and
+ * deleted. The caller locks standalone mode first and stubs whatever the write reaches.
+ */
+export async function approvedStandaloneWrite(
+  register: ConnectorRegistrar,
+  scopeEnv: Readonly<Record<string, string>>,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<ApprovedWrite> {
+  const dir = mkdtempSync(join(tmpdir(), "nimbus-audit-"));
+  const auditLog = join(dir, "audit.jsonl");
+  try {
+    let answer: unknown;
+    await withEnv(
+      { ...scopeEnv, NIMBUS_MCP_AUDIT_LOG: auditLog, NIMBUS_MCP_WRITE_BUDGET: undefined },
+      async () => {
+        answer = await captureStandaloneTools(register, { elicitation: true }).tools.callJson(
+          tool,
+          args,
+        );
+      },
+    );
+    return { answer, audit: auditEntries(auditLog), chain: await verifyAuditChain(auditLog) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }

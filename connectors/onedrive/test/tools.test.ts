@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  type ApprovedWrite,
+  approvedStandaloneWrite,
   type CapturedTools,
   captureTools,
   type FetchStub,
@@ -128,6 +130,26 @@ describe("onedrive tools", () => {
         'Graph 403: {"error":{"code":"accessDenied"}}',
       );
     });
+  });
+
+  it("item_delete, approved standalone, audits the item id as the pre-state it destroys", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = serve({ status: 204, body: "" });
+    let run: ApprovedWrite | undefined;
+    await signedIn(async () => {
+      run = await approvedStandaloneWrite(
+        registerOnedriveTools,
+        { NIMBUS_MCP_ONEDRIVE_WRITE_SCOPE: "item:i1" },
+        "onedrive_item_delete",
+        { itemId: "i1" },
+      );
+    });
+    expect(run?.answer).toEqual({ ok: true });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`DELETE ${GRAPH}/me/drive/items/i1`);
+    expect(run?.audit.map((e) => e.outcome)).toEqual(["requested", "accepted", "executed"]);
+    expect(run?.audit[2]?.detail["preState"]).toEqual({ itemId: "i1" });
+    expect(run?.chain).toEqual({ ok: true, count: 3 });
   });
 
   it("refuses without MICROSOFT_OAUTH_ACCESS_TOKEN, before any request", async () => {

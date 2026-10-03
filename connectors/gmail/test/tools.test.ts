@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  type ApprovedWrite,
+  approvedStandaloneWrite,
   type CapturedTools,
   captureTools,
   type FetchStub,
@@ -196,5 +198,30 @@ describe("gmail tools", () => {
       );
     });
     expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("gmail_draft_send standalone: an unrecoverable send records its draft", () => {
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+
+  it("audits the draft id as pre-state before sending it, in an intact chain", async () => {
+    const stub = serve('{"id":"m-1"}');
+    let run: ApprovedWrite | undefined;
+    await withEnv({ GOOGLE_OAUTH_ACCESS_TOKEN: "ya29.gmail" }, async () => {
+      run = await approvedStandaloneWrite(
+        registerGmailTools,
+        { NIMBUS_MCP_GMAIL_WRITE_SCOPE: "draft:r-123" },
+        "gmail_draft_send",
+        { draftId: "r-123" },
+      );
+    });
+    expect(run?.answer).toEqual({ id: "m-1" });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`POST ${API}/drafts/send`);
+    expect(run?.audit.map((e) => e.outcome)).toEqual(["requested", "accepted", "executed"]);
+    expect(run?.audit[2]?.detail["preState"]).toEqual({ draftId: "r-123" });
+    expect(run?.chain).toEqual({ ok: true, count: 3 });
   });
 });

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  type ApprovedWrite,
+  approvedStandaloneWrite,
   type CapturedTools,
   captureTools,
   type FetchStub,
@@ -312,5 +314,28 @@ describe("outlook calendar writes", () => {
         "Graph 404: ErrorItemNotFound",
       );
     });
+  });
+
+  it("calendar_delete, approved standalone, audits the event id as the pre-state it destroys", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = serve({ status: 204, body: "" });
+    let run: ApprovedWrite | undefined;
+    await withEnv(
+      { MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token", MICROSOFT_OAUTH_SCOPES: undefined },
+      async () => {
+        run = await approvedStandaloneWrite(
+          registerOutlookTools,
+          { NIMBUS_MCP_OUTLOOK_WRITE_SCOPE: "calendar:AAMk/9" },
+          "outlook_calendar_delete",
+          { eventId: "AAMk/9" },
+        );
+      },
+    );
+    expect(run?.answer).toEqual({ ok: true });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`DELETE ${GRAPH}/me/events/AAMk%2F9`);
+    expect(run?.audit.map((e) => e.outcome)).toEqual(["requested", "accepted", "executed"]);
+    expect(run?.audit[2]?.detail["preState"]).toEqual({ eventId: "AAMk/9" });
+    expect(run?.chain).toEqual({ ok: true, count: 3 });
   });
 });
