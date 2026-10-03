@@ -115,6 +115,15 @@ describe("gdrive_file_list", () => {
       "Drive API 403: insufficient permissions",
     );
   });
+
+  it("quotes at most the first 200 characters of a failure body", async () => {
+    always({ status: 500, body: `${"x".repeat(200)}TAIL` });
+    const err = await tools.call("gdrive_file_list", {}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err instanceof Error ? err.message : err).toBe(`Drive API 500: ${"x".repeat(200)}`);
+  });
 });
 
 describe("gdrive_file_metadata", () => {
@@ -354,6 +363,20 @@ describe("gdrive_file_create", () => {
     await expect(tools.call("gdrive_file_create", { name: "x" })).rejects.toThrow(
       "Drive API 400: bad request",
     );
+  });
+
+  it("surfaces a multipart upload failure the same way", async () => {
+    always({ status: 413, body: "too large" });
+    await expect(tools.call("gdrive_file_create", { name: "x", content: "hello" })).rejects.toThrow(
+      "Drive API 413: too large",
+    );
+  });
+
+  it("returns the created file as Drive answered it", async () => {
+    always({ body: '{"id":"new","name":"note.txt"}' });
+    expect(
+      await tools.callJson("gdrive_file_create", { name: "note.txt", content: "hello" }),
+    ).toEqual({ id: "new", name: "note.txt" });
   });
 });
 
