@@ -73,6 +73,27 @@ describe("standaloneEligibility", () => {
     expect(v.reason).toMatch(/not been routed through the consent kit/);
   });
 
+  test("a delete declaration alone counts as mutating, gated or not", () => {
+    const root = mkdtempSync(join(tmpdir(), "elig-"));
+    for (const [id, source] of [
+      ["ungated", 'reg("x_delete", handler);\n'],
+      ["gated", 'registerWriteTool("x_delete", cfg, "d", s, h);\n'],
+    ] as const) {
+      mkdirSync(join(root, id, "src"), { recursive: true });
+      writeFileSync(
+        join(root, id, "nimbus.extension.json"),
+        JSON.stringify({ hitlRequired: ["delete"] }),
+      );
+      writeFileSync(join(root, id, "src", "tools.ts"), source);
+    }
+    try {
+      expect(standaloneEligibility("ungated", root).eligible).toBe(false);
+      expect(standaloneEligibility("gated", root)).toEqual({ eligible: true, reason: "hardened" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a read-only connector that POSTs is eligible — the verb is not the signal", () => {
     // snyk POSTs for its queries (snyk_get/list/search only), as do dagster's GraphQL, prefect's
     // filter endpoint, and ramp/wiz/superset's auth. An earlier verb-based check refused all
