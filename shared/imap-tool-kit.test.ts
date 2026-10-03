@@ -7,6 +7,8 @@ import {
   type EmailSendMailer,
   emailToolSchemas,
   envInt,
+  mailSendConsent,
+  outgoingMail,
   previewFromParts,
   registerEmailConnectorTools,
   viewEmailMessage,
@@ -412,5 +414,89 @@ describe("registerEmailConnectorTools", () => {
     const { recorded } = setup("imap");
     await expect(recorded[0]!.handler({ limit: 0 })).rejects.toThrow();
     await expect(recorded[1]!.handler({ uid: 0 })).rejects.toThrow();
+  });
+
+  test("the send tool declares `<prefix>.mail.send` and hands the mailer outgoingMail(args)", async () => {
+    const declared: { name: string; mutates: string }[] = [];
+    const sent: unknown[] = [];
+    let sendHandler: ((args: unknown) => Promise<unknown>) | undefined;
+    const registerWriteTool = ((
+      name: string,
+      cfg: { mutates: string },
+      _description: string,
+      _schema: unknown,
+      handler: (args: unknown) => Promise<unknown>,
+    ) => {
+      declared.push({ name, mutates: cfg.mutates });
+      sendHandler = handler;
+    }) as unknown as WriteToolRegistrar;
+    registerEmailConnectorTools({
+      server: fakeServer([]),
+      registerWriteTool,
+      toolPrefix: "protonmail",
+      descriptions: { list: "L", get: "G", search: "Se", send: "Sd" },
+      client: { list: async () => [], get: async () => null, search: async () => [] },
+      mailer: {
+        send: async (input) => {
+          sent.push(input);
+          return { messageId: null, accepted: [], rejected: [] };
+        },
+      },
+      formatAddr: fmtAddr,
+    });
+
+    await sendHandler?.({ to: "a@b.com", subject: "S", body: "B", cc: "", bcc: "c@d.com" });
+
+    expect(declared).toEqual([{ name: "protonmail_mail_send", mutates: "protonmail.mail.send" }]);
+    expect(sent).toEqual([{ to: "a@b.com", subject: "S", body: "B", bcc: "c@d.com" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// outgoingMail / mailSendConsent — the mail-send pieces every sending connector shares
+// ---------------------------------------------------------------------------
+
+describe("outgoingMail", () => {
+  test("keeps to, subject and body, in that order", () => {
+    const out = outgoingMail({ to: "a@b.com", subject: "S", body: "B" });
+    expect(out).toEqual({ to: "a@b.com", subject: "S", body: "B" });
+    expect(Object.keys(out)).toEqual(["to", "subject", "body"]);
+  });
+
+  test("carries a non-empty cc and bcc, after the body", () => {
+    const out = outgoingMail({ to: "a", subject: "S", body: "B", cc: "c", bcc: "d" });
+    expect(Object.keys(out)).toEqual(["to", "subject", "body", "cc", "bcc"]);
+    expect(out.cc).toBe("c");
+    expect(out.bcc).toBe("d");
+  });
+
+  test("drops an empty cc or bcc instead of passing an empty header on", () => {
+    const out = outgoingMail({ to: "a", subject: "S", body: "B", cc: "", bcc: "" });
+    expect(out).toEqual({ to: "a", subject: "S", body: "B" });
+    expect("cc" in out).toBe(false);
+    expect("bcc" in out).toBe(false);
+  });
+
+  test("drops an undefined cc or bcc without leaving the key behind", () => {
+    const out = outgoingMail({ to: "a", subject: "S", body: "B", cc: undefined, bcc: undefined });
+    expect(Object.keys(out)).toEqual(["to", "subject", "body"]);
+  });
+});
+
+describe("mailSendConsent", () => {
+  const cfg = mailSendConsent<{ to: string; subject: string; body: string }>("gmail.message.send");
+  const args = { to: "a@b.com", subject: "Hello", body: "secret body" };
+
+  test("declares the given action type as an unrecoverable mutation", () => {
+    expect(cfg.mutates).toBe("gmail.message.send");
+    expect(cfg.recoverable).toBe(false);
+  });
+
+  test("captures the recipient and subject — never the body — as pre-state", async () => {
+    expect(await cfg.capturePreState?.(args)).toEqual({ to: "a@b.com", subject: "Hello" });
+  });
+
+  test("scopes the mutation by recipient", () => {
+    expect(cfg.scopeTargetOf(args)).toEqual({ kind: "recipient", value: "a@b.com" });
   });
 });

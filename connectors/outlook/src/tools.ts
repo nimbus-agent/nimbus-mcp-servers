@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { headerLine } from "../../../shared/header-safe.ts";
+import { mailSendConsent } from "../../../shared/imap-tool-kit.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -161,12 +162,7 @@ export function registerOutlookTools(
   if (outlookToolShouldRegister("outlook_mail_send", grantedOutlookScopes)) {
     registerWriteTool(
       "outlook_mail_send",
-      {
-        mutates: "outlook.mail.send",
-        recoverable: false,
-        capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
-        scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
-      },
+      mailSendConsent("outlook.mail.send"),
       "Send an email via Microsoft Graph. Requires Gateway HITL email.send.",
       outlookMailSendArgs,
       async (data) => {

@@ -1,4 +1,4 @@
-import type { WriteToolRegistrar } from "./consent-kit.ts";
+import type { WriteToolConfig, WriteToolRegistrar } from "./consent-kit.ts";
 /**
  * Shared tool-layer helpers for the IMAP/JMAP email connectors (imap, protonmail).
  * Extracted to eliminate byte-identical duplication in tools.ts across those two
@@ -10,6 +10,10 @@ import type { WriteToolRegistrar } from "./consent-kit.ts";
  * connector-specific envelope/meta mappers are deliberately NOT extracted here
  * (they implement different local interfaces and are out of scope per the dedup
  * brief).
+ *
+ * The mail-SEND pieces — `sendArgs`, {@link outgoingMail} and {@link mailSendConsent} —
+ * serve every email connector that sends, whatever its transport: imap, protonmail and
+ * apple through the factory below, and fastmail (JMAP), gmail and outlook directly.
  */
 
 import { z } from "zod";
@@ -53,6 +57,55 @@ export const emailToolSchemas = {
   searchArgs,
   sendArgs,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Shared mail-send helpers (every connector that sends or drafts a new message)
+// ---------------------------------------------------------------------------
+
+/** What a send or draft tool hands its transport. */
+export interface OutgoingMail {
+  readonly to: string;
+  readonly subject: string;
+  readonly body: string;
+  readonly cc?: string;
+  readonly bcc?: string;
+}
+
+/**
+ * The outgoing message for validated `sendArgs`-shaped input: an empty `cc` or `bcc` is
+ * left out rather than handed on as an empty header.
+ */
+export function outgoingMail(args: {
+  readonly to: string;
+  readonly subject: string;
+  readonly body: string;
+  readonly cc?: string | undefined;
+  readonly bcc?: string | undefined;
+}): OutgoingMail {
+  return {
+    to: args.to,
+    subject: args.subject,
+    body: args.body,
+    ...(args.cc !== undefined && args.cc !== "" ? { cc: args.cc } : {}),
+    ...(args.bcc !== undefined && args.bcc !== "" ? { bcc: args.bcc } : {}),
+  };
+}
+
+/**
+ * The consent declaration every mail-send tool shares, given its action type (`mutates`).
+ * A sent mail cannot be recalled and nothing remains to query, so the recipient and
+ * subject ARE the pre-state; the recipient is what the write scope is checked against.
+ */
+export function mailSendConsent<T extends { readonly to: string; readonly subject: string }>(
+  mutates: string,
+): WriteToolConfig<T> {
+  return {
+    mutates,
+    recoverable: false,
+    capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
+    scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Shared view transformer (imap + protonmail tools.ts — viewMessage)
@@ -259,30 +312,11 @@ export function registerEmailConnectorTools(opts: {
 
   registerWriteTool(
     `${toolPrefix}_mail_send`,
-    {
-      mutates: `${toolPrefix}.mail.send`,
-      // A sent mail cannot be recalled and nothing remains to query, so the recipient and
-      // subject ARE the pre-state.
-      recoverable: false,
-      capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
-      scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
-    },
+    mailSendConsent(`${toolPrefix}.mail.send`),
     descriptions.send,
     sendArgs,
-    async (parsedData): Promise<McpListResult> => {
-      const parsed = { success: true as const, data: parsedData };
-      const input: { to: string; subject: string; body: string; cc?: string; bcc?: string } = {
-        to: parsed.data.to,
-        subject: parsed.data.subject,
-        body: parsed.data.body,
-      };
-      if (parsed.data.cc !== undefined && parsed.data.cc !== "") {
-        input.cc = parsed.data.cc;
-      }
-      if (parsed.data.bcc !== undefined && parsed.data.bcc !== "") {
-        input.bcc = parsed.data.bcc;
-      }
-      const res = await mailer.send(input);
+    async (args): Promise<McpListResult> => {
+      const res = await mailer.send(outgoingMail(args));
       return mcpJsonResult({
         messageId: res.messageId,
         accepted: res.accepted,

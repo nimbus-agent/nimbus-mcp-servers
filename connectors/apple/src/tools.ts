@@ -1,8 +1,9 @@
-import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
-
-import { headerLine } from "../../../shared/header-safe.ts";
-import { registerEmailConnectorTools } from "../../../shared/imap-tool-kit.ts";
+import {
+  emailToolSchemas,
+  outgoingMail,
+  registerEmailConnectorTools,
+} from "../../../shared/imap-tool-kit.ts";
 import { mcpJsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   type DraftAppender,
@@ -12,18 +13,6 @@ import {
 } from "./apple-mail-core.ts";
 import type { CalDavClient } from "./caldav-core.ts";
 import { type CalendarToolConfig, registerAppleCalendarTools } from "./calendar-tools.ts";
-
-// ---------------------------------------------------------------------------
-// Zod schema for the draft tool
-// ---------------------------------------------------------------------------
-
-const draftArgs = z.object({
-  to: headerLine({ min: 1 }),
-  subject: headerLine({ min: 1, max: 998 }),
-  body: z.string().max(1_000_000),
-  cc: headerLine().optional(),
-  bcc: headerLine().optional(),
-});
 
 // ---------------------------------------------------------------------------
 // Tool descriptions
@@ -92,27 +81,10 @@ export function registerAppleTools(
       scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
     },
     "Save a new email to the iCloud Mail Drafts folder via IMAP APPEND.",
-    draftArgs,
-    async (parsedData) => {
-      const parsed = { success: true as const, data: parsedData };
-      const input: {
-        to: string;
-        subject: string;
-        body: string;
-        cc?: string;
-        bcc?: string;
-      } = {
-        to: parsed.data.to,
-        subject: parsed.data.subject,
-        body: parsed.data.body,
-      };
-      if (parsed.data.cc !== undefined && parsed.data.cc !== "") {
-        input.cc = parsed.data.cc;
-      }
-      if (parsed.data.bcc !== undefined && parsed.data.bcc !== "") {
-        input.bcc = parsed.data.bcc;
-      }
-      const result = await draftAppender.appendDraft(input);
+    // A draft takes exactly what a send does.
+    emailToolSchemas.sendArgs,
+    async (args) => {
+      const result = await draftAppender.appendDraft(outgoingMail(args));
       return mcpJsonResult({ item: result });
     },
   );

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 
-import { emailToolSchemas } from "../../../shared/imap-tool-kit.ts";
+import { emailToolSchemas, mailSendConsent, outgoingMail } from "../../../shared/imap-tool-kit.ts";
 import {
   createRegisterSimpleTool,
   type McpListResult,
@@ -105,30 +105,11 @@ export function registerFastmailTools(
 
   registerWriteTool(
     "fastmail_mail_send",
-    {
-      mutates: "fastmail.mail.send",
-      // A sent mail cannot be recalled and nothing remains to query, so the recipient and
-      // subject ARE the pre-state.
-      recoverable: false,
-      capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
-      scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
-    },
+    mailSendConsent("fastmail.mail.send"),
     "Send a new email via JMAP EmailSubmission.",
     sendArgs,
-    async (parsedData): Promise<McpListResult> => {
-      const parsed = { success: true as const, data: parsedData };
-      const input: { to: string; subject: string; body: string; cc?: string; bcc?: string } = {
-        to: parsed.data.to,
-        subject: parsed.data.subject,
-        body: parsed.data.body,
-      };
-      if (parsed.data.cc !== undefined && parsed.data.cc !== "") {
-        input.cc = parsed.data.cc;
-      }
-      if (parsed.data.bcc !== undefined && parsed.data.bcc !== "") {
-        input.bcc = parsed.data.bcc;
-      }
-      const res = await client.send(input);
+    async (args): Promise<McpListResult> => {
+      const res = await client.send(outgoingMail(args));
       return mcpJsonResult({ emailId: res.emailId, submissionId: res.submissionId });
     },
   );
