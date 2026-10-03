@@ -222,6 +222,10 @@ describe("slack tools (gateway mode)", () => {
     for (const [reply, message] of [
       ['{"ok":false,"error":"channel_not_found"}', 'Slack conversations.history: {"ok":false'],
       ["<html>rate limited</html>", "Slack conversations.history: <html>rate limited</html>"],
+      // JSON that is not an object has no `ok: true` to find, so it is a failure too — `null`
+      // included, which must be reported like the rest rather than throw while being read.
+      ['["ok",true]', 'Slack conversations.history: ["ok",true]'],
+      ["null", "Slack conversations.history: null"],
       [{ status: 500, body: '{"ok":true}' }, 'Slack conversations.history: {"ok":true}'],
     ] as const) {
       serve(reply);

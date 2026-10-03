@@ -71,6 +71,19 @@ describe("google photos media tools POST one mediaItems:search body", () => {
     ).toBe('{"pageSize":50,"albumId":"alb-1","filters":{"includeArchivedMedia":true}}');
   });
 
+  it("gphotos_media_search can switch on both filters, in a stable order", async () => {
+    expect(
+      (
+        await searchRequest("gphotos_media_search", {
+          includeArchivedMedia: true,
+          excludeNonAppCreatedData: true,
+        })
+      ).body,
+    ).toBe(
+      '{"pageSize":50,"filters":{"includeArchivedMedia":true,"excludeNonAppCreatedData":true}}',
+    );
+  });
+
   it("gphotos_media_search sends no filters object when none is on", async () => {
     expect(
       (

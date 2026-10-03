@@ -147,4 +147,60 @@ describe("snowflake server main tools", () => {
     const handler = captureTools().get("snowflake_get") as Handler;
     await expect(handler({ id: "DB1.PUBLIC.USERS" })).rejects.toThrow(/Snowflake 500:/);
   });
+
+  it("reads statement rows defensively, keeping only what it can name", async () => {
+    // An unnamed column is dropped, a data row that is not an array is skipped, and a blank
+    // row_count is left as given rather than turned into 0. A cursor that is not a number
+    // pages from the start.
+    const statements: string[] = [];
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      statements.push((JSON.parse(init.body) as { statement: string }).statement);
+      return new Response(
+        JSON.stringify({
+          resultSetMetaData: {
+            rowType: [{ name: "DATABASE_NAME" }, {}, { name: "TABLE_NAME" }, { name: "ROW_COUNT" }],
+          },
+          data: [["DB1", "dropped", "EVENTS", ""], "not-a-row", ["DB1", "x", "LOGS", "7"]],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const out = payload(
+      await (captureTools().get("snowflake_list") as Handler)({ cursor: "not-a-number" }),
+    );
+    expect(out["items"]).toEqual([
+      { database_name: "DB1", table_name: "EVENTS", row_count: "" },
+      { database_name: "DB1", table_name: "LOGS", row_count: 7 },
+    ]);
+    expect(out["nextCursor"]).toBeNull();
+    expect(statements[0]).toEndWith("LIMIT 200 OFFSET 0");
+  });
+
+  it("matches a table whose schema name is missing by the parts it does have", async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          resultSetMetaData: {
+            rowType: [{ name: "DATABASE_NAME" }, { name: "SCHEMA_NAME" }, { name: "TABLE_NAME" }],
+          },
+          data: [["DB1", null, "EVENTS"]],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const out = payload(
+      await (captureTools().get("snowflake_get") as Handler)({ id: "db1..events" }),
+    );
+    expect(out).toEqual({ database_name: "DB1", schema_name: null, table_name: "EVENTS" });
+  });
+
+  it("finds no rows in an answer without metadata or data", async () => {
+    globalThis.fetch = (async () =>
+      new Response('{"code":"390318","message":"session expired"}', {
+        status: 200,
+      })) as unknown as typeof fetch;
+    const out = payload(
+      await (captureTools().get("snowflake_search") as Handler)({ query: "events" }),
+    );
+    expect(out).toEqual({ matches: [] });
+  });
 });

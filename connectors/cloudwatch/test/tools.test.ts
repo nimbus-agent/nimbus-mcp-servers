@@ -263,6 +263,29 @@ describe("registerCloudwatchTools", () => {
     expect(result.matches[1]?.logGroupName).toBe("another-test");
   });
 
+  it("cloudwatch_search skips log-group entries that are not objects", async () => {
+    const { server, tools } = stubServer();
+    // @ts-expect-error test mock
+    registerCloudwatchTools(server);
+
+    const mockSpawn = mock(() => ({
+      exited: Promise.resolve(0),
+      stdout: new Blob([
+        JSON.stringify({
+          logGroups: [null, "api-logs", ["api-logs"], { logGroupName: "api-logs" }],
+        }),
+      ]),
+      stderr: new Blob([""]),
+    }));
+    // @ts-expect-error test mock
+    Bun.spawn = mockSpawn;
+
+    const result = parseResult(await tools["cloudwatch_search"]!({ query: "api" })) as {
+      matches: unknown[];
+    };
+    expect(result.matches).toEqual([{ logGroupName: "api-logs" }]);
+  });
+
   it("throws error on non-zero exit code", async () => {
     const { server, tools } = stubServer();
     // @ts-expect-error test mock

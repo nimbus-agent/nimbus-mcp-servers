@@ -62,6 +62,7 @@ describe("bitbucket reads", () => {
     ],
     ["bitbucket_pipeline_list", { repoFull: REPO }, `${REPO_PATH}/pipelines/?pagelen=30`],
     ["bitbucket_issue_list", { repoFull: REPO, pagelen: 10 }, `${REPO_PATH}/issues?pagelen=10`],
+    ["bitbucket_issue_list", { repoFull: REPO }, `${REPO_PATH}/issues?pagelen=30`],
     ["bitbucket_pr_get", { repoFull: REPO, pullRequestId: 42 }, `${REPO_PATH}/pullrequests/42`],
     [
       "bitbucket_pipeline_get",

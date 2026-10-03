@@ -273,6 +273,27 @@ describe("tableau server", () => {
         "Tableau views 400",
       );
     });
+
+    it("reads an answer with no view list as an empty, final page", async () => {
+      globalThis.fetch = (async (url: string) => {
+        const u = String(url);
+        if (u.includes("/auth/signin")) {
+          return new Response(
+            JSON.stringify({ credentials: { token: "tok", site: { id: "site-1" } } }),
+            { status: 200 },
+          );
+        }
+        if (u.includes("/views")) {
+          return new Response(JSON.stringify({ views: {}, pagination: {} }), { status: 200 });
+        }
+        throw new Error("unexpected url");
+      }) as unknown as typeof fetch;
+
+      const tools = captureTools();
+      const out = parsePayload(await tool(tools, "tableau_list")({ cursor: null, limit: 10 }));
+      expect(out.items).toEqual([]);
+      expect(out.nextCursor).toBeNull();
+    });
   });
 
   describe("tableau_search", () => {

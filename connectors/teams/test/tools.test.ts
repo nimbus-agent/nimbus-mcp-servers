@@ -111,3 +111,97 @@ describe("teams_message_post_chat is a gated write (standalone mode)", () => {
     expect(fetchStub.calls).toEqual([]);
   });
 });
+
+describe("teams paged reads", () => {
+  const GRAPH = "https://graph.microsoft.com/v1.0";
+
+  it("start from their first page, then follow a Graph nextLink exactly as given", async () => {
+    const next = `${GRAPH}/me/joinedTeams?$top=50&$skiptoken=abc`;
+    await tools.call("teams_team_list", {});
+    await tools.call("teams_team_list", { nextLink: next });
+    await tools.call("teams_channel_list", { teamId: "t/1", top: 5 });
+    expect(fetchStub.calls.map((c) => c.url)).toEqual([
+      `${GRAPH}/me/joinedTeams?$top=50`,
+      next,
+      `${GRAPH}/teams/t%2F1/channels?$top=5`,
+    ]);
+  });
+
+  it("refuse a nextLink on another origin before sending the token anywhere", async () => {
+    await expect(
+      tools.call("teams_team_list", { nextLink: "https://evil.example.com/v1.0/me/joinedTeams" }),
+    ).rejects.toThrow(
+      "resolveUrlWithBase: refusing to fetch cross-origin URL (got https://evil.example.com, expected https://graph.microsoft.com)",
+    );
+    expect(fetchStub.calls).toEqual([]);
+  });
+});
+
+describe("teams_chat_post through the Bot Framework (gateway mode)", () => {
+  const BOT_TOKEN_URL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token";
+  const BOT = { TEAMS_BOT_APP_ID: "app-id", TEAMS_BOT_APP_PASSWORD: "app-secret" };
+
+  /** Answer the token endpoint with `token`, and every other request with an activity id. */
+  function botServer(token: string): void {
+    fetchStub.restore();
+    fetchStub = stubFetch((req) => (req.url === BOT_TOKEN_URL ? token : '{"id":"act-1"}'));
+  }
+
+  it("exchanges the app credentials for a token, then posts a message activity", async () => {
+    botServer('{"access_token":"bot-token"}');
+    await withEnv({ ...BOT, TEAMS_BOT_SERVICE_URL: undefined }, async () => {
+      expect(
+        await tools.callJson("teams_chat_post", { conversationId: "a:1/2", text: "deployed" }),
+      ).toEqual({ id: "act-1" });
+    });
+    const [exchange, post] = fetchStub.calls;
+    expect(`${exchange?.method} ${exchange?.url}`).toBe(`POST ${BOT_TOKEN_URL}`);
+    expect(Object.fromEntries(new URLSearchParams(exchange?.body ?? ""))).toEqual({
+      grant_type: "client_credentials",
+      client_id: "app-id",
+      client_secret: "app-secret",
+      scope: "https://api.botframework.com/.default",
+    });
+    expect(`${post?.method} ${post?.url}`).toBe(
+      "POST https://smba.trafficmanager.net/teams/v3/conversations/a%3A1%2F2/activities",
+    );
+    expect(post?.headers["authorization"]).toBe("Bearer bot-token");
+    expect(JSON.parse(post?.body ?? "null")).toEqual({ type: "message", text: "deployed" });
+  });
+
+  it("posts to the region's service URL, adding the trailing slash it lacks", async () => {
+    botServer('{"access_token":"bot-token"}');
+    await withEnv({ ...BOT, TEAMS_BOT_SERVICE_URL: "https://smba.example.com/emea" }, async () => {
+      await tools.call("teams_chat_post", { conversationId: "c1", text: "hi" });
+    });
+    expect(fetchStub.calls[1]?.url).toBe(
+      "https://smba.example.com/emea/v3/conversations/c1/activities",
+    );
+  });
+
+  for (const [answer, error] of [
+    ['"not-an-object"', "Bot Framework token: missing access_token"],
+    ['{"token_type":"Bearer"}', "Bot Framework token: missing access_token"],
+    ["<html>down</html>", "Bot Framework token: non-JSON response"],
+  ] as const) {
+    it(`refuses to post when the token endpoint answers ${answer}`, async () => {
+      botServer(answer);
+      await withEnv(BOT, async () => {
+        await expect(
+          tools.call("teams_chat_post", { conversationId: "c1", text: "hi" }),
+        ).rejects.toThrow(error);
+      });
+      expect(fetchStub.calls.map((c) => c.url)).toEqual([BOT_TOKEN_URL]);
+    });
+  }
+
+  it("quotes a refused credential exchange", async () => {
+    fetchStub.restore();
+    fetchStub = stubFetch({ status: 401, body: '{"error":"invalid_client"}' });
+    await withEnv(BOT, async () => {
+      await expect(
+        tools.call("teams_chat_post", { conversationId: "c1", text: "hi" }),
+      ).rejects.toThrow('Bot Framework token: {"error":"invalid_client"}');
+    });
+  });
+});
