@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -118,35 +118,42 @@ export function registerAwsTools(
       payloadJson: z.string().optional(),
     }),
     async (p) => {
+      // The CLI reads the payload from a file and writes the response to one. Both are the
+      // caller's data, so the directory holding them is removed however the call ends — it used
+      // to be left in the temp dir on every invocation.
       const dir = mkdtempSync(join(tmpdir(), "nimbus-aws-lambda-"));
-      const outFile = join(dir, "response.json");
-      if (p.payloadJson !== undefined && p.payloadJson !== "") {
-        const pf = join(dir, "payload.json");
-        writeFileSync(pf, p.payloadJson, "utf8");
-        const cmd = [
-          "aws",
-          "lambda",
-          "invoke",
-          "--function-name",
-          p.functionName,
-          "--payload",
-          `file://${pf}`,
-          outFile,
-        ];
-        await runCliOkThrowing(cmd, awsEnv());
-      } else {
-        await runCliOkThrowing(
-          ["aws", "lambda", "invoke", "--function-name", p.functionName, outFile],
-          awsEnv(),
-        );
-      }
-      let body: unknown;
       try {
-        body = JSON.parse(readFileSync(outFile, "utf8")) as unknown;
-      } catch {
-        body = { ok: true };
+        const outFile = join(dir, "response.json");
+        if (p.payloadJson !== undefined && p.payloadJson !== "") {
+          const pf = join(dir, "payload.json");
+          writeFileSync(pf, p.payloadJson, "utf8");
+          const cmd = [
+            "aws",
+            "lambda",
+            "invoke",
+            "--function-name",
+            p.functionName,
+            "--payload",
+            `file://${pf}`,
+            outFile,
+          ];
+          await runCliOkThrowing(cmd, awsEnv());
+        } else {
+          await runCliOkThrowing(
+            ["aws", "lambda", "invoke", "--function-name", p.functionName, outFile],
+            awsEnv(),
+          );
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(readFileSync(outFile, "utf8")) as unknown;
+        } catch {
+          body = { ok: true };
+        }
+        return jsonResult(body);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-      return jsonResult(body);
     },
   );
 

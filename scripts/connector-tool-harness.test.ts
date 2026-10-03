@@ -195,6 +195,14 @@ describe("stubSpawn", () => {
     Bun.spawn(["tool", "--flag"]);
     expect(stub.calls).toEqual([{ command: ["tool", "--flag"], env: {} }]);
   });
+
+  it("runs onSpawn with the command at the moment of the spawn", () => {
+    const seen: string[][] = [];
+    stub = stubSpawn({ onSpawn: (command) => seen.push([...command]) });
+    expect(seen).toEqual([]);
+    Bun.spawn(["tool", "--flag"]);
+    expect(seen).toEqual([["tool", "--flag"]]);
+  });
 });
 
 describe("bootOverStubbedStdio and connectOverStubbedStdio", () => {

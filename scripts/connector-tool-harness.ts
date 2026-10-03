@@ -460,9 +460,18 @@ export interface SpawnStub {
  * Without it a contract test that calls their tools runs the real binaries: an
  * observed two seconds per connector, and a genuine subprocess on the machine
  * running the suite.
+ *
+ * `onSpawn` runs with the command at the moment of the spawn, which is when a
+ * real CLI reads its input files and writes its output files, so a test can
+ * check or play that side of the exchange while the connector waits on it.
  */
 export function stubSpawn(
-  reply: { stdout?: string; stderr?: string; exitCode?: number } = {},
+  reply: {
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+    onSpawn?: (command: readonly string[]) => void;
+  } = {},
 ): SpawnStub {
   const original = Bun.spawn;
   const calls: RecordedSpawn[] = [];
@@ -471,6 +480,7 @@ export function stubSpawn(
     options?: { env?: Record<string, string | undefined> },
   ): unknown => {
     calls.push({ command: [...command], env: options?.env ?? {} });
+    reply.onSpawn?.(command);
     return {
       exited: Promise.resolve(reply.exitCode ?? 0),
       stdout: new Blob([reply.stdout ?? "{}"]),

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -20,7 +20,7 @@ let spawn: SpawnStub | undefined;
 const lambdaDirs = new Set<string>();
 
 /** Answer every aws call with this reply, replacing any stub already installed. */
-function cli(reply: { stdout?: string; stderr?: string; exitCode?: number }): SpawnStub {
+function cli(reply: Parameters<typeof stubSpawn>[0]): SpawnStub {
   spawn?.restore();
   spawn = stubSpawn(reply);
   return spawn;
@@ -33,6 +33,17 @@ function trackLambdaDir(command: readonly string[] | undefined): void {
   const dir = dirname(outFile);
   // Only ever a directory the connector made under the system temp dir, never anything else.
   if (dir.startsWith(join(tmpdir(), "nimbus-aws-lambda-"))) lambdaDirs.add(dir);
+}
+
+/**
+ * Assert the temp dir an invocation wrote into is gone. Checked to BE such a directory first, so a
+ * command that recorded no response path cannot pass as "nothing left behind".
+ */
+function expectLambdaDirRemoved(command: readonly string[] | undefined): void {
+  trackLambdaDir(command);
+  const dir = dirname(command?.at(-1) ?? "");
+  expect(dir.startsWith(join(tmpdir(), "nimbus-aws-lambda-"))).toBe(true);
+  expect(existsSync(dir)).toBe(false);
 }
 
 beforeEach(() => {
@@ -105,16 +116,25 @@ describe("aws_lambda_invoke", () => {
       ok: true,
     });
     const command = stub.calls[0]?.command;
-    trackLambdaDir(command);
     expect(command?.slice(0, 5)).toEqual(["aws", "lambda", "invoke", "--function-name", "fn"]);
     expect(command).toHaveLength(6);
+    expectLambdaDirRemoved(command);
   });
 
-  it("passes the payload as a file when one is given", async () => {
-    const stub = cli({ stdout: "" });
-    await tools.call("aws_lambda_invoke", { functionName: "fn", payloadJson: '{"a":1}' });
+  it("hands the CLI the payload as a file and answers with the function's response", async () => {
+    let payloadSeen: string | undefined;
+    const stub = cli({
+      stdout: "",
+      // What the real CLI does while it runs: read the payload file, write the response file.
+      onSpawn: (command) => {
+        payloadSeen = readFileSync((command[6] ?? "").slice("file://".length), "utf8");
+        writeFileSync(command.at(-1) ?? "", '{"StatusCode":200}', "utf8");
+      },
+    });
+    expect(
+      await tools.callJson("aws_lambda_invoke", { functionName: "fn", payloadJson: '{"a":1}' }),
+    ).toEqual({ StatusCode: 200 });
     const command = stub.calls[0]?.command;
-    trackLambdaDir(command);
     expect(command?.slice(0, 6)).toEqual([
       "aws",
       "lambda",
@@ -124,11 +144,13 @@ describe("aws_lambda_invoke", () => {
       "--payload",
     ]);
     expect(command?.[6]).toStartWith("file://");
-    expect(existsSync((command?.[6] ?? "").slice("file://".length))).toBe(true);
+    expect(payloadSeen).toBe('{"a":1}');
+    // The payload and the response are the caller's data: neither stays in the temp dir.
+    expectLambdaDirRemoved(command);
   });
 
   for (const payloadJson of [undefined, '{"a":1}']) {
-    it(`throws aws's exit code and stderr (${payloadJson === undefined ? "no " : ""}payload)`, async () => {
+    it(`throws aws's exit code and stderr, leaving nothing behind (${payloadJson === undefined ? "no " : ""}payload)`, async () => {
       const stub = cli({ exitCode: 255, stderr: "ResourceNotFound" });
       await expect(
         tools.call("aws_lambda_invoke", {
@@ -136,7 +158,7 @@ describe("aws_lambda_invoke", () => {
           ...(payloadJson === undefined ? {} : { payloadJson }),
         }),
       ).rejects.toThrow("aws exited 255: ResourceNotFound");
-      trackLambdaDir(stub.calls[0]?.command);
+      expectLambdaDirRemoved(stub.calls[0]?.command);
     });
   }
 });
