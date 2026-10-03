@@ -97,6 +97,12 @@ on). The procedure, and the traps it has to avoid, are in
   `slack_message_post_dm`, `teams_message_post_chat` — offered to every client, including ones that
   cannot prompt, with no consent gate, scope check or budget. Check every new tool's registrar by
   hand.
+- **A URL in a tool argument is the model's choice.** A next-page link a tool takes back must reach
+  the network only through `resolveUrlWithBase` (`shared/fetch-bearer-json.ts`), which refuses
+  another origin before the credential is sent. `bitbucket` fetched its `page` argument as given
+  until October 2026: a read tool, so no consent prompt, that would have sent the username and app
+  password to any host the model named. The Graph connectors (`outlook`, `onedrive`, `teams`)
+  already resolved their `nextLink` that way.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's
   write-registration check is an exact string match, and a CRLF checkout left a trailing carriage
   return that made it report two correctly-hardened connectors as declaring ungated writes.

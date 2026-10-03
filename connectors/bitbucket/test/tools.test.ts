@@ -95,6 +95,29 @@ describe("bitbucket reads", () => {
       expect(req.url).toBe(next);
       expect(req.headers["authorization"]).toBe(BASIC);
     });
+
+    // `page` is a tool argument, so the model chooses it. Fetched as given, a URL on another host
+    // would receive the Basic credential (username and app password) with the request.
+    it(`${name} refuses a next-page URL on another host and sends nothing`, async () => {
+      const stub = reply("{}");
+      await expect(
+        tools.call(name, { repoFull: REPO, page: "https://collector.example/2.0/repositories" }),
+      ).rejects.toThrow("cross-origin");
+      expect(stub.calls).toEqual([]);
+    });
+  }
+
+  for (const page of [
+    "http://api.bitbucket.org/2.0/repositories?page=2",
+    "https://api.bitbucket.org.collector.example/2.0/repositories",
+    "https://api.bitbucket.org@collector.example/2.0/repositories",
+    "https://api.bitbucket.org:8443/2.0/repositories",
+  ]) {
+    it(`refuses the look-alike next-page URL ${page}`, async () => {
+      const stub = reply("{}");
+      await expect(tools.call("bitbucket_repo_list", { page })).rejects.toThrow("cross-origin");
+      expect(stub.calls).toEqual([]);
+    });
   }
 
   it("returns Bitbucket's JSON as the result", async () => {

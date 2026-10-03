@@ -108,6 +108,12 @@ if (!token) throw new Error("ACME_TOKEN not set");
 
 Never call a Vault API — the connector process has no Vault access by design, in either mode.
 
+A URL that arrives as a tool argument, such as the next-page link a paged tool takes back from an
+earlier response, is chosen by the model. Resolve it with `resolveUrlWithBase` from
+`shared/fetch-bearer-json.ts` before any request that carries the credential: it refuses an
+absolute URL on any other origin. Until October 2026 `bitbucket` fetched its `page` argument as
+given, which would have sent the username and app password to whatever host it named.
+
 ## Dependencies
 
 The real dependency set is declared once, in the **root** `package.json`. A per-connector

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
-import { joinApiPath } from "../../../shared/join-api-path.ts";
+import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -34,8 +34,14 @@ function repoPath(repoFull: string): string {
   return `/repositories/${encodeURIComponent(workspace)}/${encodeURIComponent(repoSlug)}`;
 }
 
+/**
+ * One credentialed Bitbucket request. `path` is relative to {@link BB_API}, or an absolute URL —
+ * the `next` link of an earlier page, which a paged tool takes back as its `page` ARGUMENT, so the
+ * model chooses it. `resolveUrlWithBase` refuses an absolute URL on any other origin before
+ * anything is sent: fetched as given, it would hand that host the username and app password.
+ */
 async function bbFetch(path: string, init?: RequestInit): Promise<RestFetchResult> {
-  const url = joinApiPath(BB_API, path);
+  const url = resolveUrlWithBase(BB_API, path);
   const baseHeaders: Record<string, string> = {
     Authorization: basicAuthHeader(),
     Accept: "application/json",
