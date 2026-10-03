@@ -65,7 +65,9 @@ export function registerGooglePhotosTools(server: { tool: (...args: never) => un
       if (parsed.pageToken !== undefined && parsed.pageToken !== "") {
         u.searchParams.set("pageToken", parsed.pageToken);
       }
-      return `${u.pathname}${u.search}`;
+      // Relative to PHOTOS_BASE, like every other tool here: the fetcher prefixes the base, which
+      // already ends in /v1, so returning `u.pathname` requested /v1/v1/albums.
+      return `/albums${u.search}`;
     },
   );
 

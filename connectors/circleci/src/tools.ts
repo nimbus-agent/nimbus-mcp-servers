@@ -95,7 +95,9 @@ export function registerCircleciTools(
       if (parsed.pageToken !== undefined) {
         u.searchParams.set("page-token", parsed.pageToken);
       }
-      return `${u.pathname}${u.search}`;
+      // Relative to CCI_API, like every other tool here: the fetcher prefixes the base, which
+      // already ends in /api/v2, so returning `u.pathname` requested /api/v2/api/v2/….
+      return `${base}${u.search}`;
     },
   );
 

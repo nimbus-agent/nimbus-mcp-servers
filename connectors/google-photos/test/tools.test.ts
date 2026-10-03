@@ -87,3 +87,28 @@ describe("google photos media tools POST one mediaItems:search body", () => {
     expect(fetchStub.only.headers["authorization"]).toBe("Bearer ya29.photos");
   });
 });
+
+describe("google photos album tools", () => {
+  const API = "https://photoslibrary.googleapis.com/v1";
+
+  async function urlOf(name: string, args: Record<string, unknown>): Promise<string> {
+    await tools.call(name, args);
+    return fetchStub.only.url;
+  }
+
+  it("album_list asks for 25 albums once under the API base", async () => {
+    expect(await urlOf("gphotos_album_list", {})).toBe(`${API}/albums?pageSize=25`);
+  });
+
+  it("album_list pages by size and token, and drops an empty token", async () => {
+    expect(await urlOf("gphotos_album_list", { pageSize: 50, pageToken: "next" })).toBe(
+      `${API}/albums?pageSize=50&pageToken=next`,
+    );
+    fetchStub.calls.length = 0;
+    expect(await urlOf("gphotos_album_list", { pageToken: "" })).toBe(`${API}/albums?pageSize=25`);
+  });
+
+  it("album_get addresses one encoded album", async () => {
+    expect(await urlOf("gphotos_album_get", { albumId: "a/1" })).toBe(`${API}/albums/a%2F1`);
+  });
+});

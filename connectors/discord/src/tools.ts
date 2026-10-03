@@ -61,12 +61,15 @@ export function registerDiscordTools(server: { tool: (...args: never) => unknown
     }),
     (parsed) => {
       const lim = parsed.limit ?? 50;
-      const u = new URL(`${DISCORD_API}/channels/${encodeURIComponent(parsed.channelId)}/messages`);
+      const path = `/channels/${encodeURIComponent(parsed.channelId)}/messages`;
+      const u = new URL(`${DISCORD_API}${path}`);
       u.searchParams.set("limit", String(lim));
       if (parsed.after !== undefined && parsed.after !== "") {
         u.searchParams.set("after", parsed.after);
       }
-      return `${u.pathname}${u.search}`;
+      // Relative to DISCORD_API, like every other tool here: the fetcher prefixes the base, which
+      // already ends in /api/v10, so returning `u.pathname` requested /api/v10/api/v10/….
+      return `${path}${u.search}`;
     },
   );
 
