@@ -47,7 +47,10 @@ export function registerArgocdTools(reg: ZodToolRegistrar, server: unknown): voi
   // kit needs the real server, which the helper now passes through as its second argument.
   const registerWriteTool = createWriteToolRegistrar(server as ConsentServer, {
     connector: "argocd",
-    scopeEnv: "NIMBUS_MCP_APP_WRITE_SCOPE",
+    // NIMBUS_MCP_<SERVICE>_WRITE_SCOPE, as docs/configuration.md documents for every connector.
+    // This read NIMBUS_MCP_APP_WRITE_SCOPE (the scope KIND, not the service), so the documented
+    // variable was ignored and every argocd write refused as out of scope.
+    scopeEnv: "NIMBUS_MCP_ARGOCD_WRITE_SCOPE",
     scopeKinds: ["app"],
   });
 
