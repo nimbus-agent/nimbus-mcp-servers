@@ -60,7 +60,7 @@ export function registerAwsTools(
   const registerWriteTool = createWriteToolRegistrar(server, {
     connector: "aws",
     scopeEnv: "NIMBUS_MCP_AWS_WRITE_SCOPE",
-    scopeKinds: ["cluster", "function"],
+    scopeKinds: ["cluster", "function", "instance"],
   });
 
   reg(
@@ -150,9 +150,16 @@ export function registerAwsTools(
     },
   );
 
-  reg(
+  // The two EC2 actions are WRITES. They were registered as reads, which in standalone mode offered
+  // them to every client with no consent prompt, scope check, budget or audit record.
+  registerWriteTool(
     "aws_ec2_instance_stop",
-    "Stop EC2 instances. HITL.",
+    {
+      mutates: "aws.ec2.instance.stop",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "instance", value: p.instanceIds }),
+    },
+    "Stop EC2 instances.",
     z.object({ instanceIds: z.string().min(1) }),
     async (p) => {
       await runCliOkThrowing(
@@ -163,9 +170,14 @@ export function registerAwsTools(
     },
   );
 
-  reg(
+  registerWriteTool(
     "aws_ec2_instance_start",
-    "Start EC2 instances. HITL.",
+    {
+      mutates: "aws.ec2.instance.start",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "instance", value: p.instanceIds }),
+    },
+    "Start EC2 instances.",
     z.object({ instanceIds: z.string().min(1) }),
     async (p) => {
       await runCliOkThrowing(

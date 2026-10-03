@@ -120,7 +120,9 @@ export function registerSlackTools(
   const registerWriteTool = createWriteToolRegistrar(server, {
     connector: "slack",
     scopeEnv: "NIMBUS_MCP_SLACK_WRITE_SCOPE",
-    scopeKinds: ["channel"],
+    // `user` scopes a direct message by the recipient's user id, which is all a DM has before
+    // `conversations.open` creates its channel.
+    scopeKinds: ["channel", "user"],
   });
 
   const slackChannelListSchema = z.object({
@@ -285,9 +287,16 @@ export function registerSlackTools(
     text: z.string().min(1),
   });
 
-  reg(
+  // A WRITE: it sends a message. It was registered as a read, which in standalone mode offered it
+  // to every client with no consent prompt, scope check, budget or audit record.
+  registerWriteTool(
     "slack_message_post_dm",
-    "Open or find a DM with user id(s) and send a message (requires HITL slack.message.post).",
+    {
+      mutates: "slack.message.post",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "user", value: p.user_ids }),
+    },
+    "Open or find a DM with user id(s) and send a message.",
     slackMessagePostDmSchema,
     async (parsed) => {
       const token = requireProcessEnv("SLACK_USER_ACCESS_TOKEN");

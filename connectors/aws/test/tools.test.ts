@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   type SpawnStub,
+  type StandaloneCapture,
   stubSpawn,
+  withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerAwsTools } from "../src/tools.ts";
@@ -166,4 +169,74 @@ describe("aws list tools", () => {
       "aws exited 253: no credentials",
     );
   });
+
+  it("hands aws the credentials, region and profile trimmed of surrounding whitespace", async () => {
+    const stub = cli({ stdout: "{}" });
+    await withEnv(
+      {
+        AWS_ACCESS_KEY_ID: " AKIATEST\n",
+        AWS_SECRET_ACCESS_KEY: "\tsecret ",
+        AWS_DEFAULT_REGION: " eu-west-1 ",
+        AWS_PROFILE: " prod ",
+      },
+      async () => {
+        await tools.call("aws_lambda_list", {});
+      },
+    );
+    const env = stub.calls[0]?.env ?? {};
+    expect([
+      env["AWS_ACCESS_KEY_ID"],
+      env["AWS_SECRET_ACCESS_KEY"],
+      env["AWS_DEFAULT_REGION"],
+      env["AWS_PROFILE"],
+    ]).toEqual(["AKIATEST", "secret", "eu-west-1", "prod"]);
+  });
+});
+
+describe("the EC2 actions are gated writes (standalone mode)", () => {
+  /** Register in standalone mode for a client that can (or cannot) prompt, with i-1 in scope. */
+  async function standalone(elicitation: boolean): Promise<StandaloneCapture> {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    let captured: StandaloneCapture | undefined;
+    await withEnv(
+      { NIMBUS_MCP_AWS_WRITE_SCOPE: "instance:i-1", NIMBUS_MCP_AUDIT_LOG: undefined },
+      () => {
+        captured = captureStandaloneTools(registerAwsTools, { elicitation });
+      },
+    );
+    if (captured === undefined) throw new Error("registration did not run");
+    return captured;
+  }
+
+  for (const [tool, action] of [
+    ["aws_ec2_instance_stop", "aws.ec2.instance.stop"],
+    ["aws_ec2_instance_start", "aws.ec2.instance.start"],
+  ] as const) {
+    it(`${tool} is not offered at all to a client that cannot prompt a human`, async () => {
+      const names = (await standalone(false)).tools.names();
+      expect(names).not.toContain(tool);
+      expect(names).toContain("aws_lambda_list");
+    });
+
+    it(`${tool} runs on an in-scope instance only after the human approved it`, async () => {
+      const { tools: gated, prompts } = await standalone(true);
+      const stub = cli({ stdout: "" });
+      expect(await gated.callJson(tool, { instanceIds: "i-1" })).toEqual({ ok: true });
+      expect(stub.calls).toHaveLength(1);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain(action);
+    });
+
+    it(`${tool} refuses an out-of-scope instance without prompting or running aws`, async () => {
+      const { tools: gated, prompts } = await standalone(true);
+      const stub = cli({ stdout: "" });
+      expect(await gated.callJson(tool, { instanceIds: "i-2" })).toEqual({
+        ok: false,
+        error: "out of scope: instance:i-2 is not in NIMBUS_MCP_AWS_WRITE_SCOPE",
+      });
+      expect(prompts).toEqual([]);
+      expect(stub.calls).toEqual([]);
+    });
+  }
 });

@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   type FetchStub,
+  type StandaloneCapture,
   stubFetch,
+  withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerTeamsTools } from "../src/tools.ts";
@@ -64,6 +67,47 @@ describe("teams message posts", () => {
     await expect(
       tools.call("teams_message_post_chat", { chatId: "c1", body: "hi" }),
     ).rejects.toThrow(TOKEN);
+    expect(fetchStub.calls).toEqual([]);
+  });
+});
+
+describe("teams_message_post_chat is a gated write (standalone mode)", () => {
+  /** Register in standalone mode for a client that can (or cannot) prompt, with chat:c1 in scope. */
+  async function standalone(elicitation: boolean): Promise<StandaloneCapture> {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    let captured: StandaloneCapture | undefined;
+    await withEnv(
+      { NIMBUS_MCP_TEAMS_WRITE_SCOPE: "chat:c1", NIMBUS_MCP_AUDIT_LOG: undefined },
+      () => {
+        captured = captureStandaloneTools(registerTeamsTools, { elicitation });
+      },
+    );
+    if (captured === undefined) throw new Error("registration did not run");
+    return captured;
+  }
+
+  it("is not offered at all to a client that cannot prompt a human", async () => {
+    const names = (await standalone(false)).tools.names();
+    expect(names).not.toContain("teams_message_post_chat");
+    expect(names).toContain("teams_team_list");
+  });
+
+  it("posts to an in-scope chat only after the human approved it", async () => {
+    const { tools: gated, prompts } = await standalone(true);
+    await gated.call("teams_message_post_chat", { chatId: "c1", body: "hi" });
+    expect(fetchStub.calls).toHaveLength(1);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("teams.message.postChat");
+  });
+
+  it("refuses an out-of-scope chat without prompting or posting", async () => {
+    const { tools: gated, prompts } = await standalone(true);
+    expect(await gated.callJson("teams_message_post_chat", { chatId: "c2", body: "hi" })).toEqual({
+      ok: false,
+      error: "out of scope: chat:c2 is not in NIMBUS_MCP_TEAMS_WRITE_SCOPE",
+    });
+    expect(prompts).toEqual([]);
     expect(fetchStub.calls).toEqual([]);
   });
 });

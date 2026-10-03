@@ -219,9 +219,16 @@ export function registerTeamsTools(
     contentType: z.enum(["text", "html"]).optional(),
   });
 
-  reg(
+  // A WRITE: it posts a message. It was registered as a read, which in standalone mode offered it
+  // to every client with no consent prompt, scope check, budget or audit record.
+  registerWriteTool(
     "teams_message_post_chat",
-    "Post a message to a chat (requires HITL teams.message.postChat).",
+    {
+      mutates: "teams.message.postChat",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "chat", value: p.chatId }),
+    },
+    "Post a message to a chat.",
     teamsMessagePostChatSchema,
     async (parsed) => {
       const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");

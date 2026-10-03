@@ -132,7 +132,31 @@ interface Recorders {
   readonly server: never;
 }
 
-function makeRecorders(captured: CapturedTools): Recorders {
+/** How the stand-in client answers a consent prompt. */
+export interface ConsentAnswer {
+  readonly action: "accept" | "decline" | "cancel";
+  readonly content?: Record<string, unknown>;
+}
+
+/** Approval, with the form's own `confirm` answer the consent kit also requires. */
+export const APPROVE: ConsentAnswer = { action: "accept", content: { confirm: true } };
+
+/**
+ * The client half of the server object the consent kit talks to: what the client advertised at
+ * `initialize`, the hook the kit chains to learn when that happened, and the consent prompt.
+ */
+interface ClientSurface {
+  getClientCapabilities(): { elicitation?: unknown } | undefined;
+  oninitialized?: (() => void) | undefined;
+  elicitInput?: (params: { message: string }) => Promise<ConsentAnswer>;
+}
+
+function makeRecorders(
+  captured: CapturedTools,
+  // In gateway mode the consent kit never reads the capability surface; the
+  // default exists so the shape is complete, not because it is exercised.
+  client: ClientSurface = { getClientCapabilities: (): undefined => undefined },
+): Recorders {
   const handle = { disable: (): undefined => undefined };
   const reg = ((
     name: string,
@@ -144,9 +168,7 @@ function makeRecorders(captured: CapturedTools): Recorders {
   }) as unknown as ZodToolRegistrar;
 
   const server = {
-    // In gateway mode the consent kit never reads the capability surface; this
-    // exists so the shape is complete, not because it is exercised.
-    server: { getClientCapabilities: (): undefined => undefined },
+    server: client,
     // `createRegisterSimpleTool` binds `.tool` and passes a raw Zod SHAPE where
     // the Zod registrar passes a built schema. Rebuilding the object here means
     // a caller sees one schema type whichever path a tool was registered by.
@@ -200,19 +222,35 @@ function makeRecorders(captured: CapturedTools): Recorders {
  * read AND write tools land in the same captured surface.
  */
 export function captureTools(register: ConnectorRegistrar): CapturedTools {
+  return captureWith(register, (captured) => ({
+    recorders: makeRecorders(captured),
+    settle: (): undefined => undefined,
+  }));
+}
+
+/**
+ * {@link captureTools}' probe, over recorders the caller builds. `settle` runs once the
+ * registrar has returned and before anything is counted — the handshake, for a standalone capture,
+ * since the consent kit registers write tools only then.
+ */
+function captureWith(
+  register: ConnectorRegistrar,
+  attempt: (captured: CapturedTools) => { recorders: Recorders; settle: () => void },
+): CapturedTools {
   const failures: unknown[] = [];
   for (const serverFirst of [false, true]) {
     const captured = new CapturedTools();
-    const { reg, server } = makeRecorders(captured);
+    const { recorders, settle } = attempt(captured);
     try {
       // The union has three members and only a runtime probe can say which one
       // this connector is, so the call is made through one widened signature.
       const call = register as (a: unknown, b: unknown) => void;
       if (serverFirst) {
-        call(server, server);
+        call(recorders.server, recorders.server);
       } else {
-        call(reg, server);
+        call(recorders.reg, recorders.server);
       }
+      settle();
       if (captured.names().length > 0) {
         return captured;
       }
@@ -233,6 +271,55 @@ export function captureTools(register: ConnectorRegistrar): CapturedTools {
     throw failures[0];
   }
   throw new Error("register…Tools registered no tools");
+}
+
+/** What {@link captureStandaloneTools} saw. */
+export interface StandaloneCapture {
+  /** Every tool registered once the handshake ran: the reads, plus the writes if they were offered. */
+  readonly tools: CapturedTools;
+  /** The message of every consent prompt the connector raised, in order. */
+  readonly prompts: string[];
+}
+
+/**
+ * {@link captureTools} in STANDALONE mode, where the connector's own consent kit is the gate.
+ *
+ * The kit queues write tools until the client's `initialize`, because only then are its
+ * capabilities knowable, and registers them only for a client that can prompt a human. This
+ * stand-in client completes that handshake as soon as registration returns, advertising
+ * elicitation when `elicitation` is true, and answers every consent prompt with `answer`
+ * (approval when omitted).
+ *
+ * The caller locks the mode first (`setConnectorMode("standalone")`) and sets the connector's
+ * `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE`, which the kit reads when its registrar is built.
+ */
+export function captureStandaloneTools(
+  register: ConnectorRegistrar,
+  opts: { readonly elicitation: boolean; readonly answer?: ConsentAnswer },
+): StandaloneCapture {
+  const prompts: string[] = [];
+  const tools = captureWith(register, (captured) => {
+    let initialized = false;
+    const client: ClientSurface = {
+      getClientCapabilities: () => {
+        if (!initialized) return undefined;
+        return opts.elicitation ? { elicitation: {} } : {};
+      },
+      oninitialized: undefined,
+      elicitInput: (params) => {
+        prompts.push(params.message);
+        return Promise.resolve(opts.answer ?? APPROVE);
+      },
+    };
+    return {
+      recorders: makeRecorders(captured, client),
+      settle: () => {
+        initialized = true;
+        client.oninitialized?.();
+      },
+    };
+  });
+  return { tools, prompts };
 }
 
 /** One request the stub saw. */
