@@ -42,9 +42,9 @@ export const MUTATION_RULE_BLOCKING = true;
  * Whether the connector owning `rel` declares `write` or `delete` in `hitlRequired`.
  *
  * The manifest is the reliable mutation signal for the ten connectors that mutate through a CLI,
- * the filesystem or a mail protocol, where no verb appears in source. It is not sufficient alone:
- * seven connectors issue mutating HTTP requests while declaring nothing, which is why
- * `MUTATING_RE` is checked as well.
+ * the filesystem or a mail protocol, where no verb appears in source — and it is the ONLY signal
+ * this audit reads. The HTTP-verb pattern once checked beside it is gone; see
+ * {@link MUTATION_RULE_BLOCKING} for why.
  */
 function connectorDeclaresWrite(root: string, rel: string): boolean {
   const name = rel.split("/")[1];
