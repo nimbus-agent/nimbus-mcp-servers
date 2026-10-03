@@ -17,6 +17,11 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { ClientCapabilities, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { type AuditEntry, verifyAuditChain } from "../shared/audit-chain.ts";
 import type { McpListResult } from "../shared/mcp-tool-kit.ts";
@@ -481,16 +486,109 @@ export function stubSpawn(
   };
 }
 
+/** The test's two ends of a server booted by {@link bootOverStubbedStdio}. */
+export interface StubbedStdio {
+  /** What the server reads as its stdin: a client writes its requests here. */
+  readonly toServer: PassThrough;
+  /** What the server writes as its stdout: its responses arrive here. */
+  readonly fromServer: PassThrough;
+}
+
+/**
+ * Run a connector's bootstrap with `process.stdin` and `process.stdout` replaced by in-memory
+ * streams, and hand back the two ends.
+ *
+ * Every entry point connects the SDK's real `StdioServerTransport`, which takes the process's
+ * stdin and stdout when it is CONSTRUCTED and keeps them. Swapping the pair for exactly the length
+ * of the boot gives a test the server's two ends without a subprocess — and a subprocess is no
+ * substitute, because bun's coverage does not follow a child process: that is how 85 of the 94
+ * entry points went unexecuted by the whole suite. Nothing else is stubbed. The server, its
+ * transport and the JSON-RPC framing between them are the production ones.
+ *
+ * The real streams are put back in `finally`, so a bootstrap that throws leaves them in place.
+ */
+export async function bootOverStubbedStdio(boot: () => Promise<void>): Promise<StubbedStdio> {
+  const stdio: StubbedStdio = { toServer: new PassThrough(), fromServer: new PassThrough() };
+  const proc = process as unknown as { stdin: unknown; stdout: unknown };
+  const real = { stdin: proc.stdin, stdout: proc.stdout };
+  proc.stdin = stdio.toServer;
+  proc.stdout = stdio.fromServer;
+  try {
+    await boot();
+  } finally {
+    proc.stdin = real.stdin;
+    proc.stdout = real.stdout;
+  }
+  return stdio;
+}
+
+/**
+ * The client half of {@link bootOverStubbedStdio}: newline-delimited JSON-RPC over the two
+ * streams, framed by the SDK's own `ReadBuffer` and `serializeMessage` — the framing its stdio
+ * transports use on both sides.
+ */
+class StubbedStdioClientTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+  private readonly buffer = new ReadBuffer();
+  private readonly onData = (chunk: Buffer): void => {
+    this.buffer.append(chunk);
+    let message = this.buffer.readMessage();
+    while (message !== null) {
+      this.onmessage?.(message);
+      message = this.buffer.readMessage();
+    }
+  };
+
+  constructor(private readonly stdio: StubbedStdio) {}
+
+  start(): Promise<void> {
+    this.stdio.fromServer.on("data", this.onData);
+    return Promise.resolve();
+  }
+
+  send(message: JSONRPCMessage): Promise<void> {
+    this.stdio.toServer.write(serializeMessage(message));
+    return Promise.resolve();
+  }
+
+  close(): Promise<void> {
+    this.stdio.fromServer.off("data", this.onData);
+    this.onclose?.();
+    return Promise.resolve();
+  }
+}
+
+/**
+ * An MCP client connected to a server booted by {@link bootOverStubbedStdio}, advertising
+ * `capabilities`. Connecting runs the real `initialize` handshake, so a bootstrap that never
+ * connected its transport fails right here — its `initialize` is never answered — rather than
+ * passing later as an empty tool surface.
+ */
+export async function connectOverStubbedStdio(
+  stdio: StubbedStdio,
+  capabilities: ClientCapabilities = {},
+): Promise<Client> {
+  const client = new Client(
+    { name: "nimbus-connector-harness", version: "0.0.0" },
+    { capabilities },
+  );
+  await client.connect(new StubbedStdioClientTransport(stdio));
+  return client;
+}
+
 /**
  * Set environment variables for the duration of `fn`, restoring exactly what was
  * there before — including restoring "absent" as absent rather than as `""`,
  * which is what a naive save/restore gets wrong and which matters here because
- * every connector treats empty and unset identically.
+ * every connector treats empty and unset identically. Resolves to what `fn`
+ * returned.
  */
-export async function withEnv(
+export async function withEnv<T>(
   env: Record<string, string | undefined>,
-  fn: () => Promise<void> | void,
-): Promise<void> {
+  fn: () => Promise<T> | T,
+): Promise<T> {
   const saved = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(env)) {
     saved.set(key, process.env[key]);
@@ -501,7 +599,7 @@ export async function withEnv(
     }
   }
   try {
-    await fn();
+    return await fn();
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {

@@ -115,6 +115,13 @@ sending anything when its credential is missing. It needs no registration; if yo
 satisfy a property for a real reason, add it to the annotated exclusion map in that file with the
 reason, rather than loosening the property for everyone.
 
+Its entry point is picked up the same way by `scripts/connector-boot.test.ts`, which boots every
+`server.ts` as the gateway does — in gateway mode, calling `startConnector()` when the bootstrap is
+guarded — with only stdin and stdout swapped for in-memory streams, then asks it over MCP for its
+name and tools: `nimbus-<id>`, serving exactly the tools its registrar registers. A bootstrap that
+reads a variable while starting rather than per call (as `imap` and `protonmail` do) needs a
+stand-in value in that file's `bootEnv`; without one the boot fails naming the variable.
+
 Three failure modes worth knowing in advance:
 
 - **A test that encodes a path shape rather than a behaviour.** Assert what the code guarantees, not

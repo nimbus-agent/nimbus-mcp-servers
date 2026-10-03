@@ -5,13 +5,17 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { McpListResult } from "../shared/mcp-tool-kit.ts";
 import {
+  bootOverStubbedStdio,
   CapturedTools,
   type ConnectorRegistrar,
   captureStandaloneTools,
   captureTools,
+  connectOverStubbedStdio,
   type FetchStub,
   type SpawnStub,
   stubFetch,
@@ -190,5 +194,68 @@ describe("stubSpawn", () => {
     stub = stubSpawn();
     Bun.spawn(["tool", "--flag"]);
     expect(stub.calls).toEqual([{ command: ["tool", "--flag"], env: {} }]);
+  });
+});
+
+describe("bootOverStubbedStdio and connectOverStubbedStdio", () => {
+  /** A bootstrap shaped like a connector's: build a server, register, connect a stdio transport. */
+  function probeServer(): { server: McpServer; boot: () => Promise<void> } {
+    const server = new McpServer({ name: "nimbus-probe", version: "1.2.3" });
+    server.registerTool("probe_ping", { description: "answers pong" }, () =>
+      Promise.resolve({ content: [{ type: "text" as const, text: "pong" }] }),
+    );
+    return { server, boot: () => server.connect(new StdioServerTransport()) };
+  }
+
+  it("hands the bootstrap's transport in-memory ends, then puts the real streams back", async () => {
+    const real = { stdin: process.stdin, stdout: process.stdout };
+    const seen: unknown[] = [];
+    const { server, boot } = probeServer();
+    const stdio = await bootOverStubbedStdio(async () => {
+      seen.push(process.stdin, process.stdout);
+      await boot();
+    });
+    expect(seen).toEqual([stdio.toServer, stdio.fromServer]);
+    expect(process.stdin).toBe(real.stdin);
+    expect(process.stdout).toBe(real.stdout);
+
+    // The server took the stubs, not the real streams: a whole round trip happens over them.
+    const client = await connectOverStubbedStdio(stdio);
+    try {
+      // With no capabilities given, the client advertises none — so no elicitation.
+      expect(server.server.getClientCapabilities()?.elicitation).toBeUndefined();
+      expect(client.getServerVersion()).toEqual({ name: "nimbus-probe", version: "1.2.3" });
+      expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["probe_ping"]);
+      expect(await client.callTool({ name: "probe_ping" })).toEqual({
+        content: [{ type: "text", text: "pong" }],
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("puts the real streams back when the bootstrap throws", async () => {
+    const real = { stdin: process.stdin, stdout: process.stdout };
+    let during: unknown;
+    await expect(
+      bootOverStubbedStdio(() => {
+        during = process.stdout;
+        return Promise.reject(new Error("bootstrap needs a variable"));
+      }),
+    ).rejects.toThrow("bootstrap needs a variable");
+    expect(during).not.toBe(real.stdout);
+    expect(process.stdin).toBe(real.stdin);
+    expect(process.stdout).toBe(real.stdout);
+  });
+
+  it("advertises the capabilities it is given, and stops reading once closed", async () => {
+    const { server, boot } = probeServer();
+    const stdio = await bootOverStubbedStdio(boot);
+    const client = await connectOverStubbedStdio(stdio, { elicitation: {} });
+    // The SDK fills in the elicitation modes it defaults to, so only presence is pinned here.
+    expect(server.server.getClientCapabilities()?.elicitation).toBeDefined();
+    expect(stdio.fromServer.listenerCount("data")).toBe(1);
+    await client.close();
+    expect(stdio.fromServer.listenerCount("data")).toBe(0);
   });
 });
