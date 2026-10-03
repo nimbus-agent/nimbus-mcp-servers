@@ -7,15 +7,11 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
-import { runCliJson, runCliOk } from "../../../shared/run-cli-json.ts";
+import { runCliJsonThrowing, runCliOkThrowing } from "../../../shared/run-cli-json.ts";
 
 async function gcloudJson(args: string[]): Promise<unknown> {
   const cmd = ["gcloud", ...args, "--format", "json"];
-  const r = await runCliJson(cmd, gcloudEnv());
-  if (!r.ok) {
-    throw new Error(r.message);
-  }
-  return r.data ?? {};
+  return (await runCliJsonThrowing(cmd, gcloudEnv())) ?? {};
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
@@ -72,7 +68,7 @@ export function registerGcpTools(
       image: z.string().min(1),
     }),
     async (p) => {
-      const r = await runCliOk(
+      await runCliOkThrowing(
         [
           "gcloud",
           "run",
@@ -85,9 +81,6 @@ export function registerGcpTools(
         ],
         gcloudEnv(),
       );
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
       return jsonResult({ ok: true });
     },
   );
@@ -108,7 +101,7 @@ export function registerGcpTools(
       deployment: z.string().min(1),
     }),
     async (p) => {
-      const getCreds = await runCliOk(
+      await runCliOkThrowing(
         [
           "gcloud",
           "container",
@@ -120,16 +113,10 @@ export function registerGcpTools(
         ],
         gcloudEnv(),
       );
-      if (!getCreds.ok) {
-        throw new Error(getCreds.message);
-      }
-      const r = await runCliOk(
+      await runCliOkThrowing(
         ["kubectl", "rollout", "restart", "deployment", p.deployment, "-n", p.namespace],
         gcloudEnv(),
       );
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
       return jsonResult({ ok: true });
     },
   );

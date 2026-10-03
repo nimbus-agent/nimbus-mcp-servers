@@ -6,7 +6,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
-import { runCliJson, runCliOk } from "../../../shared/run-cli-json.ts";
+import { runCliJsonThrowing, runCliOkThrowing } from "../../../shared/run-cli-json.ts";
 
 function requireKubeconfigPath(): string {
   const p = process.env["KUBECONFIG"]?.trim();
@@ -31,11 +31,7 @@ function kubeEnv(): Record<string, string | undefined> {
 
 async function kubectlJson(rest: string[]): Promise<unknown> {
   const cmd = [...kubectlBase(), ...rest, "-o", "json"];
-  const r = await runCliJson(cmd, kubeEnv());
-  if (!r.ok) {
-    throw new Error(r.message);
-  }
-  return r.data;
+  return runCliJsonThrowing(cmd, kubeEnv());
 }
 
 const optionalNamespaceSchema = z.object({ namespace: z.string().min(1).optional() });
@@ -103,10 +99,7 @@ export function registerKubernetesTools(
     async (p) => {
       const ns = p.namespace ?? "default";
       const cmd = [...kubectlBase(), "rollout", "restart", p.resourceType, p.name, "-n", ns];
-      const r = await runCliOk(cmd, kubeEnv());
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
+      await runCliOkThrowing(cmd, kubeEnv());
       return jsonResult({ ok: true });
     },
   );
@@ -128,10 +121,7 @@ export function registerKubernetesTools(
     async (p) => {
       const ns = p.namespace ?? "default";
       const cmd = [...kubectlBase(), "delete", "pod", p.podName, "-n", ns];
-      const r = await runCliOk(cmd, kubeEnv());
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
+      await runCliOkThrowing(cmd, kubeEnv());
       return jsonResult({ ok: true });
     },
   );
@@ -160,10 +150,7 @@ export function registerKubernetesTools(
         ns,
         `--replicas=${String(p.replicas)}`,
       ];
-      const r = await runCliOk(cmd, kubeEnv());
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
+      await runCliOkThrowing(cmd, kubeEnv());
       return jsonResult({ ok: true });
     },
   );

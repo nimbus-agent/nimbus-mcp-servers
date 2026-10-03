@@ -9,7 +9,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
-import { runCliJson, runCliOk } from "../../../shared/run-cli-json.ts";
+import { runCliJsonThrowing, runCliOkThrowing } from "../../../shared/run-cli-json.ts";
 
 function awsEnv(): Record<string, string | undefined> {
   const e = { ...process.env } as Record<string, string | undefined>;
@@ -34,11 +34,7 @@ function awsEnv(): Record<string, string | undefined> {
 
 async function awsJson(args: string[]): Promise<unknown> {
   const cmd = ["aws", ...args, "--output", "json"];
-  const r = await runCliJson(cmd, awsEnv());
-  if (!r.ok) {
-    throw new Error(r.message);
-  }
-  return r.data ?? {};
+  return (await runCliJsonThrowing(cmd, awsEnv())) ?? {};
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
@@ -104,10 +100,7 @@ export function registerAwsTools(
         p.taskDefinition,
         "--force-new-deployment",
       ];
-      const r = await runCliOk(cmd, awsEnv());
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
+      await runCliOkThrowing(cmd, awsEnv());
       return jsonResult({ ok: true });
     },
   );
@@ -140,18 +133,12 @@ export function registerAwsTools(
           `file://${pf}`,
           outFile,
         ];
-        const r = await runCliOk(cmd, awsEnv());
-        if (!r.ok) {
-          throw new Error(r.message);
-        }
+        await runCliOkThrowing(cmd, awsEnv());
       } else {
-        const r = await runCliOk(
+        await runCliOkThrowing(
           ["aws", "lambda", "invoke", "--function-name", p.functionName, outFile],
           awsEnv(),
         );
-        if (!r.ok) {
-          throw new Error(r.message);
-        }
       }
       let body: unknown;
       try {
@@ -168,13 +155,10 @@ export function registerAwsTools(
     "Stop EC2 instances. HITL.",
     z.object({ instanceIds: z.string().min(1) }),
     async (p) => {
-      const r = await runCliOk(
+      await runCliOkThrowing(
         ["aws", "ec2", "stop-instances", "--instance-ids", p.instanceIds],
         awsEnv(),
       );
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
       return jsonResult({ ok: true });
     },
   );
@@ -184,13 +168,10 @@ export function registerAwsTools(
     "Start EC2 instances. HITL.",
     z.object({ instanceIds: z.string().min(1) }),
     async (p) => {
-      const r = await runCliOk(
+      await runCliOkThrowing(
         ["aws", "ec2", "start-instances", "--instance-ids", p.instanceIds],
         awsEnv(),
       );
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
       return jsonResult({ ok: true });
     },
   );
