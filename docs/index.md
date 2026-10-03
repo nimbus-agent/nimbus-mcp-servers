@@ -12,7 +12,7 @@ pages are the detail behind it.
 | [Adding a connector](./adding-a-connector.md) | You are writing a new connector or changing an existing one. |
 | [Publishing](./publishing.md) | You are cutting a release of `@nimbus-dev/connectors`. |
 
-Two files at the repository root are documentation in their own right and are deliberately not
+Four files at the repository root are documentation in their own right and are deliberately not
 duplicated here:
 
 - [`NOTICE`](../NOTICE) — the security tiering, and what running standalone does **not** give you.
@@ -23,5 +23,7 @@ duplicated here:
 - [`SECURITY.md`](../SECURITY.md) — how to report a vulnerability, and what is in scope. The
   out-of-scope half matters most: there is no Vault, sandbox or egress ledger here.
 
-Each connector also carries its own `README.md` at `connectors/<id>/README.md`, documenting that
-connector's tools, credentials and scopes. Those stay beside the code they describe.
+Each connector also carries its own `README.md` at `connectors/<id>/README.md`, beside the code it
+describes. Most document that connector's tools and credentials; some are still only a short
+gateway quickstart, and [Configuration](./configuration.md) says how to find a credential they
+leave out.

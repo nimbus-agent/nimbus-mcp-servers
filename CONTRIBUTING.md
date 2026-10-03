@@ -10,10 +10,10 @@ Read [`docs/adding-a-connector.md`](./docs/adding-a-connector.md) before writing
 
 ```bash
 bun install
-bun run check   # lint, typecheck, the three connector audits, full suite
+bun run check   # lint, typecheck, the four connector audits, full suite
 ```
 
-`bun run check` is what CI runs, on Ubuntu, macOS and Windows. Run it before pushing.
+`bun run check` runs the same gates CI runs on Ubuntu, macOS and Windows. Run it before pushing.
 
 ## The rules that are not preferences
 
@@ -21,7 +21,9 @@ bun run check   # lint, typecheck, the three connector audits, full suite
    `shared/consent-kit.ts` — never the raw MCP registration call. That registrar is what enforces
    consent, the write-scope allow-list and the mutation budget. `bun run audit:connector-consent`
    fails a connector that declares `write`/`delete` in `hitlRequired` without going through it, and
-   the launcher refuses to start it.
+   the launcher refuses to start it. Both check the connector, not each tool: a mutating tool
+   registered through the read registrar beside gated ones passes both, so review the registrar of
+   every tool you add.
 2. **`setConnectorMode` has exactly one caller.** The mode comes from the entry point; a second
    caller could re-gate a connector mid-process. Enforced statically.
 3. **Credentials come from `process.env`.** Never call a Vault API — the connector process has no
@@ -75,17 +77,30 @@ check never passes.
 
 ## Commits and releases
 
-Conventional commits. The **PR title** is what release-please reads, because squash is the only
-merge method enabled and the squash commit is built from the PR title and description.
+Conventional commits. Squash is the only merge method enabled, and release-please reads the squash
+commit that lands on `main`. Its subject defaults to the **PR title** — or, for a single-commit PR,
+to that commit's subject — and its body to the PR's commit messages; whoever merges can edit both.
+So give the PR a Conventional Commit title, and keep every commit subject conventional too.
+
+Four checks must pass before a PR can merge: `CI — required gates` (the three-OS matrix),
+`Analyze (javascript-typescript)` (CodeQL), `SonarQube Cloud analysis` and `cla`. The branch must
+also be up to date with `main`, and every review thread resolved.
+
+The `cla` check needs the Contributor License Agreement signed once. On your first PR, comment
+exactly `I have read the CLA Document and I hereby sign the CLA`; the
+[Individual CLA](https://github.com/nimbus-agent/.github/blob/main/CLA/ICLA.md) is what you are
+signing, and contributions on behalf of an employer use the
+[Corporate CLA](https://github.com/nimbus-agent/.github/blob/main/CLA/CCLA.md).
 
 Releases are automated: merging to `main` opens a release PR, and merging that publishes to npm with
-provenance via GitHub OIDC — no tokens, no manual step. Pre-1.0, a `feat` bumps the minor.
+provenance via GitHub OIDC — no tokens, no manual step. Pre-1.0, a `feat` bumps the minor. The
+detail is in [Publishing](./docs/publishing.md).
 
 ## Two things that have cost time here
 
 - **A green audit can mean an empty scan.** `audit:connector-consent` prints `ok` both when nothing
-  is wrong and when it discovered zero connectors. After changing anything about discovery, confirm
-  the count is 94.
+  is wrong and when it discovered zero connectors, and it prints no count. `bun test` is the proof:
+  `scripts/connector-gates.test.ts` pins the discovered count at 94, so a new connector raises it.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's
   write-registration check is an exact string match, and a CRLF checkout defeated it.
 

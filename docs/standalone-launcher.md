@@ -15,7 +15,8 @@ an arbitrary module.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | The server ran and exited normally. |
+| `0` | The server ran and exited normally — your client closed the connection. |
+| `1` | The connector itself failed while starting: a variable it reads at startup is unset (`IMAP_HOST is not set`), or the write-scope variable holds a term it cannot parse. The error is on stderr. |
 | `2` | No id given, an id that is not a valid shape, or an id with no matching connector. |
 | `3` | The connector exists but is **not eligible** to run standalone. |
 
