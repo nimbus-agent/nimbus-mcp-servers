@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootOverStubbedStdio } from "./connector-tool-harness.ts";
 import { findToolNamesDrift, main, syncToolNames } from "./sync-tool-names.ts";
 
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
@@ -184,5 +185,16 @@ describe("main (the script's two modes)", () => {
     expect(r.code).toBe(0);
     expect(r.out).toEqual(["tool names: already in sync\n"]);
     expect(readFileSync(r.file, "utf8")).toBe(r.before);
+  });
+
+  test("with no root or writer given, --check examines this repository and reports on stdout", async () => {
+    // `bun run audit:tool-names` is exactly this call: the default root is the repository and the
+    // default writer is process.stdout, which is swapped for an in-memory stream to read it back.
+    let code: number | undefined;
+    const stdio = await bootOverStubbedStdio(async () => {
+      code = await main(["bun", "sync-tool-names.ts", "--check"]);
+    });
+    expect(code).toBe(0);
+    expect(String(stdio.fromServer.read())).toBe("tool names: ok\n");
   });
 });

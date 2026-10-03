@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { withEnv } from "./connector-tool-harness.ts";
+import { stubSpawn, withEnv } from "./connector-tool-harness.ts";
 import {
   findSandboxTests,
   runBanner,
@@ -118,5 +118,32 @@ describe("runSandboxContract", () => {
     expect(d.spawned.map((s) => s.argv)).toEqual([
       ["bun", "test", "connectors/b/test/sandbox.test.ts"],
     ]);
+  });
+
+  test("with its real dependencies, runs every discovered test and announces it on stderr", async () => {
+    // The dependencies `bun run test:sandbox` actually gets: the real discovery, Bun.spawn and
+    // console.error. Only Bun.spawn is stubbed, so nothing starts the live-network suite — the
+    // wiring that hands the run its harness flag is the production one.
+    const found = await findSandboxTests();
+    const spawn = stubSpawn({ exitCode: 4 });
+    const banner = spyOn(console, "error").mockImplementation(() => undefined);
+    let code: number | undefined;
+    let logged: unknown[][] = [];
+    try {
+      code = await runSandboxContract([]);
+      logged = [...banner.mock.calls];
+    } finally {
+      spawn.restore();
+      banner.mockRestore();
+    }
+    expect(code).toBe(4);
+    expect(logged).toEqual([[runBanner(found.length)]]);
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.calls[0]?.command).toEqual([
+      "bun",
+      "test",
+      ...found.map((f) => join(...f.split("/"))),
+    ]);
+    expect(spawn.calls[0]?.env["NIMBUS_TEST_HARNESS"]).toBe("1");
   });
 });

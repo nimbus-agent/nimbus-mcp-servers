@@ -42,7 +42,7 @@ const CONNECTORS = join(fileURLToPath(import.meta.url), "..", "..", "connectors"
 const ids = readdirSync(CONNECTORS, { withFileTypes: true })
   .filter((e) => e.isDirectory() && existsSync(join(CONNECTORS, e.name, "src", "server.ts")))
   .map((e) => e.name)
-  .sort();
+  .sort((a, b) => a.localeCompare(b));
 
 /**
  * Booted by a test of their own rather than the generic one, with the reason. Apple's bootstrap

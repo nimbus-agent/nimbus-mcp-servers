@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CapturedTools, captureTools } from "../../../scripts/connector-tool-harness.ts";
@@ -411,6 +411,37 @@ describe("obsidian vault discovery and walking, at the edges", () => {
     rmSync(replaced, { recursive: true, force: true });
     writeFileSync(replaced, "now a file", "utf8");
     expect((await configured.callJson("obsidian_list", {})) as unknown[]).toEqual([]);
+  });
+
+  /**
+   * A link in `dir` whose target is gone. A junction rather than a plain symlink, so making one
+   * needs no privilege on Windows; everywhere else the type is ignored and it is an ordinary
+   * directory symlink.
+   */
+  function danglingLink(dir: string, name: string): void {
+    const target = mkdtempSync(join(tmpdir(), "obsidian-gone-"));
+    symlinkSync(target, join(dir, name), "junction");
+    rmSync(target, { recursive: true, force: true });
+  }
+
+  it("skips a dangling link beside a vault while discovering vaults", async () => {
+    const root = mkdtempSync(join(tmpdir(), "obsidian-root-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "team", ".obsidian"), { recursive: true });
+    writeFileSync(join(root, "team", "plan.md"), "# Plan\n", "utf8");
+    danglingLink(root, "broken");
+    const out = (await configure(root).callJson("obsidian_list", {})) as {
+      vault_name: string;
+      path: string;
+    }[];
+    expect(out.map((n) => `${n.vault_name}:${n.path}`)).toEqual(["team:plan.md"]);
+  });
+
+  it("skips a dangling link inside a vault while listing its notes", async () => {
+    const root = vault({ "kept.md": "# Kept\n" });
+    danglingLink(root, "broken");
+    const out = (await configure(root).callJson("obsidian_list", {})) as { path: string }[];
+    expect(out.map((n) => n.path)).toEqual(["kept.md"]);
   });
 });
 

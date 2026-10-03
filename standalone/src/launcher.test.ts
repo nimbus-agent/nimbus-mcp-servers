@@ -16,6 +16,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 import {
+  bootOverStubbedStdio,
+  connectOverStubbedStdio,
+  withEnv,
+} from "../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests } from "../../shared/connector-mode.ts";
+import {
   registersWriteTool,
   resolveConnectorEntry,
   runStandalone,
@@ -105,6 +111,32 @@ describe("standaloneEligibility", () => {
 
   test("an unknown connector is refused rather than assumed safe", () => {
     expect(standaloneEligibility("definitely-not-a-connector").eligible).toBe(false);
+  });
+
+  test("a manifest that parses to no object declares nothing, like one without hitlRequired", () => {
+    // Only an UNREADABLE manifest fails safe. One that parses has said what it declares, and
+    // `null` declares no more than `{}` does.
+    const root = mkdtempSync(join(tmpdir(), "elig-"));
+    for (const [id, manifest] of [
+      ["null-manifest", "null"],
+      ["empty-manifest", "{}"],
+    ] as const) {
+      mkdirSync(join(root, id, "src"), { recursive: true });
+      writeFileSync(join(root, id, "nimbus.extension.json"), manifest);
+      writeFileSync(join(root, id, "src", "server.ts"), 'reg("x_list", handler);\n');
+    }
+    try {
+      expect(standaloneEligibility("null-manifest", root)).toEqual({
+        eligible: true,
+        reason: "no-writes",
+      });
+      expect(standaloneEligibility("empty-manifest", root)).toEqual({
+        eligible: true,
+        reason: "no-writes",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -303,6 +335,43 @@ describe("runStandalone over a fixture connectors directory", () => {
     }
     expect(code).toBe(0);
     expect(entries).toEqual([join(root, "hardened", "src", "server.ts")]);
+  });
+});
+
+describe("runStandalone's own importer, in this process", () => {
+  // snowflake, a GUARDED connector, on purpose. Its import has no side effect and every
+  // startConnector() builds a fresh server, so this cannot collide with connector-boot.test.ts
+  // booting the same module; an unguarded entry point connects only on its FIRST import in a
+  // process. Standalone mode is the default the launcher relies on — it deliberately never sets
+  // it — so the mode is only cleared here, never set.
+  async function launched(elicitation: boolean): Promise<string[]> {
+    resetConnectorModeForTests();
+    try {
+      let code: number | undefined;
+      const stdio = await withEnv({ NIMBUS_MCP_SNOWFLAKE_WRITE_SCOPE: "object:db.s.t" }, () =>
+        bootOverStubbedStdio(async () => {
+          code = await runStandalone(["snowflake"]);
+        }),
+      );
+      expect(code).toBe(0);
+      const client = await connectOverStubbedStdio(stdio, elicitation ? { elicitation: {} } : {});
+      try {
+        expect(client.getServerVersion()?.name).toBe("nimbus-snowflake");
+        return (await client.listTools()).tools
+          .map((t) => t.name)
+          .sort((a, b) => a.localeCompare(b));
+      } finally {
+        await client.close();
+      }
+    } finally {
+      resetConnectorModeForTests();
+    }
+  }
+
+  test("starts the real entry point, and offers its writes only to a client that can prompt", async () => {
+    const reads = ["snowflake_get", "snowflake_list", "snowflake_search"];
+    expect(await launched(false)).toEqual(reads);
+    expect(await launched(true)).toEqual(["snowflake_comment_set", ...reads, "snowflake_tag_set"]);
   });
 });
 
