@@ -114,6 +114,42 @@ export function registerGitlabTools(
       .describe("URL-encoded path or numeric project id, e.g. group/repo"),
   });
 
+  /**
+   * A list endpoint's URL with the query `setQuery` sets, parameters in that order. ABSOLUTE on
+   * purpose: it already carries apiBase()'s `/api/v4`, and a relative path would let glFetch
+   * re-prefix apiBase() → `/api/v4/api/v4/…`.
+   */
+  function listUrl(path: string, setQuery: (q: URLSearchParams) => void): string {
+    const u = new URL(`${apiBase()}${path}`);
+    setQuery(u.searchParams);
+    return u.toString();
+  }
+
+  /** Paging as every list tool here sends it: `per_page` (default 30), then `page` when given. */
+  function setPaging(
+    q: URLSearchParams,
+    paging: { readonly perPage?: number | undefined; readonly page?: number | undefined },
+  ): void {
+    q.set("per_page", String(paging.perPage ?? 30));
+    if (paging.page !== undefined) {
+      q.set("page", String(paging.page));
+    }
+  }
+
+  /** Merge requests and issues take one list query: a state filter (default opened), then paging. */
+  const stateListUrl =
+    (collection: "merge_requests" | "issues") =>
+    (parsed: {
+      readonly projectPath: string;
+      readonly state?: string | undefined;
+      readonly perPage?: number | undefined;
+      readonly page?: number | undefined;
+    }): string =>
+      listUrl(`/projects/${encodeURIComponent(parsed.projectPath)}/${collection}`, (q) => {
+        q.set("state", parsed.state ?? "opened");
+        setPaging(q, parsed);
+      });
+
   const gitlabProjectListSchema = z.object({
     perPage: z.number().int().min(1).max(100).optional(),
     page: z.number().int().min(1).optional(),
@@ -123,19 +159,13 @@ export function registerGitlabTools(
     "gitlab_project_list",
     "List projects visible to the authenticated user (membership).",
     gitlabProjectListSchema,
-    (parsed) => {
-      const u = new URL(`${apiBase()}/projects`);
-      u.searchParams.set("membership", "true");
-      u.searchParams.set("order_by", "last_activity_at");
-      u.searchParams.set("sort", "desc");
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      // Absolute URL: u already includes apiBase()'s `/api/v4`; returning a
-      // relative path would let glFetch re-prefix apiBase() → `/api/v4/api/v4/…`.
-      return u.toString();
-    },
+    (parsed) =>
+      listUrl("/projects", (q) => {
+        q.set("membership", "true");
+        q.set("order_by", "last_activity_at");
+        q.set("sort", "desc");
+        setPaging(q, parsed);
+      }),
   );
 
   const gitlabMrListSchema = projectPathArg.extend({
@@ -148,18 +178,7 @@ export function registerGitlabTools(
     "gitlab_mr_list",
     "List merge requests for a project.",
     gitlabMrListSchema,
-    (parsed) => {
-      const enc = encodeURIComponent(parsed.projectPath);
-      const u = new URL(`${apiBase()}/projects/${enc}/merge_requests`);
-      u.searchParams.set("state", parsed.state ?? "opened");
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      // Absolute URL: u already includes apiBase()'s `/api/v4`; returning a
-      // relative path would let glFetch re-prefix apiBase() → `/api/v4/api/v4/…`.
-      return u.toString();
-    },
+    stateListUrl("merge_requests"),
   );
 
   const gitlabMrGetSchema = projectPathArg.extend({
@@ -220,18 +239,7 @@ export function registerGitlabTools(
     "gitlab_issue_list",
     "List issues for a project.",
     gitlabIssueListSchema,
-    (parsed) => {
-      const enc = encodeURIComponent(parsed.projectPath);
-      const u = new URL(`${apiBase()}/projects/${enc}/issues`);
-      u.searchParams.set("state", parsed.state ?? "opened");
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      // Absolute URL: u already includes apiBase()'s `/api/v4`; returning a
-      // relative path would let glFetch re-prefix apiBase() → `/api/v4/api/v4/…`.
-      return u.toString();
-    },
+    stateListUrl("issues"),
   );
 
   const gitlabIssueGetSchema = projectPathArg.extend({
@@ -257,23 +265,16 @@ export function registerGitlabTools(
     "gitlab_pipeline_list",
     "List CI pipelines for a project.",
     gitlabPipelineListSchema,
-    (parsed) => {
-      const enc = encodeURIComponent(parsed.projectPath);
-      const u = new URL(`${apiBase()}/projects/${enc}/pipelines`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      if (parsed.ref !== undefined) {
-        u.searchParams.set("ref", parsed.ref);
-      }
-      if (parsed.status !== undefined) {
-        u.searchParams.set("status", parsed.status);
-      }
-      // Absolute URL: u already includes apiBase()'s `/api/v4`; returning a
-      // relative path would let glFetch re-prefix apiBase() → `/api/v4/api/v4/…`.
-      return u.toString();
-    },
+    (parsed) =>
+      listUrl(`/projects/${encodeURIComponent(parsed.projectPath)}/pipelines`, (q) => {
+        setPaging(q, parsed);
+        if (parsed.ref !== undefined) {
+          q.set("ref", parsed.ref);
+        }
+        if (parsed.status !== undefined) {
+          q.set("status", parsed.status);
+        }
+      }),
   );
 
   const gitlabPipelineGetSchema = projectPathArg.extend({
@@ -300,21 +301,27 @@ export function registerGitlabTools(
     jobId: z.number().int().min(1),
   });
 
+  /** A CI job's whole plain-text trace; throws, quoting GitLab, on a non-ok status. */
+  async function fetchJobTrace(parsed: {
+    readonly projectPath: string;
+    readonly jobId: number;
+  }): Promise<string> {
+    const token = requireProcessEnv("GITLAB_PAT");
+    const enc = encodeURIComponent(parsed.projectPath);
+    const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
+    const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
+    }
+    return text;
+  }
+
   reg(
     "gitlab_job_trace",
     "Download plain-text trace for a CI job (by job id).",
     gitlabJobTraceSchema,
-    async (parsed) => {
-      const token = requireProcessEnv("GITLAB_PAT");
-      const enc = encodeURIComponent(parsed.projectPath);
-      const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
-      const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
-      const text = await res.text();
-      if (!res.ok) {
-        throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
-      }
-      return jsonResult({ trace: text });
-    },
+    async (parsed) => jsonResult({ trace: await fetchJobTrace(parsed) }),
   );
 
   reg(
@@ -324,14 +331,7 @@ export function registerGitlabTools(
       maxChars: z.number().int().min(1000).max(500_000).optional(),
     }),
     async (parsed) => {
-      const token = requireProcessEnv("GITLAB_PAT");
-      const enc = encodeURIComponent(parsed.projectPath);
-      const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
-      const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
-      const text = await res.text();
-      if (!res.ok) {
-        throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
-      }
+      const text = await fetchJobTrace(parsed);
       const max = parsed.maxChars ?? 64_000;
       const tail = text.length > max ? text.slice(-max) : text;
       return jsonResult({
@@ -343,45 +343,50 @@ export function registerGitlabTools(
     },
   );
 
-  registerWriteTool(
-    "gitlab_pipeline_retry",
-    {
-      mutates: "gitlab.pipeline.retry",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
-    },
-    "Retry failed jobs in a pipeline.",
-    gitlabPipelineGetSchema,
-    async (parsed) => {
-      const token = requireProcessEnv("GITLAB_PAT");
-      const enc = encodeURIComponent(parsed.projectPath);
-      const path = `/projects/${enc}/pipelines/${String(parsed.pipelineId)}/retry`;
-      const res = await glFetch(token, path, { method: "POST" });
-      if (!res.ok) {
-        throw new Error(`GitLab pipeline retry ${String(res.status)}: ${res.text.slice(0, 400)}`);
-      }
-      return mcpJsonResultIfOk("GitLab", res);
-    },
-  );
+  /**
+   * Retry and cancel are one POST on a pipeline, differing only in its last path segment — which
+   * the failure message names — so they share everything but their name, action type and text.
+   */
+  function registerPipelineActionTool(
+    name: string,
+    mutates: string,
+    description: string,
+    action: "retry" | "cancel",
+  ): void {
+    registerWriteTool(
+      name,
+      {
+        mutates,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
+      },
+      description,
+      gitlabPipelineGetSchema,
+      async (parsed) => {
+        const token = requireProcessEnv("GITLAB_PAT");
+        const enc = encodeURIComponent(parsed.projectPath);
+        const path = `/projects/${enc}/pipelines/${String(parsed.pipelineId)}/${action}`;
+        const res = await glFetch(token, path, { method: "POST" });
+        if (!res.ok) {
+          throw new Error(
+            `GitLab pipeline ${action} ${String(res.status)}: ${res.text.slice(0, 400)}`,
+          );
+        }
+        return mcpJsonResultIfOk("GitLab", res);
+      },
+    );
+  }
 
-  registerWriteTool(
+  registerPipelineActionTool(
+    "gitlab_pipeline_retry",
+    "gitlab.pipeline.retry",
+    "Retry failed jobs in a pipeline.",
+    "retry",
+  );
+  registerPipelineActionTool(
     "gitlab_pipeline_cancel",
-    {
-      mutates: "gitlab.pipeline.cancel",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
-    },
+    "gitlab.pipeline.cancel",
     "Cancel a pipeline.",
-    gitlabPipelineGetSchema,
-    async (parsed) => {
-      const token = requireProcessEnv("GITLAB_PAT");
-      const enc = encodeURIComponent(parsed.projectPath);
-      const path = `/projects/${enc}/pipelines/${String(parsed.pipelineId)}/cancel`;
-      const res = await glFetch(token, path, { method: "POST" });
-      if (!res.ok) {
-        throw new Error(`GitLab pipeline cancel ${String(res.status)}: ${res.text.slice(0, 400)}`);
-      }
-      return mcpJsonResultIfOk("GitLab", res);
-    },
+    "cancel",
   );
 }
