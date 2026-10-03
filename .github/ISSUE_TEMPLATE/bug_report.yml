@@ -5,34 +5,54 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. For issues in the gateway, connectors, Vault, or the
-        HITL machinery, please use the
-        [Nimbus](https://github.com/nimbus-agent/Nimbus) repository instead — this
-        repo is only the MIT typed IPC client.
+        Thanks for the report. This repository holds the connectors' MCP tool surface: the tools,
+        the requests they make, and the standalone `nimbus-connector` launcher. For sync and
+        indexing, the Vault, the sandbox, or consent inside the gateway, please use the
+        [Nimbus](https://github.com/nimbus-agent/Nimbus) repository instead. A suspected
+        vulnerability goes through
+        [private reporting](https://github.com/nimbus-agent/nimbus-mcp-servers/security/advisories/new),
+        never a public issue.
+  - type: input
+    id: connector
+    attributes:
+      label: Connector
+      description: The connector id, as in `npx @nimbus-dev/connectors <id>`.
+      placeholder: "github"
+    validations:
+      required: true
   - type: textarea
     id: what-happened
     attributes:
       label: What happened?
-      description: What did you do, what did you expect, and what happened instead?
+      description: What did you do, what did you expect, and what happened instead? Name the tool if one was involved.
     validations:
       required: true
   - type: input
-    id: client-version
+    id: package-version
     attributes:
-      label: Client version
-      placeholder: "0.5.0"
+      label: Package version
+      description: The `@nimbus-dev/connectors` version, or the Nimbus gateway version if the gateway ran the connector.
+      placeholder: "0.2.1"
+    validations:
+      required: true
+  - type: input
+    id: how-it-ran
+    attributes:
+      label: How it ran
+      description: Standalone (which MCP client, and its version) or through the Nimbus gateway.
+      placeholder: "Standalone, Claude Code 2.x"
     validations:
       required: true
   - type: input
     id: runtime
     attributes:
-      label: Runtime & version
-      placeholder: "Bun 1.2.x / Node 22.x"
+      label: Runtime & OS
+      placeholder: "Bun 1.3.x on Windows 11"
     validations:
       required: true
   - type: textarea
     id: details
     attributes:
       label: Relevant details
-      description: Minimal repro, stack trace, or the failing type/assertion.
+      description: Minimal repro, the connector's stderr, or the failing tool call. Remove credentials first.
       render: shell
