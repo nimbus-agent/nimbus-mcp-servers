@@ -75,6 +75,32 @@ function render(constant: string, names: readonly string[]): string {
   return `export const ${constant} = [\n${entries}] as const;`;
 }
 
+/** A connector whose names module declares a literal `*_TOOL_NAMES` list. */
+interface DeclaredNames {
+  readonly connector: string;
+  readonly file: string;
+  readonly declared: readonly string[];
+}
+
+/** Every connector under `root` with a literal declaration to check, in directory order. */
+function declaredConnectors(root: string): DeclaredNames[] {
+  const out: DeclaredNames[] = [];
+  for (const entry of readdirSync(join(root, "connectors"), { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const file = namesFile(root, entry.name);
+    if (file === undefined) {
+      continue;
+    }
+    const decl = declaration(readFileSync(file, "utf8"));
+    if (decl !== undefined) {
+      out.push({ connector: entry.name, file, declared: decl.names });
+    }
+  }
+  return out;
+}
+
 /**
  * Compare every connector's declared names against its registered ones.
  *
@@ -87,20 +113,15 @@ export async function findToolNamesDrift(root: string = ROOT): Promise<ToolNames
   resetConnectorModeForTests();
   setConnectorMode("gateway");
   try {
-    for (const entry of readdirSync(join(root, "connectors"), { withFileTypes: true })) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      const path = namesFile(root, entry.name);
-      if (path === undefined) {
-        continue;
-      }
-      const src = readFileSync(path, "utf8");
-      const decl = declaration(src);
-      if (decl === undefined) {
-        continue;
-      }
-      const mod = (await import(path)) as Record<string, unknown>;
+    // No import depends on another, and each module stays paired with its own connector, so the
+    // modules load together; the comparison below still runs, and reports, in directory order.
+    const loaded = await Promise.all(
+      declaredConnectors(root).map(async (c) => ({
+        ...c,
+        mod: (await import(c.file)) as Record<string, unknown>,
+      })),
+    );
+    for (const { connector, file, declared, mod } of loaded) {
       const register = Object.entries(mod).find(
         ([name, value]) =>
           /^register[A-Za-z]+Tools$/.test(name) && typeof value === "function" && value.length <= 2,
@@ -118,8 +139,8 @@ export async function findToolNamesDrift(root: string = ROOT): Promise<ToolNames
         // its own test covers it.
         continue;
       }
-      if (registered.join(" ") !== decl.names.join(" ")) {
-        drift.push({ connector: entry.name, file: path, declared: decl.names, registered });
+      if (registered.join(" ") !== declared.join(" ")) {
+        drift.push({ connector, file, declared, registered });
       }
     }
   } finally {

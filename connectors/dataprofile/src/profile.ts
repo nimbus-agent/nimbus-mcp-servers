@@ -230,7 +230,7 @@ export async function listDataModels(
   const out: DataModel[] = [];
   for (const { path, format } of files) {
     assertWithinDataDir(path, root);
-    const model = await profileFile(path, root, format, readParquet);
+    const model = await profileFile(path, root, format, readParquet); // NOSONAR S9382: one file at a time on purpose — up to MAX_FILES (2000) files, a text file read whole up to 64 MiB, so a fan-out could hold gigabytes and thousands of open handles at once.
     if (model !== null) {
       out.push(model);
     }

@@ -71,7 +71,7 @@ export async function walkFiles<T>(root: string, options: WalkFilesOptions<T>): 
       }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(full, depth + 1);
+        await walk(full, depth + 1); // NOSONAR S9382: depth-first under one shared maxFiles cap — a subtree must finish before the next starts or the cap stops at a nondeterministic point, and concurrent readdirs over a wide tree are the exhaustion this walk exists to bound.
       } else if (entry.isFile()) {
         const kept = options.select(entry, full);
         if (kept !== undefined) {

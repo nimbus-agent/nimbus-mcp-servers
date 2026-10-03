@@ -49,7 +49,7 @@ async function listTeamFiles(): Promise<unknown[]> {
   const projects = projectsFrom(projectsRoot);
   const out: unknown[] = [];
   for (const project of projects) {
-    const filesRoot = await figmaGet(`/v1/projects/${encodeURIComponent(project.id)}/files`);
+    const filesRoot = await figmaGet(`/v1/projects/${encodeURIComponent(project.id)}/files`); // NOSONAR S9382: one request per team project, one at a time on purpose — the project count is unbounded and Figma's REST API is rate-limited, so a fan-out would turn a large team into 429s.
     for (const f of filesFrom(filesRoot)) {
       const rec = f as Record<string, unknown> | null;
       out.push({

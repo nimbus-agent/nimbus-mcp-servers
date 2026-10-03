@@ -155,7 +155,7 @@ export function registerAppleCalendarTools(
       const items: ViewEvent[] = [];
 
       for (const cal of allCals) {
-        const rows = await calendar.listEvents(cal, window);
+        const rows = await calendar.listEvents(cal, window); // NOSONAR S9382: calendars are queried in order until maxInstances is reached — each clamp depends on how many events the earlier calendars returned, and a calendar past the cap is never queried at all.
         const clamped = clampInstances(rows, maxInstances - items.length);
 
         for (const { href, event } of clamped) {

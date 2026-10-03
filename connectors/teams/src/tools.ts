@@ -48,15 +48,14 @@ async function postGraphMessage(
   token: string,
   messagesPath: string,
   content: string,
-  contentType: "text" | "html" | undefined,
+  contentType: "text" | "html" = "text",
 ): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
-  const ct = contentType ?? "text";
   return graphRequest(token, messagesPath, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       body: {
-        contentType: ct === "html" ? "html" : "text",
+        contentType: contentType === "html" ? "html" : "text",
         content,
       },
     }),

@@ -160,12 +160,17 @@ interface ClientSurface {
   elicitInput?: (params: { message: string }) => Promise<ConsentAnswer>;
 }
 
-function makeRecorders(
-  captured: CapturedTools,
-  // In gateway mode the consent kit never reads the capability surface; the
-  // default exists so the shape is complete, not because it is exercised.
-  client: ClientSurface = { getClientCapabilities: (): undefined => undefined },
-): Recorders {
+/**
+ * The client a capture stands in with when the caller supplies none. In gateway mode the consent
+ * kit never reads the capability surface, so it exists to complete the shape, not because it is
+ * exercised. A new one per capture: a standalone-mode kit chains its handshake hook onto the client
+ * it is given, and a shared default would carry one capture's hook into the next.
+ */
+function silentClient(): ClientSurface {
+  return { getClientCapabilities: (): undefined => undefined };
+}
+
+function makeRecorders(captured: CapturedTools, client: ClientSurface = silentClient()): Recorders {
   const handle = { disable: (): undefined => undefined };
   const reg = ((
     name: string,
@@ -351,6 +356,9 @@ export interface FetchStub {
   restore(): void;
 }
 
+/** The three forms `fetch` accepts as its first argument. */
+type FetchInput = Request | string | URL;
+
 /**
  * The URL of a fetch argument, whichever of the three forms it takes.
  *
@@ -358,7 +366,7 @@ export interface FetchStub {
  * `[object Object]`, so a connector calling `fetch(new Request(url))` would
  * have every URL assertion in the tree silently compare against that.
  */
-function requestUrl(input: Request | string | URL): string {
+function requestUrl(input: FetchInput): string {
   if (typeof input === "string") {
     return input;
   }
@@ -405,7 +413,8 @@ export function stubFetch(
 ): FetchStub {
   const original = globalThis.fetch;
   const calls: RecordedRequest[] = [];
-  globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
+  /** Record one request and build its reply. Throws on a request `reply` does not answer. */
+  const answer = (input: FetchInput, init?: RequestInit): Response => {
     const req: RecordedRequest = {
       url: requestUrl(input),
       method: init?.method ?? "GET",
@@ -419,7 +428,9 @@ export function stubFetch(
     }
     const spec = typeof chosen === "string" ? { body: chosen } : chosen;
     return new Response(spec.body ?? "{}", { status: spec.status ?? 200 });
-  }) as typeof globalThis.fetch;
+  };
+  const stub = async (input: FetchInput, init?: RequestInit) => answer(input, init); // NOSONAR S7503: real fetch rejects and never throws, so the stub is async only to turn answer's throws (an unexpected request, a throwing reply, a bad status) into that same rejection.
+  globalThis.fetch = stub as typeof globalThis.fetch;
 
   return {
     calls,

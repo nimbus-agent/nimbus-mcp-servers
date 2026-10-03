@@ -30,7 +30,7 @@ export function storybookDir(): string {
 async function readManifest(root: string): Promise<unknown> {
   for (const name of MANIFEST_NAMES) {
     try {
-      const buf = await readFile(join(root, name));
+      const buf = await readFile(join(root, name)); // NOSONAR S9382: a fallback chain, not independent reads — stories.json is read only when index.json cannot be read or parsed, and index.json must win when both exist.
       if (buf.byteLength > MAX_FILE_BYTES) {
         return null;
       }

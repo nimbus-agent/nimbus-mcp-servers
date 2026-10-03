@@ -99,7 +99,7 @@ export async function scanSavedQueries(): Promise<SavedQuery[]> {
   const out: SavedQuery[] = [];
   for (const file of files) {
     assertWithinScriptsDir(file, root);
-    const q = await readSavedQuery(file, root);
+    const q = await readSavedQuery(file, root); // NOSONAR S9382: one file at a time on purpose — up to MAX_FILES (2000) files, each read whole before the 2 MiB cap is checked, so a fan-out would open thousands of descriptors and buffer every file at once.
     if (q !== null) {
       out.push(q);
     }

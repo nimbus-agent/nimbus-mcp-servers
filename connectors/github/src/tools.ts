@@ -299,11 +299,13 @@ export function registerGithubTools(
     "github_commit_push",
     "Push commits is not available via this tool — use local git with your own remote credentials (requires HITL repo.commit.push if ever implemented).",
     githubCommitPushSchema,
-    async () =>
-      jsonResult({
-        code: "NOT_IMPLEMENTED",
-        message:
-          "Pushing commits requires local git and is not executed by this MCP server. Clone the repo and push with git.",
-      }),
+    () =>
+      Promise.resolve(
+        jsonResult({
+          code: "NOT_IMPLEMENTED",
+          message:
+            "Pushing commits requires local git and is not executed by this MCP server. Clone the repo and push with git.",
+        }),
+      ),
   );
 }

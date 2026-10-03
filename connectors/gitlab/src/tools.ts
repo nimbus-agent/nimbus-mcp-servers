@@ -40,6 +40,58 @@ async function glFetch(token: string, path: string, init?: RequestInit): Promise
   return toRestFetchResult(res);
 }
 
+/**
+ * A list endpoint's URL with the query `setQuery` sets, parameters in that order. ABSOLUTE on
+ * purpose: it already carries apiBase()'s `/api/v4`, and a relative path would let glFetch
+ * re-prefix apiBase() → `/api/v4/api/v4/…`.
+ */
+function listUrl(path: string, setQuery: (q: URLSearchParams) => void): string {
+  const u = new URL(`${apiBase()}${path}`);
+  setQuery(u.searchParams);
+  return u.toString();
+}
+
+/** Paging as every list tool here sends it: `per_page` (default 30), then `page` when given. */
+function setPaging(
+  q: URLSearchParams,
+  paging: { readonly perPage?: number | undefined; readonly page?: number | undefined },
+): void {
+  q.set("per_page", String(paging.perPage ?? 30));
+  if (paging.page !== undefined) {
+    q.set("page", String(paging.page));
+  }
+}
+
+/** Merge requests and issues take one list query: a state filter (default opened), then paging. */
+const stateListUrl =
+  (collection: "merge_requests" | "issues") =>
+  (parsed: {
+    readonly projectPath: string;
+    readonly state?: string | undefined;
+    readonly perPage?: number | undefined;
+    readonly page?: number | undefined;
+  }): string =>
+    listUrl(`/projects/${encodeURIComponent(parsed.projectPath)}/${collection}`, (q) => {
+      q.set("state", parsed.state ?? "opened");
+      setPaging(q, parsed);
+    });
+
+/** A CI job's whole plain-text trace; throws, quoting GitLab, on a non-ok status. */
+async function fetchJobTrace(parsed: {
+  readonly projectPath: string;
+  readonly jobId: number;
+}): Promise<string> {
+  const token = requireProcessEnv("GITLAB_PAT");
+  const enc = encodeURIComponent(parsed.projectPath);
+  const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
+  const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
+  }
+  return text;
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const GITLAB_TOOL_NAMES = [
   "gitlab_project_list",
@@ -113,42 +165,6 @@ export function registerGitlabTools(
       .min(1)
       .describe("URL-encoded path or numeric project id, e.g. group/repo"),
   });
-
-  /**
-   * A list endpoint's URL with the query `setQuery` sets, parameters in that order. ABSOLUTE on
-   * purpose: it already carries apiBase()'s `/api/v4`, and a relative path would let glFetch
-   * re-prefix apiBase() → `/api/v4/api/v4/…`.
-   */
-  function listUrl(path: string, setQuery: (q: URLSearchParams) => void): string {
-    const u = new URL(`${apiBase()}${path}`);
-    setQuery(u.searchParams);
-    return u.toString();
-  }
-
-  /** Paging as every list tool here sends it: `per_page` (default 30), then `page` when given. */
-  function setPaging(
-    q: URLSearchParams,
-    paging: { readonly perPage?: number | undefined; readonly page?: number | undefined },
-  ): void {
-    q.set("per_page", String(paging.perPage ?? 30));
-    if (paging.page !== undefined) {
-      q.set("page", String(paging.page));
-    }
-  }
-
-  /** Merge requests and issues take one list query: a state filter (default opened), then paging. */
-  const stateListUrl =
-    (collection: "merge_requests" | "issues") =>
-    (parsed: {
-      readonly projectPath: string;
-      readonly state?: string | undefined;
-      readonly perPage?: number | undefined;
-      readonly page?: number | undefined;
-    }): string =>
-      listUrl(`/projects/${encodeURIComponent(parsed.projectPath)}/${collection}`, (q) => {
-        q.set("state", parsed.state ?? "opened");
-        setPaging(q, parsed);
-      });
 
   const gitlabProjectListSchema = z.object({
     perPage: z.number().int().min(1).max(100).optional(),
@@ -300,22 +316,6 @@ export function registerGitlabTools(
   const gitlabJobTraceSchema = projectPathArg.extend({
     jobId: z.number().int().min(1),
   });
-
-  /** A CI job's whole plain-text trace; throws, quoting GitLab, on a non-ok status. */
-  async function fetchJobTrace(parsed: {
-    readonly projectPath: string;
-    readonly jobId: number;
-  }): Promise<string> {
-    const token = requireProcessEnv("GITLAB_PAT");
-    const enc = encodeURIComponent(parsed.projectPath);
-    const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
-    const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
-    }
-    return text;
-  }
 
   reg(
     "gitlab_job_trace",

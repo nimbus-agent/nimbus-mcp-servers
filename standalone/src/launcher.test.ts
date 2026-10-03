@@ -171,29 +171,38 @@ describe("the hardened-registration scan runs in linear time", () => {
     expect(elapsed).toBeLessThan(2_000);
   }, 60_000);
 
-  test("blank lines before a registration call still count as hardened", () => {
+  /** Sources that register write tools in a shape the narrower scan must still call hardened. */
+  const HARDENED: readonly (readonly [label: string, serverTs: string])[] = [
     // The semantic half: `\s*` could span newlines and `[^\S\r\n]*` cannot, so this is the shape
     // that would regress if the narrower class changed which sources match.
-    const root = fixture("import x;\n\n\n\t  registerJiraWriteTool(server, {});\n");
-    expect(standaloneEligibility("c", root)).toEqual({ eligible: true, reason: "hardened" });
-  });
-
-  test("the registrar-passed-to-a-kit form still counts as hardened", () => {
-    const root = fixture("runKit({\n\n  registerWriteTool,\n});\n");
-    expect(standaloneEligibility("c", root)).toEqual({ eligible: true, reason: "hardened" });
-  });
+    [
+      "blank lines before a registration call still count as hardened",
+      "import x;\n\n\n\t  registerJiraWriteTool(server, {});\n",
+    ],
+    [
+      "the registrar-passed-to-a-kit form still counts as hardened",
+      "runKit({\n\n  registerWriteTool,\n});\n",
+    ],
+    // trim(), not trimStart(): `registerWriteTool,` plus a carriage return was refused here, while
+    // the consent audit's own copy of this scan — which already trimmed both ends — called the
+    // same source hardened. The audit now imports this one.
+    [
+      "a CRLF checkout's registrar-handed-to-a-kit line still counts as hardened",
+      "runKit({\r\n  registerWriteTool,\r\n});\r\n",
+    ],
+  ];
+  for (const [label, serverTs] of HARDENED) {
+    test(label, () => {
+      expect(standaloneEligibility("c", fixture(serverTs))).toEqual({
+        eligible: true,
+        reason: "hardened",
+      });
+    });
+  }
 
   test("a bare mention that is not a call is still not hardened", () => {
     const root = fixture("const registerWriteTool = makeRegistrar();\n");
     expect(standaloneEligibility("c", root).eligible).toBe(false);
-  });
-
-  test("a CRLF checkout's registrar-handed-to-a-kit line still counts as hardened", () => {
-    // trim(), not trimStart(): `registerWriteTool,` plus a carriage return was refused here, while
-    // the consent audit's own copy of this scan — which already trimmed both ends — called the
-    // same source hardened. The audit now imports this one.
-    const root = fixture("runKit({\r\n  registerWriteTool,\r\n});\r\n");
-    expect(standaloneEligibility("c", root)).toEqual({ eligible: true, reason: "hardened" });
   });
 });
 

@@ -251,7 +251,7 @@ export async function listAllExpectations(): Promise<GxExpectationMeta[]> {
   const out: GxExpectationMeta[] = [];
   for (const file of files) {
     assertWithinResultsDir(file, root);
-    const parsed = await readArtefact(file);
+    const parsed = await readArtefact(file); // NOSONAR S9382: one artefact at a time on purpose — up to MAX_FILES (1000) files, each read whole before the 4 MiB cap is checked, so a fan-out would open a thousand descriptors and buffer every artefact at once.
     if (parsed === null) {
       continue;
     }
