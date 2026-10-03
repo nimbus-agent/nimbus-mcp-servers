@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  approvedStandaloneWrite,
   type CapturedTools,
   captureTools,
   type SpawnStub,
@@ -99,6 +100,54 @@ describe("kubernetes write tools", () => {
       "-n",
       "default",
     ]);
+  });
+});
+
+describe("k8s_pod_delete's audited pre-state (standalone mode)", () => {
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+
+  /** Delete `args`' pod as an approved write under `scope`; return what its audit recorded. */
+  async function approvedDelete(scope: string, args: Record<string, unknown>) {
+    cli({ stdout: "" });
+    const run = await approvedStandaloneWrite(
+      registerKubernetesTools,
+      { NIMBUS_MCP_KUBERNETES_WRITE_SCOPE: scope },
+      "k8s_pod_delete",
+      args,
+    );
+    expect(run.answer).toEqual({ ok: true });
+    return {
+      preState: run.audit.find((e) => e.outcome === "executed")?.detail["preState"],
+      chain: run.chain,
+    };
+  }
+
+  it("records the namespace the pod was deleted from when it was given", async () => {
+    const { preState } = await approvedDelete("namespace:shop", {
+      namespace: "shop",
+      podName: "web-1",
+    });
+    expect(preState).toEqual({ namespace: "shop", podName: "web-1" });
+  });
+
+  it("records the default namespace it actually used when none was given", async () => {
+    // The delete ran in `default`; a pre-state without the namespace could not say where the pod
+    // was, and (as `undefined`) used to break the audit chain's verification as well.
+    const { preState, chain } = await approvedDelete("namespace:default", { podName: "web-1" });
+    expect(spawn?.calls[0]?.command).toEqual([
+      "kubectl",
+      "delete",
+      "pod",
+      "web-1",
+      "-n",
+      "default",
+    ]);
+    expect(preState).toEqual({ namespace: "default", podName: "web-1" });
+    // requested, accepted, executed — and the chain over them intact.
+    expect(chain).toEqual({ ok: true, count: 3 });
   });
 });
 

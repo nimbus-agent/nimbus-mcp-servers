@@ -108,9 +108,11 @@ export function registerKubernetesTools(
     "k8s_pod_delete",
     {
       mutates: "kubernetes.pod.delete",
-      // A deleted pod is not restorable; its identity is all that remains to record.
+      // A deleted pod is not restorable; its identity is all that remains to record — including
+      // the namespace the delete defaulted to, without which the record cannot say where it was.
       recoverable: false,
-      capturePreState: (p) => Promise.resolve({ namespace: p.namespace, podName: p.podName }),
+      capturePreState: (p) =>
+        Promise.resolve({ namespace: p.namespace ?? "default", podName: p.podName }),
       scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace ?? "default" }),
     },
     "Delete a pod.",
