@@ -151,4 +151,27 @@ describe("registerFastmailTools", () => {
       handlers.get("fastmail_mail_send")!({ to: "x@x.com", subject: "", body: "b" }),
     ).rejects.toThrow();
   });
+
+  test("each read tool re-validates its own arguments before touching the client", async () => {
+    // The handlers are reachable with raw arguments (the deprecated `.tool` path passes them
+    // through), so each parses again and refuses what its schema rejects.
+    const { handlers, client } = wire();
+    let listed = 0;
+    client.list = async () => {
+      listed += 1;
+      return [];
+    };
+    await expect(handlers.get("fastmail_list")!({ limit: 0 })).rejects.toThrow(
+      /"limit"[\s\S]*Too small: expected number to be >=1/,
+    );
+    await expect(handlers.get("fastmail_get")!({ id: "" })).rejects.toThrow(
+      /"id"[\s\S]*Too small: expected string to have >=1 characters/,
+    );
+    await expect(handlers.get("fastmail_search")!({ query: "x".repeat(501) })).rejects.toThrow(
+      /"query"[\s\S]*Too big: expected string to have <=500 characters/,
+    );
+    expect(listed).toBe(0);
+    expect(client.lastGetId).toBe("");
+    expect(client.lastSearch).toBeNull();
+  });
 });

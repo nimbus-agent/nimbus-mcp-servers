@@ -450,6 +450,52 @@ describe("registerEmailConnectorTools", () => {
     expect(declared).toEqual([{ name: "protonmail_mail_send", mutates: "protonmail.mail.send" }]);
     expect(sent).toEqual([{ to: "a@b.com", subject: "S", body: "B", bcc: "c@d.com" }]);
   });
+
+  test("list and search hand the client a mailbox only when one was given", async () => {
+    const recorded: RecordedTool[] = [];
+    const listed: unknown[] = [];
+    const searched: unknown[] = [];
+    registerEmailConnectorTools({
+      server: fakeServer(recorded),
+      registerWriteTool: (() => undefined) as unknown as WriteToolRegistrar,
+      toolPrefix: "imap",
+      descriptions: { list: "L", get: "G", search: "Se", send: "Sd" },
+      client: {
+        list: async (o) => {
+          listed.push(o);
+          return [];
+        },
+        get: async () => null,
+        search: async (o) => {
+          searched.push(o);
+          return [];
+        },
+      },
+      mailer: { send: async () => ({ messageId: null, accepted: [], rejected: [] }) },
+      formatAddr: fmtAddr,
+    });
+    const [list, , search] = recorded;
+    await list?.handler({});
+    await list?.handler({ mailbox: "Archive", limit: 5 });
+    await search?.handler({ query: "invoice" });
+    await search?.handler({ query: "invoice", mailbox: "Sent", limit: 7 });
+    // With no mailbox the key is absent, not present-and-undefined: the client picks its default.
+    expect(listed).toEqual([{ limit: 50 }, { mailbox: "Archive", limit: 5 }]);
+    expect(Object.hasOwn(listed[0] as object, "mailbox")).toBe(false);
+    expect(searched).toEqual([
+      { query: "invoice", limit: 50 },
+      { query: "invoice", limit: 7, mailbox: "Sent" },
+    ]);
+    expect(Object.hasOwn(searched[0] as object, "mailbox")).toBe(false);
+  });
+
+  test("search refuses arguments its schema rejects, before searching", async () => {
+    const { recorded, calls } = setup("imap");
+    await expect(recorded[2]!.handler({ query: "" })).rejects.toThrow(
+      /"query"[\s\S]*Too small: expected string to have >=1 characters/,
+    );
+    expect(calls.search).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

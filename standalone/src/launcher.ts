@@ -66,13 +66,13 @@ function connectorsDir(): string {
  * The id is validated against a strict allow-list BEFORE being joined into a path. A separator or
  * `..` would otherwise let the id escape the connectors directory and import an arbitrary module.
  */
-export function resolveConnectorEntry(id: string): string {
+export function resolveConnectorEntry(id: string, root: string = connectorsDir()): string {
   if (!ID_RE.test(id)) {
     throw new Error(
       `invalid connector id ${JSON.stringify(id)}: expected only lowercase letters, digits and hyphens`,
     );
   }
-  return join(connectorsDir(), id, "src", "server.ts");
+  return join(root, id, "src", "server.ts");
 }
 
 export type Eligibility =
@@ -163,6 +163,9 @@ export type ConnectorImporter = (entry: string) => Promise<{
 export async function runStandalone(
   argv: readonly string[],
   importConnector: ConnectorImporter = (entry) => import(entry),
+  // Injectable for the same reason as standaloneEligibility's root: every real connector is
+  // migrated, so only a fixture can show the refusal path end to end.
+  root: string = connectorsDir(),
 ): Promise<number> {
   const id = argv[0];
   if (id === undefined) {
@@ -171,7 +174,7 @@ export async function runStandalone(
   }
   let entry: string;
   try {
-    entry = resolveConnectorEntry(id);
+    entry = resolveConnectorEntry(id, root);
   } catch (e) {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
     return 2;
@@ -181,7 +184,7 @@ export async function runStandalone(
     return 2;
   }
 
-  const verdict = standaloneEligibility(id);
+  const verdict = standaloneEligibility(id, root);
   if (!verdict.eligible) {
     process.stderr.write(`${verdict.reason}\n`);
     return 3;

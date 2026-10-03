@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -175,9 +176,10 @@ describe("runStandalone", () => {
   });
 
   test("exit code 3 is reserved for an ineligible connector, distinct from 2", () => {
-    // Exercised through standaloneEligibility above rather than runStandalone: every real
-    // connector is now migrated, so there is none left to refuse. 3 means "not safe standalone
-    // yet" and 2 means "no such connector" — a human triaging should not have to read the message.
+    // Every real connector is now migrated, so none is left for runStandalone to refuse; its own
+    // exit 3 is asserted end to end over a fixture connectors directory, further down. 3 means
+    // "not safe standalone yet" and 2 means "no such connector" — a human triaging should not
+    // have to read the message.
     expect(standaloneEligibility("definitely-not-a-connector").eligible).toBe(false);
   });
 });
@@ -208,7 +210,7 @@ describe("connector startup shapes", () => {
     //
     // This case named `snowflake` as its ineligible example and broke the moment snowflake was
     // migrated. Every real connector is now migrated, so it asserts the same short-circuit via the
-    // unknown-id path; the ineligible-verdict branch itself is covered by standaloneEligibility.
+    // unknown-id path; the ineligible-verdict branch is asserted over a fixture directory below.
     let imported = 0;
     const code = await runStandalone(["definitely-not-a-connector"], () => {
       imported += 1;
@@ -216,6 +218,70 @@ describe("connector startup shapes", () => {
     });
     expect(code).not.toBe(0);
     expect(imported).toBe(0);
+  });
+});
+
+describe("runStandalone over a fixture connectors directory", () => {
+  /** A connectors dir holding one connector that declares a write, with `serverTs` as its entry. */
+  function connectorsRoot(id: string, serverTs: string): string {
+    const root = mkdtempSync(join(tmpdir(), "launch-"));
+    mkdirSync(join(root, id, "src"), { recursive: true });
+    writeFileSync(
+      join(root, id, "nimbus.extension.json"),
+      JSON.stringify({ hitlRequired: ["write"] }),
+    );
+    writeFileSync(join(root, id, "src", "server.ts"), serverTs);
+    return root;
+  }
+
+  test("an unhardened write-declaring connector exits 3, says why, and is never imported", async () => {
+    // The ineligible-verdict branch end to end: every real connector is migrated, so a fixture is
+    // the only connector left that the launcher would refuse.
+    const root = connectorsRoot("unmigrated", 'reg("x_delete", handler);\n');
+    const stderr = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let imported = 0;
+    let code: number | undefined;
+    let written: unknown[][] = [];
+    try {
+      code = await runStandalone(
+        ["unmigrated"],
+        () => {
+          imported += 1;
+          return Promise.resolve({});
+        },
+        root,
+      );
+      written = [...stderr.mock.calls];
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(code).toBe(3);
+    expect(imported).toBe(0);
+    expect(written).toHaveLength(1);
+    expect(String(written[0]?.[0])).toStartWith(
+      "unmigrated declares write or delete tools in its manifest that have not been routed through the consent kit",
+    );
+  });
+
+  test("a hardened connector is imported from that directory and started", async () => {
+    const root = connectorsRoot("hardened", 'registerWriteTool("x_delete", cfg, "d", s, h);\n');
+    const entries: string[] = [];
+    let code: number | undefined;
+    try {
+      code = await runStandalone(
+        ["hardened"],
+        (entry) => {
+          entries.push(entry);
+          return Promise.resolve({});
+        },
+        root,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(code).toBe(0);
+    expect(entries).toEqual([join(root, "hardened", "src", "server.ts")]);
   });
 });
 

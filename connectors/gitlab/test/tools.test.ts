@@ -158,3 +158,40 @@ describe("gitlab pipeline retry and cancel", () => {
     });
   }
 });
+
+describe("gitlab merge request merge", () => {
+  /** The method, URL and JSON body of one merge call. */
+  async function merge(args: Record<string, unknown>): Promise<{ line: string; body: unknown }> {
+    const stub = reply('{"state":"merged"}');
+    expect(
+      await tools.callJson("gitlab_mr_merge", { ...PROJECT, mergeRequestIid: 4, ...args }),
+    ).toEqual({ state: "merged" });
+    return {
+      line: `${stub.only.method} ${stub.only.url}`,
+      body: JSON.parse(stub.only.body ?? "null") as unknown,
+    };
+  }
+
+  it("PUTs an empty body when no merge option is given", async () => {
+    expect(await merge({})).toEqual({
+      line: `PUT ${API}/projects/group%2Frepo/merge_requests/4/merge`,
+      body: {},
+    });
+  });
+
+  it("sends each merge option it is given, false ones included", async () => {
+    expect(
+      (
+        await merge({
+          mergeCommitMessage: "Merge !4",
+          squash: false,
+          shouldRemoveSourceBranch: true,
+        })
+      ).body,
+    ).toEqual({
+      merge_commit_message: "Merge !4",
+      squash: false,
+      should_remove_source_branch: true,
+    });
+  });
+});
