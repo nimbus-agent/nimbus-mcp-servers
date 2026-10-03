@@ -39,6 +39,11 @@ const getToken = createAccessTokenCache({
   },
 });
 
+/** Forget the exchanged token. Tests only: the cache otherwise outlives the test that filled it. */
+export function __resetWizTokenForTests(): void {
+  getToken.clear();
+}
+
 async function wizGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const token = await getToken();
   return postGraphql<T>({

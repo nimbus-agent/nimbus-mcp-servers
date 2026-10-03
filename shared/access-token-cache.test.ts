@@ -93,10 +93,11 @@ describe("createAccessTokenCache", () => {
 
   it("caps the body snippet in the error", async () => {
     const ex = exchanger({ ok: false, status: 500, text: "x".repeat(1000) });
-    const err = await createAccessTokenCache({ label: "L", exchange: ex.exchange })().catch(
+    const err = await createAccessTokenCache({ label: "L", exchange: ex.exchange })().then(
+      () => undefined,
       (e: unknown) => e as Error,
     );
-    expect(err.message).toBe(`L 500: ${"x".repeat(DEFAULT_SNIPPET_MAX)}`);
+    expect(err?.message).toBe(`L 500: ${"x".repeat(DEFAULT_SNIPPET_MAX)}`);
   });
 
   it("honours a custom snippet cap", async () => {
@@ -192,5 +193,24 @@ describe("createAccessTokenCache", () => {
     const ex = exchanger(ok('{"access_token":"t"}'));
     createAccessTokenCache({ label: "L", exchange: ex.exchange });
     expect(ex.calls).toBe(0);
+  });
+
+  it("clear() forgets the cached token, so the next call exchanges again", async () => {
+    const ex = exchanger(ok('{"access_token":"first"}'), ok('{"access_token":"second"}'));
+    const token = createAccessTokenCache({ label: "L", exchange: ex.exchange });
+    expect(await token()).toBe("first");
+    token.clear();
+    expect(await token()).toBe("second");
+    expect(await token()).toBe("second");
+    expect(ex.calls).toBe(2);
+  });
+
+  it("clear() on a cache that holds nothing leaves the next call to exchange as usual", async () => {
+    const ex = exchanger(ok('{"access_token":"t"}'));
+    const token = createAccessTokenCache({ label: "L", exchange: ex.exchange });
+    token.clear();
+    expect(ex.calls).toBe(0);
+    expect(await token()).toBe("t");
+    expect(ex.calls).toBe(1);
   });
 });

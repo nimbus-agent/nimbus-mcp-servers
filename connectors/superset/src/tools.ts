@@ -25,6 +25,11 @@ const login = createAccessTokenCache({
   },
 });
 
+/** Forget the login token. Tests only: the cache otherwise outlives the test that filled it. */
+export function __resetSupersetLoginForTests(): void {
+  login.clear();
+}
+
 async function supersetGet(path: string): Promise<unknown> {
   const token = await login();
   const res = await fetch(`${apiBase()}${path}`, {

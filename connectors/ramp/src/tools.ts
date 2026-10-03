@@ -33,6 +33,11 @@ const token = createAccessTokenCache({
   },
 });
 
+/** Forget the exchanged token. Tests only: the cache otherwise outlives the test that filled it. */
+export function __resetRampTokenForTests(): void {
+  token.clear();
+}
+
 async function rampGet(path: string): Promise<unknown> {
   const t = await token();
   const res = await fetch(`${BASE}${path}`, {
