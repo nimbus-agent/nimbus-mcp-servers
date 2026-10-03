@@ -7,6 +7,7 @@ import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterLookerDashboards } from "./search-filter.ts";
 
 function apiBase(): string {
@@ -30,11 +31,7 @@ async function lookerLogin(): Promise<string> {
   if (!res.ok) {
     throw new Error(`Looker login ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = JSON.parse(text) as unknown;
-  const root =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
+  const root = asRecord(JSON.parse(text) as unknown);
   const token = typeof root?.["access_token"] === "string" ? root["access_token"] : null;
   if (token === null || token === "") {
     throw new Error("Looker login response missing access_token");
@@ -130,13 +127,7 @@ export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): voi
     async (p) => {
       const token = await lookerLogin();
       const dashboards = await listDashboards(token);
-      const found = dashboards.find((d) => {
-        const obj =
-          d !== null && typeof d === "object" && !Array.isArray(d)
-            ? (d as Record<string, unknown>)
-            : null;
-        return obj?.["id"] === p.id;
-      });
+      const found = dashboards.find((d) => asRecord(d)?.["id"] === p.id);
       if (found === undefined) {
         throw new Error(`Looker dashboard not found: ${p.id}`);
       }

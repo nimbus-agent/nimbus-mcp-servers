@@ -7,6 +7,7 @@ import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterPowerBiReports } from "./search-filter.ts";
 
 async function fetchAccessToken(
@@ -32,11 +33,11 @@ async function fetchAccessToken(
   if (!res.ok) {
     throw new Error(`Power BI token error ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = JSON.parse(text) as unknown;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  const root = asRecord(JSON.parse(text) as unknown);
+  if (root === undefined) {
     throw new Error("Power BI token response: unexpected shape");
   }
-  const token = (parsed as Record<string, unknown>)["access_token"];
+  const token = root["access_token"];
   if (typeof token !== "string" || token === "") {
     throw new Error("Power BI token response: missing access_token");
   }
@@ -54,12 +55,6 @@ async function accessToken(): Promise<string> {
   );
 }
 
-function asRec(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 async function listReports(accessToken: string): Promise<unknown[]> {
   const res = await fetchWithTimeout("https://api.powerbi.com/v1.0/myorg/reports", {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
@@ -68,7 +63,7 @@ async function listReports(accessToken: string): Promise<unknown[]> {
   if (!res.ok) {
     throw new Error(`Power BI reports error ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const value = asRec(JSON.parse(text) as unknown)?.["value"];
+  const value = asRecord(JSON.parse(text) as unknown)?.["value"];
   return Array.isArray(value) ? value : [];
 }
 
@@ -79,11 +74,11 @@ async function fetchDatasetTables(accessToken: string, datasetId: string): Promi
     { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } },
   );
   if (!res.ok) return [];
-  const value = asRec(JSON.parse(await res.text()) as unknown)?.["value"];
+  const value = asRecord(JSON.parse(await res.text()) as unknown)?.["value"];
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
   for (const item of value) {
-    const name = asRec(item)?.["name"];
+    const name = asRecord(item)?.["name"];
     if (typeof name === "string" && name !== "") out.push(name);
   }
   return out;
@@ -91,7 +86,7 @@ async function fetchDatasetTables(accessToken: string, datasetId: string): Promi
 
 /** Attach each report's dataset-table refs in-session, so the gateway never makes a second credentialed call. */
 async function expandReport(accessToken: string, report: unknown): Promise<unknown> {
-  const r = asRec(report);
+  const r = asRecord(report);
   if (r === undefined) return report;
   const datasetId = r["datasetId"];
   const datasetTables =
@@ -135,10 +130,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
     }),
     async (p) => {
       const reports = await listReports(await accessToken());
-      const found = reports.find((r) => {
-        if (r === null || typeof r !== "object" || Array.isArray(r)) return false;
-        return (r as Record<string, unknown>)["id"] === p.id;
-      });
+      const found = reports.find((r) => asRecord(r)?.["id"] === p.id);
       if (found === undefined) {
         throw new Error(`Power BI report not found: ${p.id}`);
       }

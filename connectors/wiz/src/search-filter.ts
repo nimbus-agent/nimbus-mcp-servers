@@ -1,37 +1,13 @@
 import {
   asObjectish,
   makeQueryFilter,
+  nestedString,
+  objectNamesText,
   type SearchMatchOptions,
   stringField,
 } from "../../../shared/search-filter.ts";
 
 export type WizSearchMatchOptions = SearchMatchOptions;
-
-function nestedString(row: Record<string, unknown>, parent: string, key: string): string {
-  const p = row[parent];
-  if (p === null || typeof p !== "object") {
-    return "";
-  }
-  return stringField(p as Record<string, unknown>, key);
-}
-
-function projectNames(row: Record<string, unknown>): string {
-  const projects = row["projects"];
-  if (!Array.isArray(projects)) {
-    return "";
-  }
-  const names: string[] = [];
-  for (const p of projects) {
-    if (p === null || typeof p !== "object") {
-      continue;
-    }
-    const name = stringField(p as Record<string, unknown>, "name");
-    if (name !== "") {
-      names.push(name);
-    }
-  }
-  return names.join(" ");
-}
 
 function fieldsOf(item: unknown): readonly string[] | null {
   const row = asObjectish(item);
@@ -39,11 +15,11 @@ function fieldsOf(item: unknown): readonly string[] | null {
     return null;
   }
   return [
-    nestedString(row, "sourceRule", "name"),
+    nestedString(row, ["sourceRule", "name"]),
     stringField(row, "description"),
-    nestedString(row, "entity", "name"),
-    nestedString(row, "entity", "type"),
-    projectNames(row),
+    nestedString(row, ["entity", "name"]),
+    nestedString(row, ["entity", "type"]),
+    objectNamesText(row, "projects"),
   ];
 }
 

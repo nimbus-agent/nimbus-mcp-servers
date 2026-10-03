@@ -3,6 +3,7 @@ import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterDagsterJobs } from "./search-filter.ts";
 
 function apiToken(): string {
@@ -59,12 +60,6 @@ interface FlatJob {
   description: string | null;
   isJob: boolean;
   tags: Array<{ key: string; value: string }>;
-}
-
-function asRecord(v: unknown): Record<string, unknown> | undefined {
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : undefined;
 }
 
 function str(row: Record<string, unknown>, key: string): string | null {

@@ -1,20 +1,12 @@
 import {
   asObjectish,
   makeQueryFilter,
+  nestedString,
   type SearchMatchOptions,
   stringField,
 } from "../../../shared/search-filter.ts";
 
 export type NetlifySearchMatchOptions = SearchMatchOptions;
-
-function subStringField(row: Record<string, unknown>, key: string, sub: string): string {
-  const obj = row[key];
-  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) {
-    return "";
-  }
-  const v = (obj as Record<string, unknown>)[sub];
-  return typeof v === "string" ? v : "";
-}
 
 function fieldsOf(item: unknown): readonly string[] | null {
   const row = asObjectish(item);
@@ -26,11 +18,11 @@ function fieldsOf(item: unknown): readonly string[] | null {
     stringField(row, "name"),
     stringField(row, "url"),
     stringField(row, "ssl_url"),
-    subStringField(row, "build_settings", "repo_url"),
-    subStringField(row, "build_settings", "repo_branch"),
-    subStringField(row, "published_deploy", "state"),
-    subStringField(row, "published_deploy", "branch"),
-    subStringField(row, "published_deploy", "commit_ref"),
+    nestedString(row, ["build_settings", "repo_url"]),
+    nestedString(row, ["build_settings", "repo_branch"]),
+    nestedString(row, ["published_deploy", "state"]),
+    nestedString(row, ["published_deploy", "branch"]),
+    nestedString(row, ["published_deploy", "commit_ref"]),
   ];
 }
 

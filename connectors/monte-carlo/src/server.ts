@@ -7,6 +7,7 @@ import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterMonteCarloIncidents } from "./search-filter.ts";
 
 const GRAPHQL_URL = "https://api.getmontecarlo.com/graphql";
@@ -36,12 +37,6 @@ const GET_INCIDENTS_QUERY = `
   }
 `.trim();
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 /**
  * Single POST helper for the Monte Carlo GraphQL endpoint. Sends `{ query, variables }` with the
  * `x-mcd-id`/`x-mcd-token` key-pair auth headers, throws on a non-ok HTTP status or a non-empty
@@ -68,10 +63,10 @@ async function mcGraphql(
   if (!res.ok) {
     throw new Error(`Monte Carlo API error ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = asObject(JSON.parse(text) as unknown) ?? {};
+  const parsed = asRecord(JSON.parse(text) as unknown) ?? {};
   const errors = parsed["errors"];
   if (Array.isArray(errors) && errors.length > 0) {
-    const first = asObject(errors[0])?.["message"];
+    const first = asRecord(errors[0])?.["message"];
     const message = typeof first === "string" ? first : JSON.stringify(errors[0]);
     throw new Error(`Monte Carlo GraphQL error: ${message}`);
   }
@@ -85,14 +80,14 @@ interface IncidentsPage {
 }
 
 function parseIncidentsPage(parsed: unknown): IncidentsPage {
-  const getIncidents = asObject(asObject(asObject(parsed)?.["data"])?.["getIncidents"]);
+  const getIncidents = asRecord(asRecord(asRecord(parsed)?.["data"])?.["getIncidents"]);
   const edges = Array.isArray(getIncidents?.["edges"]) ? (getIncidents["edges"] as unknown[]) : [];
   const incidents: unknown[] = [];
   for (const edge of edges) {
-    const node = asObject(edge)?.["node"];
+    const node = asRecord(edge)?.["node"];
     if (node !== undefined) incidents.push(node);
   }
-  const pageInfo = asObject(getIncidents?.["pageInfo"]);
+  const pageInfo = asRecord(getIncidents?.["pageInfo"]);
   const hasNextPage = pageInfo?.["hasNextPage"] === true;
   const endCursor = typeof pageInfo?.["endCursor"] === "string" ? pageInfo["endCursor"] : null;
   return { incidents, hasNextPage, endCursor };
@@ -169,7 +164,7 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
       const apiId = requiredEnv("MONTECARLO_API_ID");
       const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const incidents = await fetchIncidents(apiId, apiToken);
-      const found = incidents.find((inc) => asObject(inc)?.["incidentId"] === p.id);
+      const found = incidents.find((inc) => asRecord(inc)?.["incidentId"] === p.id);
       if (found === undefined) {
         throw new Error(`Monte Carlo incident not found: ${p.id}`);
       }

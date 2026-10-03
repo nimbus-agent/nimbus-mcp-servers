@@ -7,6 +7,7 @@ import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterSnowflakeTables } from "./search-filter.ts";
 
 function authHeader(): Record<string, string> {
@@ -56,13 +57,6 @@ function sfLiteral(v: string): string {
 const TABLES_SQL =
   "SELECT table_catalog AS database_name, table_schema AS schema_name, table_name, " +
   "row_count, last_altered FROM information_schema.tables WHERE table_schema <> 'INFORMATION_SCHEMA'";
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
 
 function rowsFromStatementsResponse(parsed: unknown): Record<string, unknown>[] {
   const root = asRecord(parsed);

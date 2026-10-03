@@ -1,15 +1,12 @@
 import {
   asRecord,
   makeQueryFilter,
+  nestedString,
   type SearchMatchOptions,
+  stringField,
 } from "../../../shared/search-filter.ts";
 
 export type DatabricksSearchMatchOptions = SearchMatchOptions;
-
-function stringAt(row: Record<string, unknown>, key: string): string {
-  const v = row[key];
-  return typeof v === "string" ? v : "";
-}
 
 function numberAt(row: Record<string, unknown>, key: string): string {
   const v = row[key];
@@ -21,8 +18,11 @@ function fieldsOf(item: unknown): readonly string[] | null {
   if (row === undefined) {
     return null;
   }
-  const settings = asRecord(row["settings"]) ?? {};
-  return [stringAt(settings, "name"), stringAt(row, "creator_user_name"), numberAt(row, "job_id")];
+  return [
+    nestedString(row, ["settings", "name"]),
+    stringField(row, "creator_user_name"),
+    numberAt(row, "job_id"),
+  ];
 }
 
 export const filterDatabricksJobs = makeQueryFilter(fieldsOf);

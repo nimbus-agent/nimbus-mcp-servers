@@ -10,6 +10,7 @@ import {
   putOptionalNonEmptyString,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 
 type SlackApiRecord = Record<string, unknown>;
 
@@ -33,10 +34,7 @@ async function slackApi(
   } catch {
     return { ok: false, json: {}, text };
   }
-  const json =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as SlackApiRecord)
-      : {};
+  const json: SlackApiRecord = asRecord(parsed) ?? {};
   const okField = json["ok"];
   return { ok: okField === true && res.ok, json, text };
 }
@@ -300,11 +298,7 @@ export function registerSlackTools(
       if (!open.ok) {
         throw new Error(`Slack conversations.open: ${open.text.slice(0, 400)}`);
       }
-      const ch = open.json["channel"];
-      const chRec =
-        ch !== null && typeof ch === "object" && !Array.isArray(ch)
-          ? (ch as SlackApiRecord)
-          : undefined;
+      const chRec = asRecord(open.json["channel"]);
       const channelId = chRec !== undefined && typeof chRec["id"] === "string" ? chRec["id"] : "";
       if (channelId === "") {
         throw new Error("Slack conversations.open: missing channel id");
