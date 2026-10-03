@@ -43,6 +43,26 @@ function graphListResult(r: {
   return mcpJsonResultIfOk("Graph", r, 200);
 }
 
+/** POST one message to a Graph `…/messages` collection — a team channel's or a chat's. */
+async function postGraphMessage(
+  token: string,
+  messagesPath: string,
+  content: string,
+  contentType: "text" | "html" | undefined,
+): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
+  const ct = contentType ?? "text";
+  return graphRequest(token, messagesPath, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      body: {
+        contentType: ct === "html" ? "html" : "text",
+        content,
+      },
+    }),
+  });
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const TEAMS_TOOL_NAMES = [
   "teams_team_list",
@@ -187,17 +207,8 @@ export function registerTeamsTools(
       const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");
       const tid = encodeURIComponent(parsed.teamId);
       const cid = encodeURIComponent(parsed.channelId);
-      const ct = parsed.contentType ?? "text";
-      const r = await graphRequest(token, `/teams/${tid}/channels/${cid}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: {
-            contentType: ct === "html" ? "html" : "text",
-            content: parsed.body,
-          },
-        }),
-      });
+      const path = `/teams/${tid}/channels/${cid}/messages`;
+      const r = await postGraphMessage(token, path, parsed.body, parsed.contentType);
       return graphListResult(r);
     },
   );
@@ -215,17 +226,12 @@ export function registerTeamsTools(
     async (parsed) => {
       const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");
       const id = encodeURIComponent(parsed.chatId);
-      const ct = parsed.contentType ?? "text";
-      const r = await graphRequest(token, `/chats/${id}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          body: {
-            contentType: ct === "html" ? "html" : "text",
-            content: parsed.body,
-          },
-        }),
-      });
+      const r = await postGraphMessage(
+        token,
+        `/chats/${id}/messages`,
+        parsed.body,
+        parsed.contentType,
+      );
       return graphListResult(r);
     },
   );

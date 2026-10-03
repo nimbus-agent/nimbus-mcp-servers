@@ -156,6 +156,27 @@ describe("snyk_get", () => {
   });
 });
 
+describe("snyk_get and snyk_search", () => {
+  // All three project tools share one aggregated-issues request. snyk_list's body is pinned above;
+  // these two never narrow the severities, so theirs is always the full filter.
+  for (const [name, extra] of [
+    ["snyk_get", { issueId: "SNYK-JS-LODASH-1" }],
+    ["snyk_search", { query: "lodash" }],
+  ] as const) {
+    it(`${name} POSTs the full-severity filter to the project's aggregated issues`, async () => {
+      reply({ issues: [issue()] });
+      await tools.call(name, { orgId: "org 1", projectId: "proj/1", ...extra });
+      expect(stub?.only.method).toBe("POST");
+      expect(stub?.only.url).toBe(
+        "https://api.snyk.io/v1/org/org%201/project/proj%2F1/aggregated-issues",
+      );
+      expect(stub?.only.body).toBe(
+        '{"filters":{"severities":["critical","high","medium","low"],"types":["vuln","license"],"ignored":false,"patched":false}}',
+      );
+    });
+  }
+});
+
 describe("snyk_search", () => {
   it("matches the issue title, package name and CVE", async () => {
     reply({
