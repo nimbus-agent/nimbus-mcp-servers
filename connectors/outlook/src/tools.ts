@@ -123,7 +123,8 @@ export function registerOutlookTools(
         const top = data.top ?? 25;
         const fid = data.folderId !== undefined && data.folderId !== "" ? data.folderId : "inbox";
         const skip = data.skip ?? 0;
-        const u = new URL(`${GRAPH}/me/mailFolders/${encodeURIComponent(fid)}/messages`);
+        const path = `/me/mailFolders/${encodeURIComponent(fid)}/messages`;
+        const u = new URL(`${GRAPH}${path}`);
         u.searchParams.set("$top", String(top));
         u.searchParams.set("$skip", String(skip));
         u.searchParams.set(
@@ -133,7 +134,9 @@ export function registerOutlookTools(
         if (data.filter !== undefined && data.filter !== "") {
           u.searchParams.set("$filter", data.filter);
         }
-        return `${u.pathname}${u.search}`;
+        // Relative to GRAPH, like every other tool here: the fetcher prefixes the base, which
+        // already ends in /v1.0, so returning `u.pathname` requested /v1.0/v1.0/me/….
+        return `${path}${u.search}`;
       },
     );
   }
