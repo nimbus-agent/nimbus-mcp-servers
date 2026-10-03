@@ -114,34 +114,43 @@ export function registerBigeyeTools(reg: ZodToolRegistrar, server: unknown): voi
     },
   );
 
-  registerWriteTool(
-    "bigeye_issue_acknowledge",
-    {
-      mutates: "bigeye.issue.acknowledge",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
-    },
-    "Acknowledge a Bigeye issue.",
-    z.object({ issueId: z.string().min(1) }),
-    async (p) => {
-      await updateIssueStatus(p.issueId, "ISSUE_STATUS_ACKNOWLEDGED");
-      return jsonResult({ status: "ok", issueId: p.issueId });
-    },
-  );
+  /**
+   * Acknowledge and resolve are ONE mutation, `updateIssueStatus`, with a different status, so
+   * they share everything except their name, action type, description and that status.
+   */
+  function registerStatusTool(
+    name: string,
+    mutates: string,
+    description: string,
+    status: "ISSUE_STATUS_ACKNOWLEDGED" | "ISSUE_STATUS_CLOSED",
+  ): void {
+    registerWriteTool(
+      name,
+      {
+        mutates,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
+      },
+      description,
+      z.object({ issueId: z.string().min(1) }),
+      async (p) => {
+        await updateIssueStatus(p.issueId, status);
+        return jsonResult({ status: "ok", issueId: p.issueId });
+      },
+    );
+  }
 
-  registerWriteTool(
+  registerStatusTool(
+    "bigeye_issue_acknowledge",
+    "bigeye.issue.acknowledge",
+    "Acknowledge a Bigeye issue.",
+    "ISSUE_STATUS_ACKNOWLEDGED",
+  );
+  registerStatusTool(
     "bigeye_issue_resolve",
-    {
-      mutates: "bigeye.issue.resolve",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
-    },
+    "bigeye.issue.resolve",
     "Resolve (close) a Bigeye issue.",
-    z.object({ issueId: z.string().min(1) }),
-    async (p) => {
-      await updateIssueStatus(p.issueId, "ISSUE_STATUS_CLOSED");
-      return jsonResult({ status: "ok", issueId: p.issueId });
-    },
+    "ISSUE_STATUS_CLOSED",
   );
 }
 

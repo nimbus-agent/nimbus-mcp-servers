@@ -185,38 +185,45 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
     },
   );
 
-  registerWriteTool(
-    "montecarlo_incident_acknowledge",
-    {
-      mutates: "montecarlo.incident.acknowledge",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
-    "Acknowledge a Monte Carlo incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (p) => {
-      const apiId = requiredEnv("MONTECARLO_API_ID");
-      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
-      await setIncidentFeedback(apiId, apiToken, p.incidentId, "ACKNOWLEDGED");
-      return jsonResult({ status: "ok", incidentId: p.incidentId });
-    },
-  );
+  /**
+   * Acknowledge and resolve are ONE mutation, `setIncidentFeedback`, with a different feedback
+   * value, so they share everything except their name, action type, description and that value.
+   */
+  function registerFeedbackTool(
+    name: string,
+    mutates: string,
+    description: string,
+    feedback: "ACKNOWLEDGED" | "RESOLVED",
+  ): void {
+    registerWriteTool(
+      name,
+      {
+        mutates,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
+      },
+      description,
+      z.object({ incidentId: z.string().min(1) }),
+      async (p) => {
+        const apiId = requiredEnv("MONTECARLO_API_ID");
+        const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
+        await setIncidentFeedback(apiId, apiToken, p.incidentId, feedback);
+        return jsonResult({ status: "ok", incidentId: p.incidentId });
+      },
+    );
+  }
 
-  registerWriteTool(
+  registerFeedbackTool(
+    "montecarlo_incident_acknowledge",
+    "montecarlo.incident.acknowledge",
+    "Acknowledge a Monte Carlo incident.",
+    "ACKNOWLEDGED",
+  );
+  registerFeedbackTool(
     "montecarlo_incident_resolve",
-    {
-      mutates: "montecarlo.incident.resolve",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
+    "montecarlo.incident.resolve",
     "Resolve a Monte Carlo incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (p) => {
-      const apiId = requiredEnv("MONTECARLO_API_ID");
-      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
-      await setIncidentFeedback(apiId, apiToken, p.incidentId, "RESOLVED");
-      return jsonResult({ status: "ok", incidentId: p.incidentId });
-    },
+    "RESOLVED",
   );
 }
 
