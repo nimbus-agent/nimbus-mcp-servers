@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { parseStorybookIndex, type StorybookStory } from "@nimbus-dev/sdk";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 
 export type { StorybookStory };
 export { parseStorybookIndex };
@@ -23,11 +24,7 @@ const MANIFEST_NAMES = ["index.json", "stories.json"] as const;
  * the MCP tools surface a clear error rather than reading an empty path.
  */
 export function storybookDir(): string {
-  const dir = process.env["STORYBOOK_DIR"]?.trim();
-  if (dir === undefined || dir === "") {
-    throw new Error("STORYBOOK_DIR is not set");
-  }
-  return resolve(dir);
+  return resolve(requiredEnv("STORYBOOK_DIR"));
 }
 
 async function readManifest(root: string): Promise<unknown> {

@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { relative, resolve } from "node:path";
 import { isRecord } from "../../../shared/cli-json-kit.ts";
-import { byExtension, walkFiles } from "../../../shared/walk-files.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { assertWithinDir, byExtension, walkFiles } from "../../../shared/walk-files.ts";
 
 /**
  * Tier-3 no-row-data reader for Great Expectations validation-result JSON
@@ -204,11 +205,7 @@ export function parseValidationResult(parsed: unknown, sourceFile: string): GxEx
  * so the MCP tools surface a clear error rather than reading an empty path.
  */
 export function resultsDir(): string {
-  const dir = process.env["GREAT_EXPECTATIONS_RESULTS_DIR"]?.trim();
-  if (dir === undefined || dir === "") {
-    throw new Error("GREAT_EXPECTATIONS_RESULTS_DIR is not set");
-  }
-  return resolve(dir);
+  return resolve(requiredEnv("GREAT_EXPECTATIONS_RESULTS_DIR"));
 }
 
 /**
@@ -217,13 +214,7 @@ export function resultsDir(): string {
  * is the filesystem analog of the argv flag-smuggling guard.
  */
 export function assertWithinResultsDir(candidate: string, root: string): void {
-  const rel = relative(root, candidate);
-  if (rel === "") {
-    return; // the dir itself
-  }
-  if (rel.startsWith("..") || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error("path escapes the configured Great Expectations results dir");
-  }
+  assertWithinDir(candidate, root, "the configured Great Expectations results dir");
 }
 
 /** Recursively collect `*.json` artefact paths under `root` (bounded). */

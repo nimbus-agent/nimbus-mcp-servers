@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
-import { byExtension, walkFiles } from "../../../shared/walk-files.ts";
+import { relative, resolve } from "node:path";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { assertWithinDir, byExtension, walkFiles } from "../../../shared/walk-files.ts";
 
 /**
  * Local-only reader for saved SQL queries. This module is the MCP-server-side
@@ -42,11 +43,7 @@ export function baseTitle(relativePath: string): string {
  * the MCP tools surface a clear error rather than reading an empty path.
  */
 export function scriptsDir(): string {
-  const dir = process.env["LOCALDB_SCRIPTS_DIR"]?.trim();
-  if (dir === undefined || dir === "") {
-    throw new Error("LOCALDB_SCRIPTS_DIR is not set");
-  }
-  return resolve(dir);
+  return resolve(requiredEnv("LOCALDB_SCRIPTS_DIR"));
 }
 
 /**
@@ -54,13 +51,7 @@ export function scriptsDir(): string {
  * scripts dir itself or a descendant. Rejects `..`-escaping inputs.
  */
 export function assertWithinScriptsDir(candidate: string, root: string): void {
-  const rel = relative(root, candidate);
-  if (rel === "") {
-    return;
-  }
-  if (rel.startsWith("..") || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error("path escapes the configured local DB scripts dir");
-  }
+  assertWithinDir(candidate, root, "the configured local DB scripts dir");
 }
 
 function collectSqlFiles(root: string): Promise<string[]> {

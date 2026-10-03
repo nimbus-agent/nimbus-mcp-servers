@@ -1,6 +1,6 @@
 import type { FileHandle } from "node:fs/promises";
 import { open } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { relative, resolve } from "node:path";
 import {
   type DataColumn,
   firstLineAndRows,
@@ -10,7 +10,8 @@ import {
   parseJsonColumns,
   parseJsonlColumns,
 } from "@nimbus-dev/sdk";
-import { walkFiles } from "../../../shared/walk-files.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { assertWithinDir, walkFiles } from "../../../shared/walk-files.ts";
 
 /**
  * Local data profiling reader (Tier-5, no-row-data). The MCP-server-side
@@ -54,21 +55,11 @@ export interface DataModel {
 }
 
 export function dataDir(): string {
-  const dir = process.env["DATAPROFILE_DIR"]?.trim();
-  if (dir === undefined || dir === "") {
-    throw new Error("DATAPROFILE_DIR is not set");
-  }
-  return resolve(dir);
+  return resolve(requiredEnv("DATAPROFILE_DIR"));
 }
 
 export function assertWithinDataDir(candidate: string, root: string): void {
-  const rel = relative(root, candidate);
-  if (rel === "") {
-    return;
-  }
-  if (rel.startsWith("..") || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error("path escapes the configured data-profile dir");
-  }
+  assertWithinDir(candidate, root, "the configured data-profile dir");
 }
 
 function extOf(name: string): string {

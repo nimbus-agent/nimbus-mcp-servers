@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
-import { byExtension, walkFiles } from "./walk-files.ts";
+import { join, resolve, sep } from "node:path";
+import { assertWithinDir, byExtension, walkFiles } from "./walk-files.ts";
 
 /** A directory tree from a map of relative path → contents. */
 function tree(files: Record<string, string>): string {
@@ -114,5 +114,38 @@ describe("byExtension", () => {
   it("keeps nothing when no extension matches", async () => {
     const root = tree({ "a.txt": "" });
     expect(await walkFiles(root, { ...all, select: byExtension(".json") })).toEqual([]);
+  });
+});
+
+describe("assertWithinDir", () => {
+  // `relative()` is pure path arithmetic, so none of these paths needs to exist.
+  const root = resolve(tmpdir(), "nimbus-walk-guard-root");
+  const what = "the configured test dir";
+
+  it("accepts the root itself", () => {
+    expect(() => assertWithinDir(root, root, what)).not.toThrow();
+  });
+
+  it("accepts a descendant at any depth", () => {
+    expect(() => assertWithinDir(join(root, "a", "b", "c.json"), root, what)).not.toThrow();
+  });
+
+  it("refuses a path that climbs out, naming the directory", () => {
+    expect(() => assertWithinDir(resolve(root, "..", "evil.json"), root, what)).toThrow(
+      "path escapes the configured test dir",
+    );
+  });
+
+  it("refuses a sibling that merely shares the root's name as a prefix", () => {
+    // A string-prefix check would wave `<root>-evil` through; relative() is `../<root>-evil`.
+    expect(() => assertWithinDir(`${root}-evil${sep}x.json`, root, what)).toThrow(
+      "path escapes the configured test dir",
+    );
+  });
+
+  it("fails closed on a child whose own name begins with `..`", () => {
+    expect(() => assertWithinDir(join(root, "..cache", "x.json"), root, what)).toThrow(
+      "path escapes",
+    );
   });
 });
