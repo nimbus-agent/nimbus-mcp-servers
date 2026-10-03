@@ -8,9 +8,16 @@ import { findToolNamesDrift, main, syncToolNames } from "./sync-tool-names.ts";
 
 const ROOT = join(fileURLToPath(import.meta.url), "..", "..");
 
+/** Every fixture root made by {@link fixture}, removed after the test that made it. */
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 /**
  * A repo-shaped fixture with one connector whose `tools.ts` registers
- * `registered` and declares `declared`.
+ * `registered` and declares `declared`. Removed after the test.
  */
 function fixture(opts: {
   declared: readonly string[];
@@ -19,6 +26,7 @@ function fixture(opts: {
   guard?: boolean;
 }): string {
   const root = mkdtempSync(join(tmpdir(), "toolnames-"));
+  roots.push(root);
   const dir = join(root, "connectors", "acme", "src");
   mkdirSync(dir, { recursive: true });
   const file = opts.file ?? "tools.ts";
@@ -127,19 +135,12 @@ describe("syncToolNames", () => {
 });
 
 describe("main (the script's two modes)", () => {
-  const roots: string[] = [];
-
-  afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
-
   /** Run the script against a one-connector fixture; return its exit code, output and file. */
   async function run(
     argv: readonly string[],
     opts: { declared: readonly string[]; registered: readonly string[] },
   ): Promise<{ code: number; out: string[]; file: string; before: string }> {
     const root = fixture(opts);
-    roots.push(root);
     const file = join(root, "connectors", "acme", "src", "tools.ts");
     const before = readFileSync(file, "utf8");
     const out: string[] = [];
