@@ -76,6 +76,13 @@ describe("findToolNamesDrift", () => {
     expect(await findToolNamesDrift(root)).toEqual([]);
   });
 
+  test("ignores a stray file beside the connector directories", async () => {
+    const root = fixture({ declared: ["acme_list"], registered: ["acme_list", "acme_get"] });
+    // A file, not a directory: there is no connector here to import.
+    writeFileSync(join(root, "connectors", "README.md"), "# connectors\n", "utf8");
+    expect((await findToolNamesDrift(root)).map((d) => d.connector)).toEqual(["acme"]);
+  });
+
   test("skips an entry point that would start a transport on import", async () => {
     // An unguarded `server.ts` connects stdio at module scope; importing it to
     // read its tool names would open a real transport in the test process.

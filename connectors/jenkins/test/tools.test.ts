@@ -90,3 +90,138 @@ describe("jenkins build actions", () => {
     });
   }
 });
+
+describe("jenkins reads", () => {
+  /** Answer every request with `reply`, replacing any stub already installed. */
+  function serve(reply: string | { status?: number; body?: string }): FetchStub {
+    fetchStub?.restore();
+    fetchStub = stubFetch(reply);
+    return fetchStub;
+  }
+
+  it("job_list flattens nested folders, preferring the full name and keeping urls", async () => {
+    const stub = serve(
+      JSON.stringify({
+        jobs: [
+          { name: "api", url: `${BASE}/job/api/` },
+          {
+            name: "team",
+            fullName: "team",
+            jobs: [
+              { name: "web", fullName: "team/web", url: `${BASE}/job/team/job/web/` },
+              // No name at all: not listed itself, but its children still are.
+              { url: `${BASE}/job/team/job/x/`, jobs: [{ name: "deep", fullName: "team/x/deep" }] },
+              { name: "", fullName: "" },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(await tools.callJson("jenkins_job_list")).toEqual({
+      jobs: [
+        { fullName: "api", url: `${BASE}/job/api/` },
+        { fullName: "team" },
+        { fullName: "team/web", url: `${BASE}/job/team/job/web/` },
+        { fullName: "team/x/deep" },
+      ],
+    });
+    const url = new URL(stub.only.url);
+    expect(`${url.origin}${url.pathname}`).toBe(`${BASE}/api/json`);
+    expect(url.searchParams.get("tree")).toStartWith("jobs[name,fullname,url,jobs[");
+    expect(stub.only.headers["authorization"]).toBe(BASIC);
+  });
+
+  it("job_list answers an empty list when the root carries no jobs array", async () => {
+    serve(JSON.stringify({ _class: "hudson.model.Hudson" }));
+    expect(await tools.callJson("jenkins_job_list")).toEqual({ jobs: [] });
+  });
+
+  it("job_list refuses a root that is not a JSON object", async () => {
+    for (const body of ["[]", "null", "not json"]) {
+      serve(body);
+      await expect(tools.call("jenkins_job_list")).rejects.toThrow(
+        "Jenkins: invalid jobs response",
+      );
+    }
+  });
+
+  it("job_get and build_get address the job by its folder path", async () => {
+    const job = serve('{"name":"api build"}');
+    expect(await tools.callJson("jenkins_job_get", { jobName: "team/api build" })).toEqual({
+      name: "api build",
+    });
+    expect(job.only.url).toBe(`${BASE}/job/team/job/api%20build/api/json`);
+
+    const build = serve('{"number":12}');
+    await tools.call("jenkins_build_get", { jobName: "team/api build", buildNumber: 12 });
+    expect(build.only.url).toBe(`${BASE}/job/team/job/api%20build/12/api/json`);
+  });
+
+  it("build_list asks for 20 builds by default, and for the requested limit", async () => {
+    const tree = (limit: number): string =>
+      encodeURIComponent(
+        `builds[number,url,result,duration,timestamp,building]{0,${String(limit)}}`,
+      );
+    const byDefault = serve('{"builds":[]}');
+    await tools.call("jenkins_build_list", { jobName: "api" });
+    expect(byDefault.only.url).toBe(`${BASE}/job/api/api/json?tree=${tree(20)}`);
+
+    const limited = serve('{"builds":[]}');
+    await tools.call("jenkins_build_list", { jobName: "api", limit: 5 });
+    expect(limited.only.url).toBe(`${BASE}/job/api/api/json?tree=${tree(5)}`);
+  });
+
+  it("a failed read throws Jenkins' status and body", async () => {
+    serve({ status: 404, body: "Not Found" });
+    await expect(tools.call("jenkins_job_get", { jobName: "nope" })).rejects.toThrow(
+      "Jenkins 404: Not Found",
+    );
+  });
+
+  it("build_log_tail returns the last 200 lines by default, with the total count", async () => {
+    const log = Array.from({ length: 250 }, (_, i) => `line ${String(i + 1)}`).join("\r\n");
+    const stub = serve(log);
+    const out = (await tools.callJson("jenkins_build_log_tail", {
+      jobName: "api",
+      buildNumber: 7,
+    })) as { jobName: string; buildNumber: number; lineCount: number; tail: string };
+    expect(stub.only.url).toBe(`${BASE}/job/api/7/consoleText`);
+    expect(stub.only.headers["authorization"]).toBe(BASIC);
+    expect(out.jobName).toBe("api");
+    expect(out.buildNumber).toBe(7);
+    expect(out.lineCount).toBe(250);
+    const tail = out.tail.split("\n");
+    expect(tail).toHaveLength(200);
+    expect(tail[0]).toBe("line 51");
+    expect(tail[199]).toBe("line 250");
+  });
+
+  it("build_log_tail honours maxLines, and returns a short log whole", async () => {
+    serve("a\nb\nc\nd");
+    expect(
+      await tools.callJson("jenkins_build_log_tail", {
+        jobName: "api",
+        buildNumber: 1,
+        maxLines: 2,
+      }),
+    ).toEqual({ jobName: "api", buildNumber: 1, lineCount: 4, tail: "c\nd" });
+    serve("only\nthree\nlines");
+    expect(
+      await tools.callJson("jenkins_build_log_tail", { jobName: "api", buildNumber: 1 }),
+    ).toEqual({ jobName: "api", buildNumber: 1, lineCount: 3, tail: "only\nthree\nlines" });
+  });
+
+  it("build_log_tail throws the log's status and body on a failure", async () => {
+    serve({ status: 403, body: "Forbidden" });
+    await expect(
+      tools.call("jenkins_build_log_tail", { jobName: "api", buildNumber: 1 }),
+    ).rejects.toThrow("Jenkins log 403: Forbidden");
+  });
+
+  it("reads refuse without JENKINS_BASE_URL, before any request", async () => {
+    const stub = serve("{}");
+    delete process.env["JENKINS_BASE_URL"];
+    await expect(tools.call("jenkins_job_list")).rejects.toThrow("JENKINS_BASE_URL is not set");
+    expect(stub.calls).toEqual([]);
+  });
+});

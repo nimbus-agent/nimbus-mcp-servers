@@ -25,11 +25,24 @@ describe("outlookToolAllowed", () => {
   test("Mail.ReadWrite satisfies Mail.Read requirement", () => {
     expect(outlookToolAllowed("outlook_mail_list", ["Mail.ReadWrite"])).toBe(true);
   });
+
+  test("Mail.ReadWrite does not imply Mail.Send", () => {
+    expect(outlookToolAllowed("outlook_mail_send", ["Mail.ReadWrite"])).toBe(false);
+  });
+
+  test("a tool with no declared minimum scope is allowed whatever was granted", () => {
+    expect(outlookToolAllowed("outlook_future_tool", [])).toBe(true);
+  });
 });
 
 describe("outlookToolShouldRegister", () => {
   test("undefined granted list registers all tools", () => {
     expect(outlookToolShouldRegister("outlook_mail_folders", undefined)).toBe(true);
+  });
+
+  test("a declared granted list is checked against the tool's minimum scopes", () => {
+    expect(outlookToolShouldRegister("outlook_mail_folders", ["Calendars.Read"])).toBe(false);
+    expect(outlookToolShouldRegister("outlook_calendar_get", ["Calendars.Read"])).toBe(true);
   });
 });
 

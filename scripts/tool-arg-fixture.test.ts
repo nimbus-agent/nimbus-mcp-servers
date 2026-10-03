@@ -98,4 +98,42 @@ describe("fixtureFor", () => {
       .refine((v) => v.a !== v.b, { message: "a and b must differ" });
     expect(fixtureFor(schema as unknown as ParsableSchema)).toBeUndefined();
   });
+
+  it("grows an array to its minimum length", () => {
+    expect(accepted(z.object({ ids: z.array(z.string()).min(3) }))).toEqual({
+      ids: ["x", "x", "x"],
+    });
+  });
+
+  it("trims a seeded string and lowers a seeded number to their maximums", () => {
+    expect(
+      accepted(z.object({ code: z.string().max(3), n: z.number().max(10) }), {
+        code: "toolong",
+        n: 50,
+      }),
+    ).toEqual({ code: "too", n: 10 });
+  });
+
+  it("gives up on a value over its maximum that it cannot shrink", () => {
+    // An over-long seeded array is not trimmed: the repair would be a no-op, so the caller is
+    // told rather than looping on a value that never changes.
+    const schema = z.object({ ids: z.array(z.string()).max(1) });
+    expect(fixtureFor(schema as unknown as ParsableSchema, { ids: ["a", "b"] })).toBeUndefined();
+  });
+
+  it("stops after a bounded number of repairs when a schema never settles", () => {
+    // Every answer raises the minimum again, so each repair "succeeds" and none is enough.
+    let calls = 0;
+    const restless: ParsableSchema = {
+      safeParse: () => {
+        calls += 1;
+        return {
+          success: false,
+          error: { issues: [{ code: "too_small", path: ["n"], minimum: calls + 1 }] },
+        };
+      },
+    };
+    expect(fixtureFor(restless)).toBeUndefined();
+    expect(calls).toBe(24);
+  });
 });
