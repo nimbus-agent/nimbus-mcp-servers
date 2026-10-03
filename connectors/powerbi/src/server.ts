@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
@@ -129,10 +130,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
   reg(
     "powerbi_list",
     "List Power BI reports (`GET /v1.0/myorg/reports`), each expanded with its dataset-table refs for lineage. The reports endpoint returns the full org list in one response and has no reliable server paging, so this is a single fetch returning ALL reports with `nextCursor: null` (`cursor`/`limit` are accepted for `_list` API symmetry but never truncate).",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (_p) => {
       const token = await accessToken();
       // Return EVERY report: slicing to `limit` would silently drop reports (nextCursor is null, so

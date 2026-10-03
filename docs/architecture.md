@@ -67,11 +67,11 @@ way.
 Three layers sit under it:
 
 **`shared/` — the kits.** Tool registration (`mcp-tool-kit.ts`, `rest-tool-kit.ts`,
-`mcp-search-tool.ts`, `collection-tool-kit.ts`), transport helpers (`fetch-bearer-json.ts`,
-`fetch-json-text.ts`, `env-json-api.ts`, `atlassian-json-fetch.ts`, `join-api-path.ts`,
-`run-cli-json.ts`, `cli-json-kit.ts`, `imapflow-adapter.ts`, `graphql-json.ts`, `github-rest.ts`),
-and the search-filter primitives. A connector composes these rather than hand-rolling HTTP and
-tool plumbing.
+`mcp-search-tool.ts`, `cursor-list-tool.ts`, `collection-tool-kit.ts`), transport helpers
+(`fetch-bearer-json.ts`, `fetch-json-text.ts`, `env-json-api.ts`, `atlassian-json-fetch.ts`,
+`join-api-path.ts`, `run-cli-json.ts`, `cli-json-kit.ts`, `imapflow-adapter.ts`, `graphql-json.ts`,
+`github-rest.ts`), and the search-filter primitives. A connector composes these rather than
+hand-rolling HTTP and tool plumbing.
 
 Four of these exist because the hand-rolled versions had multiplied:
 

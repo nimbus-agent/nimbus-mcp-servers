@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
@@ -124,10 +125,7 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
   reg(
     "snowflake_list",
     "List Snowflake tables across all databases and schemas. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const limit = p.limit ?? 200;
       const offset =

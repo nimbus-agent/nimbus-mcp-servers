@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
@@ -115,10 +116,7 @@ export function registerTableauTools(reg: ZodToolRegistrar, server: unknown): vo
   reg(
     "tableau_list",
     "List Tableau views/dashboards (`GET /api/3.4/sites/{siteId}/views`). Requires a PAT sign-in first. Paginated (1-based): `cursor` (page number) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const pageSize = p.limit ?? 200;
       // 1-based: null / "" / "0" / non-numeric / negative / fractional all resolve to page 1

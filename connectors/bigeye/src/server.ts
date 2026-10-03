@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
@@ -73,10 +74,7 @@ export function registerBigeyeTools(reg: ZodToolRegistrar, server: unknown): voi
   reg(
     "bigeye_list",
     "List Bigeye data-quality issues (`GET /api/v1/issues`). Paginated: `cursor` (offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const limit = p.limit ?? 200;
       // null / undefined / "" / non-numeric / negative all clamp to offset 0; fractional truncates.

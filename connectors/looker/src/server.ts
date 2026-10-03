@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
@@ -99,23 +100,15 @@ export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): voi
 
   // Both listings are the same offset-cursor page over a different collection.
   for (const { tool, path, description } of PAGINATED_LISTS) {
-    reg(
-      tool,
-      description,
-      z.object({
-        cursor: z.string().nullable().optional(),
-        limit: z.number().int().min(1).max(PAGE_LIMIT_MAX).optional(),
-      }),
-      async (p) => {
-        const limit = p.limit ?? PAGE_LIMIT_DEFAULT;
-        const offset = offsetCursor(p.cursor);
-        const items = await getArray(await lookerLogin(), path, { limit, offset });
-        return jsonResult({
-          items,
-          nextCursor: items.length === limit ? String(offset + limit) : null,
-        });
-      },
-    );
+    reg(tool, description, cursorListInputSchema(PAGE_LIMIT_MAX), async (p) => {
+      const limit = p.limit ?? PAGE_LIMIT_DEFAULT;
+      const offset = offsetCursor(p.cursor);
+      const items = await getArray(await lookerLogin(), path, { limit, offset });
+      return jsonResult({
+        items,
+        nextCursor: items.length === limit ? String(offset + limit) : null,
+      });
+    });
   }
 
   reg(

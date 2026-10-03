@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
@@ -139,10 +140,7 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
   reg(
     "montecarlo_list",
     "List Monte Carlo data-quality incidents (relay GraphQL `getIncidents`). Paginated: `cursor` (the relay `after` token) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const apiId = requiredEnv("MONTECARLO_API_ID");
       const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
