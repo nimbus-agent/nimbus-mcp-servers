@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,29 @@ function fixture(opts: {
     "utf8",
   );
   return root;
+}
+
+/**
+ * A repo-shaped fixture with an empty connector directory per id, and the ids in the order the
+ * filesystem lists them — the order the drift check walks, which is the filesystem's, not sorted.
+ * Removed after the test.
+ */
+function connectorDirs(...ids: readonly string[]): { root: string; order: string[] } {
+  const root = mkdtempSync(join(tmpdir(), "toolnames-"));
+  roots.push(root);
+  for (const id of ids) {
+    mkdirSync(join(root, "connectors", id, "src"), { recursive: true });
+  }
+  return { root, order: readdirSync(join(root, "connectors")) };
+}
+
+/** A connector `tools.ts` declaring `x_list`, followed by `body`. */
+function writeTools(root: string, id: string, body: string): void {
+  writeFileSync(
+    join(root, "connectors", id, "src", "tools.ts"),
+    `export const X_TOOL_NAMES = [\n  "x_list",\n] as const;\n${body}\n`,
+    "utf8",
+  );
 }
 
 describe("findToolNamesDrift", () => {
@@ -111,6 +134,32 @@ describe("findToolNamesDrift", () => {
       guard: true,
     });
     expect(await findToolNamesDrift(root)).toHaveLength(1);
+  });
+
+  test("reports drift across several connectors in directory order", async () => {
+    const { root, order } = connectorDirs("one", "two", "three");
+    for (const id of order) {
+      writeTools(
+        root,
+        id,
+        `export function registerXTools(reg: (...a: unknown[]) => void): void {\n  reg("x_get", "Describes x_get.", {}, async () => ({ content: [] }));\n}`,
+      );
+    }
+    expect((await findToolNamesDrift(root)).map((d) => d.connector)).toEqual(order);
+  });
+
+  test("a connector that fails to load is reported as the first such in directory order", async () => {
+    // The connector modules load together, so the first load to FAIL need not be the first in
+    // directory order. Here the earlier connector fails LATER, and it must still be the one
+    // reported: which error the check throws must not depend on how the loads interleave.
+    const { root, order } = connectorDirs("one", "two");
+    const [first, second] = order;
+    if (first === undefined || second === undefined) {
+      throw new Error(`expected two connector directories, saw ${String(order.length)}`);
+    }
+    writeTools(root, first, `await Bun.sleep(50);\nthrow new Error("${first} failed to load");`);
+    writeTools(root, second, `throw new Error("${second} failed to load");`);
+    await expect(findToolNamesDrift(root)).rejects.toThrow(`${first} failed to load`);
   });
 });
 

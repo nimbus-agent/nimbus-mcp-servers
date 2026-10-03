@@ -115,13 +115,20 @@ export async function findToolNamesDrift(root: string = ROOT): Promise<ToolNames
   try {
     // No import depends on another, and each module stays paired with its own connector, so the
     // modules load together; the comparison below still runs, and reports, in directory order.
-    const loaded = await Promise.all(
+    // allSettled, not all: every load has finished before anything below runs, the `finally`
+    // included, and a module that fails to load is reported as the first such in directory order
+    // rather than as whichever failed first, so the error does not depend on how loads interleave.
+    const loads = await Promise.allSettled(
       declaredConnectors(root).map(async (c) => ({
         ...c,
         mod: (await import(c.file)) as Record<string, unknown>,
       })),
     );
-    for (const { connector, file, declared, mod } of loaded) {
+    for (const load of loads) {
+      if (load.status === "rejected") {
+        throw load.reason;
+      }
+      const { connector, file, declared, mod } = load.value;
       const register = Object.entries(mod).find(
         ([name, value]) =>
           /^register[A-Za-z]+Tools$/.test(name) && typeof value === "function" && value.length <= 2,
