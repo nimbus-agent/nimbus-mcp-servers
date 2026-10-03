@@ -116,7 +116,11 @@ describe("audit chain", () => {
       connector: "kubernetes",
       tool: "k8s_pod_delete",
       outcome: "executed",
-      detail: { preState: { namespace: undefined, podName: "web-1" }, list: [1, "two", null] },
+      // In an ARRAY, JSON.stringify writes undefined as null - and so must the hash.
+      detail: {
+        preState: { namespace: undefined, podName: "web-1" },
+        list: [1, "two", null, undefined],
+      },
     });
     await appendAuditEntry(p, entry("k8s_pod_delete", "executed"));
     const written = JSON.parse((await readFile(p, "utf8")).split("\n")[0] as string) as {
@@ -124,7 +128,7 @@ describe("audit chain", () => {
     };
     expect(written.entry.detail).toEqual({
       preState: { podName: "web-1" },
-      list: [1, "two", null],
+      list: [1, "two", null, null],
     });
     expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 2 });
   });

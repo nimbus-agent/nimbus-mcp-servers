@@ -143,13 +143,17 @@ describe("stubFetch", () => {
   it("records a URL, a Request and a string alike, with every header form", async () => {
     stub = stubFetch("{}");
     await fetch(new URL("https://a.example/x"));
-    await fetch(new Request("https://b.example/y"), { headers: [["X-A", "1"]] });
+    // A header pair missing its value is not recorded as a header with no value.
+    const pairs = [["X-A", "1"], ["X-Half"]] as unknown as [string, string][];
+    await fetch(new Request("https://b.example/y"), { headers: pairs });
     await fetch("https://c.example/z", { headers: new Headers({ "X-B": "2" }), method: "PUT" });
     expect(stub.calls.map((c) => [c.method, c.url, c.headers])).toEqual([
       ["GET", "https://a.example/x", {}],
       ["GET", "https://b.example/y", { "x-a": "1" }],
       ["PUT", "https://c.example/z", { "x-b": "2" }],
     ]);
+    // toEqual ignores an undefined-valued key, so the half pair's absence is asserted directly.
+    expect(Object.keys(stub.calls[1]?.headers ?? {})).toEqual(["x-a"]);
   });
 
   it("fails loudly on a request its routing function did not expect", async () => {

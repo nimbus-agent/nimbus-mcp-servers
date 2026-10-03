@@ -176,21 +176,31 @@ describe("snowflake server main tools", () => {
     expect(statements[0]).toEndWith("LIMIT 200 OFFSET 0");
   });
 
-  it("matches a table whose schema name is missing by the parts it does have", async () => {
+  it("matches a table missing part of its name by the parts it does have", async () => {
     globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
           resultSetMetaData: {
             rowType: [{ name: "DATABASE_NAME" }, { name: "SCHEMA_NAME" }, { name: "TABLE_NAME" }],
           },
-          data: [["DB1", null, "EVENTS"]],
+          data: [
+            ["DB1", null, "EVENTS"],
+            [null, "PUBLIC", 7],
+          ],
         }),
         { status: 200 },
       )) as unknown as typeof fetch;
-    const out = payload(
-      await (captureTools().get("snowflake_get") as Handler)({ id: "db1..events" }),
-    );
-    expect(out).toEqual({ database_name: "DB1", schema_name: null, table_name: "EVENTS" });
+    const get = captureTools().get("snowflake_get") as Handler;
+    expect(payload(await get({ id: "db1..events" }))).toEqual({
+      database_name: "DB1",
+      schema_name: null,
+      table_name: "EVENTS",
+    });
+    expect(payload(await get({ id: ".public." }))).toEqual({
+      database_name: null,
+      schema_name: "PUBLIC",
+      table_name: 7,
+    });
   });
 
   it("finds no rows in an answer without metadata or data", async () => {
