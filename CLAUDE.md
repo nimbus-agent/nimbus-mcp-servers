@@ -48,6 +48,13 @@ tool surface is unreachable and it drops out of the connector contract test. A c
 register from `server.ts` guards the bootstrap with `if (import.meta.main)` and exports the
 registrar; ten do.
 
+The entry points themselves are booted by `scripts/connector-boot.test.ts`: imported in gateway
+mode with stdin and stdout swapped for in-memory streams (`bootOverStubbedStdio` in the tools
+harness), then asked over MCP for their name and tools. An unguarded entry point evaluates only on
+its FIRST import in a process, so no other test file may import one — a second import is a cached
+no-op and that boot fails at an unanswered `initialize`. A test that needs a live connector uses a
+guarded one, whose `startConnector()` builds a fresh server on every call.
+
 Before hand-rolling plumbing, check the kits — `env-json-api.ts` (env-token JSON GET),
 `collection-tool-kit.ts` (the list/get/search triple), `cli-json-kit.ts` (spawn a CLI, parse JSON,
 `cliArg`-guard every argv value), `imapflow-adapter.ts` (IMAP/SMTP).
