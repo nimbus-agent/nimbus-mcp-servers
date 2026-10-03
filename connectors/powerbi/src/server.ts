@@ -96,6 +96,27 @@ async function expandReport(accessToken: string, report: unknown): Promise<unkno
   return { ...r, datasetTables };
 }
 
+/**
+ * Queue a refresh by POSTing `{ notifyOption: "NoNotification" }` to a `…/refreshes` URL. Power BI
+ * answers 202 and refreshes asynchronously; a failure throws `Power BI <what> refresh <status>`.
+ */
+async function queueRefresh(
+  accessToken: string,
+  url: string,
+  what: "dataset" | "dataflow",
+): Promise<void> {
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ notifyOption: "NoNotification" }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Power BI ${what} refresh ${String(res.status)}: ${(await res.text()).slice(0, 400)}`,
+    );
+  }
+}
+
 export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): void {
   // Despite the read-only helper's name, this connector exposes write tools. The consent
   // kit needs the real server, which the helper now passes through as its second argument.
@@ -169,16 +190,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
         group === undefined
           ? `${POWERBI_API_BASE}/v1.0/myorg/datasets/${encodeURIComponent(p.datasetId)}/refreshes`
           : `${POWERBI_API_BASE}/v1.0/myorg/groups/${encodeURIComponent(group)}/datasets/${encodeURIComponent(p.datasetId)}/refreshes`;
-      const res = await fetchWithTimeout(datasetUrl, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ notifyOption: "NoNotification" }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          `Power BI dataset refresh ${String(res.status)}: ${(await res.text()).slice(0, 400)}`,
-        );
-      }
+      await queueRefresh(token, datasetUrl, "dataset");
       return jsonResult({
         status: "queued",
         ...(group === undefined ? {} : { groupId: group }),
@@ -199,16 +211,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
     async (p) => {
       const token = await accessToken();
       const url = `${POWERBI_API_BASE}/v1.0/myorg/groups/${encodeURIComponent(p.groupId)}/dataflows/${encodeURIComponent(p.dataflowId)}/refreshes`;
-      const res = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ notifyOption: "NoNotification" }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          `Power BI dataflow refresh ${String(res.status)}: ${(await res.text()).slice(0, 400)}`,
-        );
-      }
+      await queueRefresh(token, url, "dataflow");
       return jsonResult({ status: "queued", groupId: p.groupId, dataflowId: p.dataflowId });
     },
   );
