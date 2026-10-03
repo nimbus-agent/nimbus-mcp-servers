@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
 import { ImapFlow } from "imapflow";
 import { DAVClient } from "tsdav";
 import {
@@ -322,6 +322,15 @@ describe("createAppleCalDavClient", () => {
 describe("icalTimestamp", () => {
   it("emits RFC 5545 basic format, not ISO-8601", () => {
     expect(icalTimestamp(new Date("2026-01-02T03:04:05.678Z"))).toBe("20260102T030405Z");
+  });
+
+  it("stamps the current time when given no date", () => {
+    setSystemTime(new Date("2026-03-04T05:06:07.890Z"));
+    try {
+      expect(icalTimestamp()).toBe("20260304T050607Z");
+    } finally {
+      setSystemTime();
+    }
   });
 });
 

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpListResult } from "@nimbus-dev/sdk/connector-kit";
@@ -46,8 +46,29 @@ function fakeServer(opts: {
 
 const schema = z.object({ branch: z.string() });
 
+/**
+ * The registrar reads these at construction, and the helpers below set them per case. Restore
+ * them after every case: bun runs many test files in ONE process, and an audit-log path left
+ * behind here would collect the audit entries of every later file's standalone writes.
+ */
+const KIT_ENV = ["NIMBUS_MCP_TEST_WRITE_SCOPE", "NIMBUS_MCP_WRITE_BUDGET", "NIMBUS_MCP_AUDIT_LOG"];
+const savedKitEnv = new Map(KIT_ENV.map((k) => [k, process.env[k]]));
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const [key, value] of savedKitEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+
+afterAll(async () => {
+  await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
 async function tempAuditPath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "nimbus-consent-"));
+  tempDirs.push(dir);
   return join(dir, "audit.jsonl");
 }
 
@@ -485,5 +506,104 @@ describe("pre-state capture failure", () => {
     expect(text).toContain("captureFailed");
     expect(text).toContain("ref lookup failed");
     expect(text).toContain('"executed"');
+  });
+});
+
+describe("standalone outcomes at the edges", () => {
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+  afterEach(() => {
+    resetConnectorModeForTests();
+  });
+
+  /** The audit entries a log holds, in order. */
+  async function entries(log: string): Promise<{ outcome: string; detail: unknown }[]> {
+    return (await readFile(log, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((l) => (JSON.parse(l) as { entry: { outcome: string; detail: unknown } }).entry);
+  }
+
+  /** Register one approved write whose pre-state capture and handler are given. */
+  function registered(
+    log: string,
+    capture: () => Promise<Record<string, unknown>>,
+    handler: () => Promise<McpListResult>,
+  ): (args: unknown) => Promise<McpListResult> {
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"] = "repo:acme/api";
+    process.env["NIMBUS_MCP_AUDIT_LOG"] = log;
+    const reg = createWriteToolRegistrar(srv, {
+      connector: "github",
+      scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
+      scopeKinds: ["repo"],
+    });
+    reg(
+      "github_branch_delete",
+      {
+        mutates: "github.branch.delete",
+        recoverable: false,
+        capturePreState: capture,
+        scopeTargetOf: (a: { branch: string }) => ({ kind: "repo", value: a.branch }),
+      },
+      "Delete a branch.",
+      z.object({ branch: z.string() }),
+      handler,
+    );
+    srv.handshake();
+    const cb = srv.captured;
+    if (cb === undefined) throw new Error("tool was not registered");
+    return cb;
+  }
+
+  test("a pre-state capture that rejects with a non-Error still records why", async () => {
+    const log = await tempAuditPath();
+    const call = registered(
+      log,
+      () => Promise.reject("ref service unavailable"),
+      () => Promise.resolve(ok()),
+    );
+    await call({ branch: "acme/api" });
+    const executed = (await entries(log)).find((e) => e.outcome === "executed");
+    expect(executed?.detail).toEqual({
+      target: { kind: "repo", value: "acme/api" },
+      preState: { captureFailed: "ref service unavailable" },
+    });
+  });
+
+  test("a mutation that throws a non-Error is audited as failed and still rejects", async () => {
+    const log = await tempAuditPath();
+    const call = registered(
+      log,
+      () => Promise.resolve({ sha: "abc" }),
+      () => Promise.reject("remote said no"),
+    );
+    await expect(call({ branch: "acme/api" })).rejects.toBe("remote said no");
+    const all = await entries(log);
+    expect(all.map((e) => e.outcome)).toEqual(["requested", "accepted", "failed"]);
+    expect(all[2]?.detail).toEqual({
+      target: { kind: "repo", value: "acme/api" },
+      preState: { sha: "abc" },
+      error: "remote said no",
+    });
+  });
+
+  test("a handshake with nothing queued tells the client nothing changed", () => {
+    // The client is told to re-read its tool list only when write tools were actually added.
+    let listChanged = 0;
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    srv.sendToolListChanged = () => {
+      listChanged += 1;
+    };
+    process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"] = "repo:acme/api";
+    createWriteToolRegistrar(srv, {
+      connector: "github",
+      scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
+      scopeKinds: ["repo"],
+    });
+    srv.handshake();
+    expect(listChanged).toBe(0);
   });
 });

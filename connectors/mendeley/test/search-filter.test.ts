@@ -105,4 +105,10 @@ describe("filterMendeleyDocuments", () => {
     expect(filterMendeleyDocuments([invalidDoi], { query: "exponential backoff" })).toHaveLength(1);
     expect(filterMendeleyDocuments([invalidDoi], { query: "zzqdoi123" })).toHaveLength(0);
   });
+
+  test("tolerates an authors field that is not an array", () => {
+    const flat = doc({ authors: "Ada Lovelace" });
+    expect(filterMendeleyDocuments([flat], { query: "exponential backoff" })).toHaveLength(1);
+    expect(filterMendeleyDocuments([flat], { query: "lovelace" })).toHaveLength(0);
+  });
 });

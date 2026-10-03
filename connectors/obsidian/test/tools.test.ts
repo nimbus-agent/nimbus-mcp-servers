@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CapturedTools, captureTools } from "../../../scripts/connector-tool-harness.ts";
@@ -11,6 +11,13 @@ import {
   resolveDailyNoteRelativePath,
 } from "../src/tools.ts";
 
+/** Every temp dir this file made, removed once it is done. */
+const tempDirs: string[] = [];
+
+afterAll(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 /**
  * A real vault on disk.
  *
@@ -20,6 +27,7 @@ import {
  */
 function vault(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "obsidian-"));
+  tempDirs.push(root);
   mkdirSync(join(root, ".obsidian"), { recursive: true });
   for (const [rel, body] of Object.entries(files)) {
     const abs = join(root, ...rel.split("/"));
@@ -332,5 +340,107 @@ describe("resolveDailyNoteRelativePath", () => {
     const notObject = vault({});
     writeFileSync(join(notObject, ".obsidian", "daily-notes.json"), "[1,2]", "utf8");
     expect(resolveDailyNoteRelativePath(notObject, date)).toBe("2026-03-04.md");
+  });
+
+  it("falls back to the defaults for a config that is JSON but no object at all", () => {
+    for (const text of ['"Journal"', "null", "42"]) {
+      const root = vault({});
+      writeFileSync(join(root, ".obsidian", "daily-notes.json"), text, "utf8");
+      expect({ text, path: resolveDailyNoteRelativePath(root, date) }).toEqual({
+        text,
+        path: "2026-03-04.md",
+      });
+    }
+  });
+});
+
+describe("formatDailyNoteFilename, two-digit components", () => {
+  it("keeps month, day, hour and minute of ten or more as they are", () => {
+    expect(formatDailyNoteFilename("MM-DD HH:mm", new Date("2026-11-23T14:35:00Z"))).toBe(
+      "11-23 14:35",
+    );
+  });
+});
+
+describe("obsidian vault discovery and walking, at the edges", () => {
+  it("titles a note without an H1 by its file name", async () => {
+    const configured = configure(vault({ "plain notes.md": "no heading here\n" }));
+    const out = (await configured.callJson("obsidian_list", {})) as { title: string }[];
+    expect(out.map((n) => n.title)).toEqual(["plain notes"]);
+  });
+
+  it("reports an empty snippet for a note that matched on its title alone", async () => {
+    const configured = configure(vault({ "Quarterly Review.md": "numbers only\n" }));
+    const hits = (await configured.callJson("obsidian_search", { query: "quarterly" })) as {
+      title: string;
+      snippet: string;
+    }[];
+    expect(hits).toEqual([expect.objectContaining({ title: "Quarterly Review", snippet: "" })]);
+  });
+
+  it("keeps a nested vault's notes out of the vault that contains it", async () => {
+    const outer = vault({ "outer.md": "# Outer\n", "team/inner.md": "# Inner\n" });
+    mkdirSync(join(outer, "team", ".obsidian"));
+    const configured = configure(outer);
+    const out = (await configured.callJson("obsidian_list", {})) as {
+      vault_name: string;
+      path: string;
+    }[];
+    // Discovery finds both vaults; each note is listed once, under the vault that owns it.
+    expect(out.map((n) => `${n.vault_name}:${n.path}`).sort()).toEqual([
+      `${outer.split(/[\\/]/).at(-1)}:outer.md`,
+      "team:inner.md",
+    ]);
+  });
+
+  it("ignores a configured path that is a file rather than a directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "obsidian-file-"));
+    tempDirs.push(dir);
+    const file = join(dir, "not-a-vault.md");
+    writeFileSync(file, "# Not a vault\n", "utf8");
+    const configured = configure(file, vault({ "real.md": "# Real\n" }));
+    const out = (await configured.callJson("obsidian_list", {})) as { path: string }[];
+    expect(out.map((n) => n.path)).toEqual(["real.md"]);
+  });
+
+  it("lists nothing from a vault that is gone, or turned into a file, after discovery", async () => {
+    const gone = vault({ "a.md": "# A\n" });
+    const replaced = vault({ "b.md": "# B\n" });
+    const configured = configure(gone, replaced);
+    rmSync(gone, { recursive: true, force: true });
+    rmSync(replaced, { recursive: true, force: true });
+    writeFileSync(replaced, "now a file", "utf8");
+    expect((await configured.callJson("obsidian_list", {})) as unknown[]).toEqual([]);
+  });
+});
+
+describe("obsidian_append_to_daily_note, more shapes", () => {
+  async function onlyVaultId(configured: CapturedTools): Promise<string> {
+    const listed = (await configured.callJson("obsidian_list", {})) as { vault_id: string }[];
+    return listed[0]?.vault_id ?? "";
+  }
+
+  it("adds no blank line when the daily note already ends with a newline", async () => {
+    const root = vault({ "seed.md": "# Seed\n", "2026-03-07.md": "line one\n" });
+    const configured = configure(root);
+    await configured.call("obsidian_append_to_daily_note", {
+      vault_id: await onlyVaultId(configured),
+      content: "line two",
+      date_iso: "2026-03-07",
+    });
+    expect(readFileSync(join(root, "2026-03-07.md"), "utf8")).toBe("line one\nline two");
+  });
+
+  it("writes to today's note, in UTC, when no date is given", async () => {
+    const root = vault({ "seed.md": "# Seed\n" });
+    const configured = configure(root);
+    const id = await onlyVaultId(configured);
+    setSystemTime(new Date("2026-11-23T23:30:00Z"));
+    try {
+      await configured.call("obsidian_append_to_daily_note", { vault_id: id, content: "late" });
+    } finally {
+      setSystemTime();
+    }
+    expect(readFileSync(join(root, "2026-11-23.md"), "utf8")).toBe("late");
   });
 });

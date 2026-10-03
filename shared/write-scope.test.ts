@@ -34,6 +34,13 @@ describe("parseWriteScope", () => {
   test("an empty value throws", () => {
     expect(() => parseWriteScope("repo:", KINDS)).toThrow(/empty value/);
   });
+
+  test("an empty term between commas, or a trailing comma, is skipped", () => {
+    expect(parseWriteScope("repo:acme/api,, ,repo:acme/web,", KINDS)).toEqual([
+      { kind: "repo", value: "acme/api" },
+      { kind: "repo", value: "acme/web" },
+    ]);
+  });
 });
 
 describe("scopeAllows", () => {

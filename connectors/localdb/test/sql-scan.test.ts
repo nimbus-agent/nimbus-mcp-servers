@@ -116,4 +116,18 @@ describe("scanSavedQueries / getSavedQuery (real fs)", () => {
     expect(await getSavedQuery("missing.sql")).toBeNull();
     await expect(getSavedQuery("../escape.sql")).rejects.toThrow();
   });
+
+  test("caps a long query's preview at 4000 characters, marking the cut", async () => {
+    const sql = `SELECT ${"x, ".repeat(2000)}1;`;
+    await writeFile(join(dir, "wide.sql"), sql, "utf8");
+    const hit = await getSavedQuery("wide.sql");
+    expect(hit?.preview).toBe(`${sql.slice(0, 4000)}…`);
+    expect(hit?.sizeBytes).toBe(sql.length);
+  });
+
+  test("titles a file named only `.sql` by its path rather than leaving it blank", async () => {
+    await writeFile(join(dir, ".sql"), "SELECT 1;", "utf8");
+    expect(baseTitle(".sql")).toBe("");
+    expect((await getSavedQuery(".sql"))?.title).toBe(".sql");
+  });
 });

@@ -65,6 +65,25 @@ describe("filterGreenhouseJobs", () => {
     expect(filterGreenhouseJobs([weird], { query: "remote" })).toHaveLength(1);
   });
 
+  test("ignores names that are not strings, and office entries that are not objects", () => {
+    const odd = job({
+      departments: [{ name: 9137 }, { name: "Platform" }],
+      offices: [
+        "Remote",
+        { name: 8641, location: { name: 5523 } },
+        { name: "Berlin", location: { name: "Berlin, DE" } },
+      ],
+    });
+    expect(filterGreenhouseJobs([odd], { query: "platform" })).toHaveLength(1);
+    expect(filterGreenhouseJobs([odd], { query: "berlin, de" })).toHaveLength(1);
+    for (const query of ["9137", "8641", "5523", "remote"]) {
+      expect({ query, matches: filterGreenhouseJobs([odd], { query }).length }).toEqual({
+        query,
+        matches: 0,
+      });
+    }
+  });
+
   test("honors the limit cap", () => {
     const many = Array.from({ length: 10 }, (_, i) => job({ id: 5000 + i }));
     expect(filterGreenhouseJobs(many, { query: "backend engineer", limit: 3 })).toHaveLength(3);

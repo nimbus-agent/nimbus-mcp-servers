@@ -141,6 +141,19 @@ describe("createFetchJmapClient", () => {
       expect(views[0]?.subject).toBe("Subject e1");
     });
 
+    it("skips a listed entry it cannot identify, keeping the rest", async () => {
+      stub?.restore();
+      stub = stubFetch((req) => {
+        if (req.url.endsWith("/jmap/session")) return JSON.stringify(SESSION);
+        const listed = emailListResponse(["e1"]) as {
+          methodResponses: [string, { list: unknown[] }, string][];
+        };
+        listed.methodResponses[0]?.[1].list.unshift(null, { subject: "no id or message-id" });
+        return JSON.stringify(listed);
+      });
+      expect((await createFetchJmapClient().list(5)).map((v) => v.id)).toEqual(["e1"]);
+    });
+
     it("POSTs the query to the session's apiUrl", async () => {
       await createFetchJmapClient().search("invoice", 5);
       const api = stub?.calls.find((c) => c.url === SESSION.apiUrl);
@@ -215,6 +228,18 @@ describe("createFetchJmapClient", () => {
       const set = stub?.calls.at(-1)?.body ?? "";
       expect(set).toContain('"cc":[{"email":"c@example.test"}]');
       expect(set).not.toContain('"bcc"');
+
+      stub?.restore();
+      stubSend();
+      await createFetchJmapClient().send({
+        to: "you@example.test",
+        subject: "s",
+        body: "b",
+        bcc: "Audit <audit@example.test>",
+      });
+      const withBcc = stub?.calls.at(-1)?.body ?? "";
+      expect(withBcc).toContain('"bcc":[{"email":"audit@example.test"}]');
+      expect(withBcc).not.toContain('"cc"');
     });
 
     it("refuses when the identity or Drafts mailbox cannot be resolved", async () => {
@@ -222,6 +247,20 @@ describe("createFetchJmapClient", () => {
       await expect(
         createFetchJmapClient().send({ to: "you@example.test", subject: "s", body: "b" }),
       ).rejects.toThrow("could not resolve sending identity or Drafts mailbox");
+    });
+
+    it("refuses when the identity answer carries no identity list at all", async () => {
+      stubSend({
+        methodResponses: [
+          ["Identity/get", { notFound: [] }, "id"],
+          ["Mailbox/query", { ids: ["drafts1"] }, "mq"],
+        ],
+      });
+      await expect(
+        createFetchJmapClient().send({ to: "you@example.test", subject: "s", body: "b" }),
+      ).rejects.toThrow("could not resolve sending identity or Drafts mailbox");
+      // Discovery only: nothing was created or submitted.
+      expect(stub?.calls.filter((c) => c.url === SESSION.apiUrl)).toHaveLength(1);
     });
 
     it("reports null ids when the server created nothing", async () => {

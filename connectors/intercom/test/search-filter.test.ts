@@ -83,6 +83,14 @@ describe("filterIntercomConversations", () => {
     expect(filterIntercomConversations([noTags], { query: "urgent" })).toHaveLength(0);
   });
 
+  test("ignores tag names that are not strings", () => {
+    const c = conversation({
+      tags: { type: "tag.list", tags: [{ name: 31337 }, { name: "vip" }] },
+    });
+    expect(filterIntercomConversations([c], { query: "vip" })).toHaveLength(1);
+    expect(filterIntercomConversations([c], { query: "31337" })).toHaveLength(0);
+  });
+
   test("honors the limit cap", () => {
     const many = Array.from({ length: 10 }, (_, i) => conversation({ id: String(i) }));
     expect(filterIntercomConversations(many, { query: "billing bug", limit: 3 })).toHaveLength(3);

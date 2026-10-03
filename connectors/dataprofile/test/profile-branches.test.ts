@@ -378,6 +378,14 @@ describe("listDataModels / getDataModel — additional branches (real fs)", () =
     expect(models).toHaveLength(0);
   });
 
+  test("a file with no extension at all is ignored, beside one that is profiled", async () => {
+    await writeFile(join(dir, "Makefile"), "a,b\n1,2\n", "utf8");
+    await writeFile(join(dir, "data.csv"), "a,b\n1,2\n", "utf8");
+    const models = await listDataModels();
+    expect(models.map((m) => m.relativePath)).toEqual(["data.csv"]);
+    expect(await getDataModel("Makefile")).toBeNull();
+  });
+
   test("nested subdirectory files are discovered", async () => {
     await mkdir(join(dir, "sub"));
     await writeFile(join(dir, "sub", "nested.csv"), "col\nval\n", "utf8");

@@ -149,6 +149,24 @@ describe("flattening the catalog", () => {
     });
   });
 
+  it("returns nothing when `data` or `repositoriesOrError` is not an object", async () => {
+    for (const data of [42, { repositoriesOrError: "unavailable" }]) {
+      stub?.restore();
+      stub = stubFetch({ body: JSON.stringify({ data }) });
+      expect((await tools.callJson("dagster_list", {})) as { items: unknown[] }).toEqual({
+        items: [],
+      });
+    }
+  });
+
+  it("files a repository's jobs under an empty repository name when it has none", async () => {
+    catalog(repo({ name: 7 }));
+    const out = (await tools.callJson("dagster_list", {})) as {
+      items: { name: string; repository: string }[];
+    };
+    expect(out.items.map((j) => [j.name, j.repository])).toEqual([["daily_ingest", ""]]);
+  });
+
   it("skips a repository node that is not an object", async () => {
     catalog(null, "not-a-repo", repo());
     const out = (await tools.callJson("dagster_list", {})) as { items: unknown[] };

@@ -229,6 +229,38 @@ describe("gdrive_file_download", () => {
     expect(detail.webViewLink).toBe("https://docs.google.com/forms/d/f1");
   });
 
+  it("reports a null web link for an unexportable type whose metadata carries none", async () => {
+    respond(() => meta({ mimeType: "application/vnd.google-apps.form" }));
+    const err = await tools.call("gdrive_file_download", { fileId: "f1" }).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    const detail = JSON.parse(err?.message ?? "{}") as { code: string; webViewLink: unknown };
+    expect([detail.code, detail.webViewLink]).toEqual(["EXPORT_NOT_SUPPORTED", null]);
+  });
+
+  it("downloads a media file whose declared size and Content-Length are AT maxBytes", async () => {
+    // The limit is inclusive: a file of exactly maxBytes is allowed through both header checks.
+    const body = "x".repeat(1024);
+    respond((_url, i) =>
+      i === 0 ? meta({ size: "1024" }) : { body, headers: { "content-length": "1024" } },
+    );
+    const out = (await tools.callJson("gdrive_file_download", {
+      fileId: "f1",
+      maxBytes: 1024,
+    })) as { encoding: string; content: string };
+    expect([out.encoding, out.content]).toEqual(["utf-8", body]);
+    expect(seen[1]?.url).toBe("https://www.googleapis.com/drive/v3/files/f1?alt=media");
+  });
+
+  it("does not treat a size it cannot read as too large", async () => {
+    respond((_url, i) => (i === 0 ? meta({ size: "unknown" }) : { body: "ok" }));
+    const out = (await tools.callJson("gdrive_file_download", { fileId: "f1" })) as {
+      content: string;
+    };
+    expect(out.content).toBe("ok");
+  });
+
   it("truncates an over-large export rather than failing", async () => {
     respond((_url, i) =>
       i === 0

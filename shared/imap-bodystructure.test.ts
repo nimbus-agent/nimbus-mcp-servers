@@ -121,3 +121,30 @@ describe("findTextPlainPart", () => {
     expect(findTextPlainPart({})).toBe("1");
   });
 });
+
+describe("a server tree with holes in its children", () => {
+  // Parsed BODYSTRUCTURE can carry a missing child; both walks skip it rather than throw.
+  const sparse = {
+    childNodes: [
+      undefined,
+      { part: "1", type: "text/plain", size: 10 },
+      {
+        part: "2",
+        type: "application/pdf",
+        size: 99,
+        disposition: "attachment",
+        dispositionParameters: { filename: "a.pdf" },
+      },
+    ],
+  } as unknown as BodyStructureNode;
+
+  test("extractAttachments keeps the attachments around the hole", () => {
+    expect(extractAttachments(sparse)).toEqual([
+      { filename: "a.pdf", sizeBytes: 99, mimeType: "application/pdf" },
+    ]);
+  });
+
+  test("findTextPlainPart still finds the text part after the hole", () => {
+    expect(findTextPlainPart(sparse)).toBe("1");
+  });
+});

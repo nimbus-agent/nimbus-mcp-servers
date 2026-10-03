@@ -199,6 +199,22 @@ describe("toMessageMeta", () => {
     });
   });
 
+  it("maps an envelope with no sender to an empty from list", () => {
+    const msg = {
+      uid: 3,
+      envelope: { subject: "Undeliverable", to: [{ address: "me@example.test" }] },
+      bodyStructure: null,
+    } as unknown as FetchMessageObject;
+    expect(toMessageMeta(msg, "INBOX", null).envelope).toEqual({
+      date: null,
+      subject: "Undeliverable",
+      messageId: null,
+      from: [],
+      to: [{ address: "me@example.test" }],
+      cc: [],
+    });
+  });
+
   it("extracts the capped preview from the fetched body parts", () => {
     const parts = new Map([["1", Buffer.from("line one\r\n\r\n\r\nline  two")]]);
     expect(toMessageMeta(makeMessage(1, "s", parts), "INBOX", null).preview).toBe(
