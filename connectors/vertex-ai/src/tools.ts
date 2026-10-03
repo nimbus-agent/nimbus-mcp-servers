@@ -1,20 +1,22 @@
 import { z } from "zod";
-import { createCliJsonRunner, isRecord, strField } from "../../../shared/cli-json-kit.ts";
+import {
+  cliArg,
+  createCliJsonRunner,
+  gcloudProjectArgs,
+  isRecord,
+  strField,
+} from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
 import { isSafeCliArg } from "../../../shared/safe-cli-arg.ts";
 
 /**
- * A value passed to the `gcloud ai` CLI (a Vertex AI region like `us-central1`
- * or a model id). Rejected at the schema boundary if it begins with `-` (argv
- * flag smuggling) or contains control characters. Exported so the contract test
- * can assert the guard rejects a `-`-prefixed value.
+ * The argv-injection guard every value passed to the `gcloud ai` CLI (a Vertex AI region like
+ * `us-central1`, or a model id) goes through. Re-exported so this connector's own test can assert
+ * the guard rejects a `-`-prefixed value.
  */
-export const cliArg = z
-  .string()
-  .min(1)
-  .refine(isSafeCliArg, { message: 'must not start with "-" or contain control characters' });
+export { cliArg };
 
 /**
  * GCP Vertex AI (Tier-3, no-row-data) MCP tool surface. ALL tools index Vertex
@@ -35,12 +37,6 @@ const DEFAULT_REGION = "us-central1";
 
 function asArray(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [];
-}
-
-/** The configured GCP project id, if `GOOGLE_CLOUD_PROJECT` is set at spawn. */
-function projectArgs(): string[] {
-  const project = process.env["GOOGLE_CLOUD_PROJECT"]?.trim();
-  return project !== undefined && project !== "" ? ["--project", project] : [];
 }
 
 /**
@@ -77,7 +73,7 @@ async function gcloudAi(args: string[], region: string): Promise<unknown> {
   if (!isSafeCliArg(region)) {
     throw new Error(`Invalid region: ${regionPreview}`);
   }
-  return runGcloudAi([...args, "--region", region, ...projectArgs(), "--format", "json"]);
+  return runGcloudAi([...args, "--region", region, ...gcloudProjectArgs(), "--format", "json"]);
 }
 
 function modelMatches(entry: unknown, q: string): boolean {

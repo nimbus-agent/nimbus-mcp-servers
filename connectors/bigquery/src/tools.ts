@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isRecord, strField } from "../../../shared/cli-json-kit.ts";
+import { asArray, gcloudEnv, isRecord, strField } from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -22,15 +22,6 @@ function project(explicit?: string): string {
     throw new Error("BIGQUERY_PROJECT is not set and no project argument was provided");
   }
   return p;
-}
-
-function gcloudEnv(): Record<string, string | undefined> {
-  const e = { ...process.env } as Record<string, string | undefined>;
-  const cf = process.env["GOOGLE_APPLICATION_CREDENTIALS"]?.trim();
-  if (cf !== undefined && cf !== "") {
-    e["GOOGLE_APPLICATION_CREDENTIALS"] = cf;
-  }
-  return e;
 }
 
 /** Mint a short-lived access token via `gcloud auth print-access-token`. */
@@ -78,14 +69,6 @@ function datasetMatches(entry: unknown, q: string): boolean {
   const ref = entry["datasetReference"];
   const datasetId = isRecord(ref) ? strField(ref, "datasetId") : "";
   return datasetId.toLowerCase().includes(q.toLowerCase());
-}
-
-function asArray(parsed: unknown, key: string): unknown[] {
-  if (!isRecord(parsed)) {
-    return [];
-  }
-  const arr = parsed[key];
-  return Array.isArray(arr) ? arr : [];
 }
 
 /**

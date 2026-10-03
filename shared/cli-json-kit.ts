@@ -15,9 +15,14 @@
  * The argument guard is the reason this is worth sharing rather than tolerating:
  * it is a security control, and a security control that exists in five
  * hand-written copies is one that can be strengthened in four of them.
+ *
+ * The `gcloud` connectors (bigquery, cloud-logging, gcp, vertex-ai) also share
+ * how they hand gcloud its project and credentials: see {@link gcloudEnv} and
+ * {@link gcloudProjectArgs}.
  */
 
 import { z } from "zod";
+import { optionalEnv } from "./env-json-api.ts";
 import { isSafeCliArg } from "./safe-cli-arg.ts";
 
 /** Body-snippet length in the thrown error. The value every connector used. */
@@ -115,4 +120,31 @@ export function asArray(parsed: unknown, key: string): unknown[] {
 /** Case-insensitive substring match on one string field of an untyped entry. */
 export function fieldMatches(entry: unknown, key: string, query: string): boolean {
   return isRecord(entry) && strField(entry, key).toLowerCase().includes(query.toLowerCase());
+}
+
+// ---------------------------------------------------------------------------
+// gcloud
+// ---------------------------------------------------------------------------
+
+/**
+ * `["--project", <id>]` when `GOOGLE_CLOUD_PROJECT` is set at spawn, else `[]`, which leaves
+ * gcloud on the project it is configured with.
+ */
+export function gcloudProjectArgs(): string[] {
+  const project = optionalEnv("GOOGLE_CLOUD_PROJECT", "");
+  return project === "" ? [] : ["--project", project];
+}
+
+/**
+ * The environment for a `gcloud` spawn: the process environment, with
+ * `GOOGLE_APPLICATION_CREDENTIALS` — the key file gcloud reads natively — re-set to its trimmed
+ * value when it is set.
+ */
+export function gcloudEnv(): Record<string, string | undefined> {
+  const env = { ...process.env } as Record<string, string | undefined>;
+  const credentials = process.env["GOOGLE_APPLICATION_CREDENTIALS"]?.trim();
+  if (credentials !== undefined && credentials !== "") {
+    env["GOOGLE_APPLICATION_CREDENTIALS"] = credentials;
+  }
+  return env;
 }

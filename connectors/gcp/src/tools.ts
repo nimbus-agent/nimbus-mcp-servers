@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { gcloudEnv } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -7,15 +8,6 @@ import {
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 import { runCliJson, runCliOk } from "../../../shared/run-cli-json.ts";
-
-function gcloudEnv(): Record<string, string | undefined> {
-  const e = { ...process.env } as Record<string, string | undefined>;
-  const cf = process.env["GOOGLE_APPLICATION_CREDENTIALS"]?.trim();
-  if (cf !== undefined && cf !== "") {
-    e["GOOGLE_APPLICATION_CREDENTIALS"] = cf;
-  }
-  return e;
-}
 
 async function gcloudJson(args: string[]): Promise<unknown> {
   const cmd = ["gcloud", ...args, "--format", "json"];
