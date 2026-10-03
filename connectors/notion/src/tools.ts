@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { fetchJsonText } from "../../../shared/fetch-json-text.ts";
 import { joinApiPath } from "../../../shared/join-api-path.ts";
 import { parseCitationsJson } from "../../../shared/kb-markdown.ts";
 import {
@@ -22,22 +23,11 @@ async function notionFetch(
 ): Promise<{ ok: boolean; status: number; text: string }> {
   const token = requireProcessEnv("NOTION_ACCESS_TOKEN");
   const url = joinApiPath(API, path);
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    "Notion-Version": NOTION_VERSION,
-  };
-  if (init?.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      ...headers,
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, text };
+  return fetchJsonText(
+    url,
+    { Authorization: `Bearer ${token}`, "Notion-Version": NOTION_VERSION },
+    init,
+  );
 }
 
 function richText(content: string): ReadonlyArray<Record<string, unknown>> {
