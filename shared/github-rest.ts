@@ -33,3 +33,30 @@ export function ghFetch(token: string, path: string, init?: RequestInit): Promis
 export function ghRepoPath(owner: string, repo: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
+
+/** The paging arguments every GitHub list tool accepts. */
+export interface GhPaging {
+  readonly perPage?: number | undefined;
+  readonly page?: number | undefined;
+}
+
+/**
+ * GitHub's paging parameters, in the order every list tool sends them: `per_page` (30 when not
+ * given — GitHub's own default), then `page` only when one was given.
+ */
+export function setGhPaging(params: URLSearchParams, paging: GhPaging): void {
+  params.set("per_page", String(paging.perPage ?? 30));
+  if (paging.page !== undefined) {
+    params.set("page", String(paging.page));
+  }
+}
+
+/**
+ * `path` plus the query string `setQuery` builds, as the relative path {@link ghFetch} takes. The
+ * parameters keep the order `setQuery` sets them in.
+ */
+export function ghQueryPath(path: string, setQuery: (params: URLSearchParams) => void): string {
+  const u = new URL(`${GH_API}${path}`);
+  setQuery(u.searchParams);
+  return `${u.pathname}${u.search}`;
+}

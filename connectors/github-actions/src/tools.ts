@@ -6,7 +6,9 @@ import {
   GH_API,
   GH_API_VERSION,
   ghFetch,
+  ghQueryPath,
   ghRepoPath,
+  setGhPaging,
 } from "../../../shared/github-rest.ts";
 import {
   createRegisterSimpleTool,
@@ -71,37 +73,25 @@ export function registerGithubActionsTools(
       perPage: z.number().int().min(1).max(100).optional(),
       page: z.number().int().min(1).optional(),
     }),
-    (parsed) => {
-      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/actions/workflows`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      return `${u.pathname}${u.search}`;
-    },
+    (parsed) =>
+      ghQueryPath(`${ghRepoPath(parsed.owner, parsed.repo)}/actions/workflows`, (q) => {
+        setGhPaging(q, parsed);
+      }),
   );
 
-  registerGhaTool(
-    "gha_run_list",
-    "List workflow runs for a repository.",
-    runListSchema,
-    (parsed) => {
-      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
+  registerGhaTool("gha_run_list", "List workflow runs for a repository.", runListSchema, (parsed) =>
+    ghQueryPath(`${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs`, (q) => {
+      setGhPaging(q, parsed);
       if (parsed.branch !== undefined) {
-        u.searchParams.set("branch", parsed.branch);
+        q.set("branch", parsed.branch);
       }
       if (parsed.event !== undefined) {
-        u.searchParams.set("event", parsed.event);
+        q.set("event", parsed.event);
       }
       if (parsed.status !== undefined) {
-        u.searchParams.set("status", parsed.status);
+        q.set("status", parsed.status);
       }
-      return `${u.pathname}${u.search}`;
-    },
+    }),
   );
 
   const runIdSchema = repoSlugArgs.extend({

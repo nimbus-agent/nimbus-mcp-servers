@@ -4,7 +4,7 @@ import {
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
-import { GH_API, ghFetch, ghRepoPath } from "../../../shared/github-rest.ts";
+import { ghFetch, ghQueryPath, ghRepoPath, setGhPaging } from "../../../shared/github-rest.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -100,16 +100,12 @@ export function registerGithubTools(
     "github_repo_list",
     "List repositories for the authenticated user (affiliation: owner, collaborator, organization_member).",
     githubRepoListSchema,
-    (parsed) => {
-      const u = new URL(`${GH_API}/user/repos`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      u.searchParams.set("sort", "updated");
-      u.searchParams.set("affiliation", "owner,collaborator,organization_member");
-      return `${u.pathname}${u.search}`;
-    },
+    (parsed) =>
+      ghQueryPath("/user/repos", (q) => {
+        setGhPaging(q, parsed);
+        q.set("sort", "updated");
+        q.set("affiliation", "owner,collaborator,organization_member");
+      }),
   );
 
   registerGithubTool(
@@ -119,27 +115,27 @@ export function registerGithubTools(
     (parsed) => ghRepoPath(parsed.owner, parsed.repo),
   );
 
-  const githubPrListSchema = repoSlugArgs.extend({
+  /** Pulls and issues take one list query: a state filter, paging, newest activity first. */
+  const githubStateListSchema = repoSlugArgs.extend({
     state: z.enum(["open", "closed", "all"]).optional(),
     perPage: z.number().int().min(1).max(100).optional(),
     page: z.number().int().min(1).optional(),
   });
+  const stateListPath =
+    (collection: "pulls" | "issues") =>
+    (parsed: z.infer<typeof githubStateListSchema>): string =>
+      ghQueryPath(`${ghRepoPath(parsed.owner, parsed.repo)}/${collection}`, (q) => {
+        q.set("state", parsed.state ?? "open");
+        setGhPaging(q, parsed);
+        q.set("sort", "updated");
+        q.set("direction", "desc");
+      });
 
   registerGithubTool(
     "github_pr_list",
     "List pull requests for a repository.",
-    githubPrListSchema,
-    (parsed) => {
-      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/pulls`);
-      u.searchParams.set("state", parsed.state ?? "open");
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      u.searchParams.set("sort", "updated");
-      u.searchParams.set("direction", "desc");
-      return `${u.pathname}${u.search}`;
-    },
+    githubStateListSchema,
+    stateListPath("pulls"),
   );
 
   const githubPrNumberSchema = repoSlugArgs.extend({
@@ -186,27 +182,11 @@ export function registerGithubTools(
     () => jsonInit("PATCH", { state: "closed" }),
   );
 
-  const githubIssueListSchema = repoSlugArgs.extend({
-    state: z.enum(["open", "closed", "all"]).optional(),
-    perPage: z.number().int().min(1).max(100).optional(),
-    page: z.number().int().min(1).optional(),
-  });
-
   registerGithubTool(
     "github_issue_list",
     "List issues for a repository.",
-    githubIssueListSchema,
-    (parsed) => {
-      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/issues`);
-      u.searchParams.set("state", parsed.state ?? "open");
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      u.searchParams.set("sort", "updated");
-      u.searchParams.set("direction", "desc");
-      return `${u.pathname}${u.search}`;
-    },
+    githubStateListSchema,
+    stateListPath("issues"),
   );
 
   const githubIssueGetSchema = repoSlugArgs.extend({
@@ -243,14 +223,10 @@ export function registerGithubTools(
     "github_ci_runs",
     "List GitHub Actions workflow runs for a repository.",
     githubCiRunsSchema,
-    (parsed) => {
-      const u = new URL(`${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      return `${u.pathname}${u.search}`;
-    },
+    (parsed) =>
+      ghQueryPath(`${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs`, (q) => {
+        setGhPaging(q, parsed);
+      }),
   );
 
   const githubCiRunGetSchema = repoSlugArgs.extend({
