@@ -91,11 +91,14 @@ terms, each matching one application exactly. Unset, it authorises no write.
 **Upgrading from 0.2.1 or earlier:** from 0.2.2 the connector reads
 `NIMBUS_MCP_ARGOCD_WRITE_SCOPE`; earlier versions read
 `NIMBUS_MCP_APP_WRITE_SCOPE` by mistake, so rename it. The value does not
-change. The old name is ignored, not read as a fallback: until you rename it,
-`argocd_app_sync` and `argocd_app_rollback` refuse every call as out of scope,
-and the connector warns at startup that `NIMBUS_MCP_ARGOCD_WRITE_SCOPE` is
-unset. Under the Nimbus gateway the write scope is never consulted, so nothing
-changes there.
+change. The old name is ignored, not read as a fallback: if it is the only one
+you set, `argocd_app_sync` and `argocd_app_rollback` refuse every call as out
+of scope until you rename it, and the connector warns at startup that
+`NIMBUS_MCP_ARGOCD_WRITE_SCOPE` is unset. If you also set
+`NIMBUS_MCP_ARGOCD_WRITE_SCOPE` before 0.2.2, it was ignored then and takes
+effect now, with no warning: check its value, then delete
+`NIMBUS_MCP_APP_WRITE_SCOPE`. Under the Nimbus gateway the write scope is never
+consulted, so nothing changes there.
 
 The variables every connector shares — the mutation budget and the audit log —
 are in [Configuration](../../docs/configuration.md).

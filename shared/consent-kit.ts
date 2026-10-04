@@ -179,7 +179,9 @@ export function createWriteToolRegistrar(
     outcome: AuditOutcome,
     detail: Record<string, unknown>,
   ): Promise<void> {
-    // Client-visible channel: any MCP client can display or persist this.
+    // Meant as a client-visible channel, but it reaches no client today: the SDK sends
+    // `notifications/message` only for a server that declared the MCP `logging` capability, and
+    // no connector declares it. The durable log below is the only record.
     await server.sendLoggingMessage({
       level: outcome === "executed" ? "info" : "warning",
       data: { connector: cfg.connector, tool, outcome },
