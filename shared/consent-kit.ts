@@ -196,6 +196,15 @@ export function createWriteToolRegistrar(
     }
   }
 
+  /** The refusal for a spent budget, recorded and worded the same at both places it is checked. */
+  async function budgetExhausted(
+    tool: string,
+    target: { kind: string; value: string },
+  ): Promise<McpListResult> {
+    await record(tool, "refused", { reason: "budget exhausted", target });
+    return refused("write budget exhausted for this session");
+  }
+
   /**
    * Decide the write surface, once, at the first moment client capabilities are knowable.
    *
@@ -269,11 +278,9 @@ export function createWriteToolRegistrar(
         return refused(`out of scope: ${target.kind}:${target.value} is not in ${cfg.scopeEnv}`);
       }
 
-      // 2. BUDGET — same reasoning: a refusal that consent cannot lift comes before consent.
-      if (remaining <= 0) {
-        await record(name, "refused", { reason: "budget exhausted", target });
-        return refused("write budget exhausted for this session");
-      }
+      // 2. BUDGET — same reasoning: a refusal that consent cannot lift comes before consent. Not
+      //    the last word on the budget, though: see step 4.
+      if (remaining <= 0) return budgetExhausted(name, target);
 
       // 3. CONSENT.
       await record(name, "requested", { target, params: args });
@@ -283,7 +290,20 @@ export function createWriteToolRegistrar(
       }
       await record(name, "accepted", { target });
 
-      // 4. PRE-STATE — after approval, before the mutation, so an unrecoverable action leaves a
+      // 4. SPEND — the budget checked AGAIN and decremented in one synchronous step, with nothing
+      //    awaited between the two. Calls run concurrently: the SDK starts each request's handler
+      //    as it arrives, so every call in flight passed step 2 before any of them got this far,
+      //    and step 2 alone let three approved calls all mutate under a budget of one. Spent
+      //    BEFORE the mutation so a throwing one still consumes budget — otherwise a failing
+      //    destructive tool could be retried without limit.
+      if (remaining <= 0) return budgetExhausted(name, target);
+      remaining -= 1;
+      if (remaining <= 0) {
+        for (const h of handles) h.disable();
+        server.sendToolListChanged();
+      }
+
+      // 5. PRE-STATE — after approval, before the mutation, so an unrecoverable action leaves a
       //    record of what it destroyed. Capture failure is NOT fatal: refusing here would turn a
       //    transient read error into a blocked action the owner already approved.
       let preState: Record<string, unknown> = {};
@@ -295,13 +315,7 @@ export function createWriteToolRegistrar(
         }
       }
 
-      // 5. MUTATE. Decrement BEFORE the call so a throwing mutation still consumes budget —
-      //    otherwise a failing destructive tool could be retried without limit.
-      remaining -= 1;
-      if (remaining <= 0) {
-        for (const h of handles) h.disable();
-        server.sendToolListChanged();
-      }
+      // 6. MUTATE.
       try {
         const result = await handler(args);
         await record(name, "executed", { target, preState });

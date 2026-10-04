@@ -378,6 +378,53 @@ describe("client-independent controls", () => {
     expect(JSON.stringify(await call({ branch: "acme/api" }))).toMatch(/budget/i);
   });
 
+  test("a spent budget refuses BEFORE prompting — no human is asked to approve the impossible", async () => {
+    // The re-check after consent would keep the count right on its own; this check, before
+    // consent, is what keeps a human from being asked to approve a write that cannot happen.
+    let prompted = 0;
+    const srv = serverWith(() => {
+      prompted += 1;
+      return Promise.resolve({ action: "accept", content: { confirm: true } });
+    });
+    const call = registerAndGet(srv, async () => ok(), { scope: "repo:acme/api", budget: 1 });
+    await call({ branch: "acme/api" });
+    expect(JSON.stringify(await call({ branch: "acme/api" }))).toMatch(/budget exhausted/i);
+    expect(prompted).toBe(1);
+  });
+
+  test("approved calls in flight together cannot overrun the budget", async () => {
+    // The SDK runs each request's handler as it arrives, so a client that sends several tool
+    // calls without waiting has them all past the pre-consent budget check before any of them has
+    // spent from it. Measured through the real argocd entry point before the fix: under a budget
+    // of 1, three such approved syncs all reached the network.
+    let executed = 0;
+    const outcomes: string[] = [];
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    srv.sendLoggingMessage = (p) => {
+      outcomes.push((p.data as { outcome: string }).outcome);
+      return Promise.resolve();
+    };
+    const call = registerAndGet(
+      srv,
+      async () => {
+        executed += 1;
+        return ok();
+      },
+      { scope: "repo:acme/api", budget: 1 },
+    );
+
+    const answers = await Promise.all([1, 2, 3].map(() => call({ branch: "acme/api" })));
+
+    expect(executed).toBe(1);
+    expect(
+      answers.filter((a) => JSON.stringify(a).includes("write budget exhausted")),
+    ).toHaveLength(2);
+    // All three were put to the human and approved: the budget, not the human, stopped two.
+    expect(outcomes.filter((o) => o === "accepted")).toHaveLength(3);
+    expect(outcomes.filter((o) => o === "refused")).toHaveLength(2);
+    expect(outcomes.filter((o) => o === "executed")).toHaveLength(1);
+  });
+
   test("capturePreState runs before the mutation and reaches the audit log", async () => {
     const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
     const log = await tempAuditPath();
