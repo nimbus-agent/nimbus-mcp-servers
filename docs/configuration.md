@@ -88,9 +88,12 @@ earlier versions registered all four as reads: every client was offered them, wi
 prompt, scope check, budget or audit record. From 0.2.2 they are write tools like the rest:
 
 - A client without `elicitation`, such as Claude Desktop, no longer sees them.
-- Elsewhere each call needs your approval, counts against `NIMBUS_MCP_WRITE_BUDGET`, and must first
-  match a scope term: `instance:<instanceIds>` in `NIMBUS_MCP_AWS_WRITE_SCOPE`, `user:<user_ids>`
-  in `NIMBUS_MCP_SLACK_WRITE_SCOPE`, or `chat:<chatId>` in `NIMBUS_MCP_TEAMS_WRITE_SCOPE`. The
+- Elsewhere a call must first match a scope term, and the session must have write budget left.
+  Only then does it ask for your approval, and only an approved call spends one unit of
+  `NIMBUS_MCP_WRITE_BUDGET`. The unit is spent before the tool runs, so a call that fails
+  still uses it. The scope terms are `instance:<instanceIds>` in `NIMBUS_MCP_AWS_WRITE_SCOPE`,
+  `user:<user_ids>` in `NIMBUS_MCP_SLACK_WRITE_SCOPE`, or `chat:<chatId>` in
+  `NIMBUS_MCP_TEAMS_WRITE_SCOPE`. The
   `instance` and `user` kinds are new in 0.2.2, so no AWS or Slack scope written for an earlier
   version covers these tools.
 - A term must equal the argument exactly as the tool receives it, and terms are separated by
@@ -98,4 +101,5 @@ prompt, scope check, budget or audit record. From 0.2.2 they are write tools lik
   that call always refuses.
 
 All of this is standalone behaviour. Under the Nimbus gateway the connector registers these tools
-as before and never consults the write scope.
+as before and does not enforce the write scope. It still parses the scope at startup, so a
+malformed term stops the connector from starting there too.

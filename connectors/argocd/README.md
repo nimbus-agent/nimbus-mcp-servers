@@ -97,8 +97,9 @@ of scope until you rename it, and the connector warns at startup that
 `NIMBUS_MCP_ARGOCD_WRITE_SCOPE` is unset. If you also set
 `NIMBUS_MCP_ARGOCD_WRITE_SCOPE` before 0.2.2, it was ignored then and takes
 effect now, with no warning: check its value, then delete
-`NIMBUS_MCP_APP_WRITE_SCOPE`. Under the Nimbus gateway the write scope is never
-consulted, so nothing changes there.
+`NIMBUS_MCP_APP_WRITE_SCOPE`. Under the Nimbus gateway the write scope is not
+enforced, so nothing changes there. It is still parsed at startup, so a malformed term stops the
+connector from starting.
 
 The variables every connector shares — the mutation budget and the audit log —
 are in [Configuration](../../docs/configuration.md).
