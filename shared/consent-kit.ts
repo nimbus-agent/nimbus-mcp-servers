@@ -196,6 +196,24 @@ export function createWriteToolRegistrar(
     }
   }
 
+  /**
+   * Take one unit of budget if any is left: the check and the decrement in ONE synchronous call.
+   *
+   * Nothing may be awaited between the two. Calls run concurrently (the SDK starts each request's
+   * handler as it arrives), and with an await between the check and the decrement every call in
+   * flight passed the check before any of them spent: three approved calls all mutated under a
+   * budget of one. Spending the last unit disables every write tool and tells the client.
+   */
+  function spendOne(): boolean {
+    if (remaining <= 0) return false;
+    remaining -= 1;
+    if (remaining <= 0) {
+      for (const h of handles) h.disable();
+      server.sendToolListChanged();
+    }
+    return true;
+  }
+
   /** The refusal for a spent budget, recorded and worded the same at both places it is checked. */
   async function budgetExhausted(
     tool: string,
@@ -290,18 +308,11 @@ export function createWriteToolRegistrar(
       }
       await record(name, "accepted", { target });
 
-      // 4. SPEND — the budget checked AGAIN and decremented in one synchronous step, with nothing
-      //    awaited between the two. Calls run concurrently: the SDK starts each request's handler
-      //    as it arrives, so every call in flight passed step 2 before any of them got this far,
-      //    and step 2 alone let three approved calls all mutate under a budget of one. Spent
-      //    BEFORE the mutation so a throwing one still consumes budget — otherwise a failing
-      //    destructive tool could be retried without limit.
-      if (remaining <= 0) return budgetExhausted(name, target);
-      remaining -= 1;
-      if (remaining <= 0) {
-        for (const h of handles) h.disable();
-        server.sendToolListChanged();
-      }
+      // 4. SPEND — the budget checked AGAIN, and decremented in the same synchronous step: every
+      //    call in flight passed step 2 before any of them got this far, so step 2 alone cannot
+      //    hold the cap (see `spendOne`). Spent BEFORE the mutation so a throwing one still
+      //    consumes budget — otherwise a failing destructive tool could be retried without limit.
+      if (!spendOne()) return budgetExhausted(name, target);
 
       // 5. PRE-STATE — after approval, before the mutation, so an unrecoverable action leaves a
       //    record of what it destroyed. Capture failure is NOT fatal: refusing here would turn a

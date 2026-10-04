@@ -13,8 +13,12 @@ export const DEFAULT_WRITE_BUDGET = 10;
  */
 export const MAX_WRITE_BUDGET = Number.MAX_SAFE_INTEGER;
 
-/** Plain decimal digits: no sign, fraction, exponent, `0x` prefix, separator or `Infinity`. */
-const DIGITS = /^[0-9]+$/;
+/**
+ * Plain decimal digits: no sign, fraction, exponent, `0x` prefix, separator or `Infinity`. In a
+ * JavaScript regex `\d` is ASCII `0`-`9` only, with or without the `u` flag, so a digit from
+ * another script does not match.
+ */
+const DIGITS = /^\d+$/;
 
 function invalidBudget(raw: string): Error {
   return new Error(

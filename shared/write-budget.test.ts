@@ -60,6 +60,8 @@ describe("parseWriteBudget", () => {
     ["hexadecimal", "0x10"],
     ["a digit separator", "1_000"],
     ["interior whitespace", "1 0"],
+    ["an Arabic-Indic five", String.fromCodePoint(0x0665)],
+    ["a fullwidth five", String.fromCodePoint(0xff15)],
     ["one past the largest exact budget", "9007199254740992"],
     ["a huge number", "99999999999999999999"],
     ["a number long enough that Number() answers Infinity", "9".repeat(400)],
