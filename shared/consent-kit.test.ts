@@ -425,6 +425,81 @@ describe("client-independent controls", () => {
     expect(outcomes.filter((o) => o === "executed")).toHaveLength(1);
   });
 
+  test("a write approved after the budget ran out is refused, and the log says it was approved", async () => {
+    // Two writes are put to the human together under a budget of one. The second is approved first
+    // and spends the budget; the first is approved after that and must not run. Its audit entry
+    // has to say the budget stopped it AFTER a human said yes, which `budget exhausted` alone
+    // would not: that reason is also what a refusal before any prompt records.
+    let prompts = 0;
+    const approvals: Array<() => void> = [];
+    let onPrompt = (): void => undefined;
+    const nextPrompt = (): Promise<void> =>
+      new Promise((resolve) => {
+        onPrompt = () => resolve();
+      });
+    const approve = (i: number): void => {
+      const go = approvals[i];
+      if (go === undefined) throw new Error(`prompt ${String(i)} is not open`);
+      go();
+    };
+    const srv = serverWith(() => {
+      prompts += 1;
+      // Only the first two writes may be put to the human, which is asserted below. A third
+      // prompt is answered at once, so that failure is reported instead of waiting forever.
+      if (prompts > 2) return Promise.resolve({ action: "accept", content: { confirm: true } });
+      return new Promise((resolve) => {
+        approvals.push(() => resolve({ action: "accept", content: { confirm: true } }));
+        onPrompt();
+      });
+    });
+    let executed = 0;
+    const log = await tempAuditPath();
+    const call = registerAndGet(
+      srv,
+      async () => {
+        executed += 1;
+        return ok();
+      },
+      { scope: "repo:acme/api", budget: 1, auditLog: log },
+    );
+
+    // Each race ends when the call's prompt opens, or when the call ends without one, so a call
+    // that never prompts fails the length check below instead of stalling the test.
+    let open = nextPrompt();
+    const first = call({ branch: "acme/api" });
+    await Promise.race([open, first]);
+    open = nextPrompt();
+    const second = call({ branch: "acme/api" });
+    await Promise.race([open, second]);
+    expect(approvals).toHaveLength(2);
+
+    approve(1);
+    expect(JSON.stringify(await second)).not.toContain("budget exhausted");
+    approve(0);
+    expect(JSON.stringify(await first)).toContain("write budget exhausted for this session");
+    // With the budget spent, a third write is refused before anyone is asked.
+    expect(JSON.stringify(await call({ branch: "acme/api" }))).toContain("write budget exhausted");
+
+    expect(prompts).toBe(2);
+    expect(executed).toBe(1);
+    type Line = { entry: { outcome: string; detail: { reason?: string } } };
+    const entries = (await readFile(log, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((l) => (JSON.parse(l) as Line).entry);
+    expect(entries.map((e) => [e.outcome, e.detail.reason])).toEqual([
+      ["requested", undefined],
+      ["requested", undefined],
+      ["accepted", undefined],
+      ["executed", undefined],
+      ["accepted", undefined],
+      ["refused", "budget exhausted after approval"],
+      ["refused", "budget exhausted"],
+    ]);
+    // Every entry here was appended after the one before it had finished, so the chain verifies.
+    expect(await verifyAuditChain(log)).toMatchObject({ ok: true });
+  });
+
   test("capturePreState runs before the mutation and reaches the audit log", async () => {
     const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
     const log = await tempAuditPath();
@@ -719,9 +794,15 @@ describe("NIMBUS_MCP_WRITE_BUDGET at the registrar", () => {
     });
   });
 
-  test("empty and whitespace-only read as unset", async () => {
+  test("an empty or whitespace-only value refuses to start — never the default", async () => {
+    // Read with `Number()`, a blank budget allowed no writes at all. Read as unset, it would allow
+    // the default ten; the registrar must refuse it instead, so it still allows none.
     for (const raw of ["", "  "]) {
-      expect(await runUnderBudget(raw)).toEqual({ startup: "ok", executed: DEFAULT_WRITE_BUDGET });
+      expect(await runUnderBudget(raw)).toEqual({
+        startup: "refused",
+        executed: 0,
+        error: expect.stringContaining(WRITE_BUDGET_ENV),
+      });
     }
   });
 
@@ -735,7 +816,8 @@ describe("NIMBUS_MCP_WRITE_BUDGET at the registrar", () => {
   });
 
   // `abc`, `ten` and `Infinity` are the values measured allowing all 25 of 25 approved argocd
-  // syncs when the budget was read with `Number()`; the rest ran under a cap nobody wrote.
+  // syncs when the budget was read with `Number()`; the rest ran under a cap nobody wrote. The two
+  // digits from other scripts are ones `Number()` reads as NaN, should the parser ever let one by.
   test.each([
     "abc",
     "ten",
@@ -747,6 +829,8 @@ describe("NIMBUS_MCP_WRITE_BUDGET at the registrar", () => {
     "0x10",
     "9007199254740992",
     "1e309",
+    String.fromCodePoint(0x0665),
+    String.fromCodePoint(0xff15),
   ])(
     "%p cannot allow more writes than the default: the registrar refuses to start",
     async (raw) => {

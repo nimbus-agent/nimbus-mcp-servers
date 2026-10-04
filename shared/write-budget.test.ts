@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createWriteBudget,
   DEFAULT_WRITE_BUDGET,
   MAX_WRITE_BUDGET,
   parseWriteBudget,
   WRITE_BUDGET_ENV,
+  type WriteBudget,
 } from "./write-budget.ts";
 
 describe("parseWriteBudget", () => {
@@ -13,9 +15,11 @@ describe("parseWriteBudget", () => {
     expect(DEFAULT_WRITE_BUDGET).toBe(10);
   });
 
-  test("empty and whitespace-only read as unset, as every other variable here reads them", () => {
+  test("an empty or whitespace-only value throws rather than being read as unset", () => {
+    // Read with `Number()`, a blank budget was 0, no writes at all. Reading it as unset would raise
+    // that to the default without a word, and a blank is as likely to mean "none" as "default".
     for (const raw of ["", " ", "\t\n "]) {
-      expect(parseWriteBudget(raw)).toBe(DEFAULT_WRITE_BUDGET);
+      expect(() => parseWriteBudget(raw)).toThrow(WRITE_BUDGET_ENV);
     }
   });
 
@@ -72,7 +76,68 @@ describe("parseWriteBudget", () => {
   test("the error quotes the value as written and says what is accepted", () => {
     expect(() => parseWriteBudget(" ten ")).toThrow(
       'NIMBUS_MCP_WRITE_BUDGET=" ten ": expected a whole number of mutations from 0 to ' +
-        "9007199254740991, where 0 refuses every write; unset or empty means the default, 10",
+        "9007199254740991, where 0 refuses every write; leave it unset for the default, 10",
     );
+  });
+
+  test("the error for an empty value shows it empty and says to unset it for the default", () => {
+    expect(() => parseWriteBudget("")).toThrow(
+      'NIMBUS_MCP_WRITE_BUDGET="": expected a whole number of mutations from 0 to ' +
+        "9007199254740991, where 0 refuses every write; leave it unset for the default, 10",
+    );
+  });
+});
+
+describe("createWriteBudget", () => {
+  /**
+   * Take until refused, and count the mutations granted. Capped, so a budget that never runs out
+   * fails the assertion instead of hanging the suite.
+   */
+  function granted(budget: WriteBudget): number {
+    let n = 0;
+    while (n < 100 && budget.take()) n += 1;
+    return n;
+  }
+
+  test.each([[0], [1], [3], [10]])("a budget of %d grants exactly that many mutations", (limit) => {
+    expect(granted(createWriteBudget(limit))).toBe(limit);
+  });
+
+  test("hasLeft stays true until the last mutation is taken", () => {
+    const budget = createWriteBudget(2);
+    expect(budget.hasLeft()).toBe(true);
+    expect(budget.take()).toBe(true);
+    expect(budget.hasLeft()).toBe(true);
+    expect(budget.take()).toBe(true);
+    expect(budget.hasLeft()).toBe(false);
+  });
+
+  test("a refused take spends nothing and keeps refusing", () => {
+    const budget = createWriteBudget(1);
+    expect(budget.take()).toBe(true);
+    expect(budget.take()).toBe(false);
+    expect(budget.take()).toBe(false);
+    expect(budget.hasLeft()).toBe(false);
+  });
+
+  test("the largest budget the parser accepts is a budget, not a refusal", () => {
+    const budget = createWriteBudget(MAX_WRITE_BUDGET);
+    expect(budget.take()).toBe(true);
+    expect(budget.hasLeft()).toBe(true);
+  });
+
+  // `parseWriteBudget` never returns any of these, and the check refuses them anyway. Written as
+  // `remaining <= 0` it let a NaN count run forever, and NaN is what an invalid value used to become.
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["a fraction", 1.5],
+    ["a fraction below one", 0.5],
+    ["negative", -1],
+    ["too large to count down exactly", 2 ** 53],
+  ])("a count that is %s grants no mutation at all", (_label, limit) => {
+    const budget = createWriteBudget(limit);
+    expect(budget.hasLeft()).toBe(false);
+    expect(granted(budget)).toBe(0);
   });
 });

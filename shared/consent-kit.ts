@@ -2,7 +2,7 @@ import type { McpListResult, ZodObjectSchema } from "@nimbus-dev/sdk/connector-k
 
 import { type AuditOutcome, appendAuditEntry } from "./audit-chain.ts";
 import { getConnectorMode } from "./connector-mode.ts";
-import { parseWriteBudget, WRITE_BUDGET_ENV } from "./write-budget.ts";
+import { createWriteBudget, parseWriteBudget, WRITE_BUDGET_ENV } from "./write-budget.ts";
 import { parseWriteScope, scopeAllows } from "./write-scope.ts";
 
 /** The subset of the SDK's `RegisteredTool` this kit needs. */
@@ -170,9 +170,10 @@ export function createWriteToolRegistrar(
 
   const scope = parseWriteScope(process.env[cfg.scopeEnv], cfg.scopeKinds);
   const auditLog = process.env["NIMBUS_MCP_AUDIT_LOG"];
-  // Throws on a value that is not a whole number, as the scope parse above does on a malformed
-  // term: read with `Number()`, `abc` became NaN, which `remaining <= 0` never refuses.
-  let remaining = parseWriteBudget(process.env[WRITE_BUDGET_ENV]);
+  // Throws on a value that is not plain digits, an empty one included, as the scope parse above
+  // does on a malformed term: read with `Number()`, `abc` became NaN, which `remaining <= 0` never
+  // refused.
+  const budget = createWriteBudget(parseWriteBudget(process.env[WRITE_BUDGET_ENV]));
 
   async function record(
     tool: string,
@@ -197,29 +198,34 @@ export function createWriteToolRegistrar(
   }
 
   /**
-   * Take one unit of budget if any is left: the check and the decrement in ONE synchronous call.
+   * Take one unit of budget if any is left. Spending the last unit disables every write tool and
+   * tells the client.
    *
-   * Nothing may be awaited between the two. Calls run concurrently (the SDK starts each request's
-   * handler as it arrives), and with an await between the check and the decrement every call in
-   * flight passed the check before any of them spent: three approved calls all mutated under a
-   * budget of one. Spending the last unit disables every write tool and tells the client.
+   * Nothing may be awaited between the check and the decrement, which is why both are the one
+   * synchronous call `budget.take()`. Calls run concurrently (the SDK starts each request's
+   * handler as it arrives), and with an await between the two every call in flight passed the
+   * check before any of them spent: three approved calls all mutated under a budget of one.
    */
   function spendOne(): boolean {
-    if (remaining <= 0) return false;
-    remaining -= 1;
-    if (remaining <= 0) {
+    if (!budget.take()) return false;
+    if (!budget.hasLeft()) {
       for (const h of handles) h.disable();
       server.sendToolListChanged();
     }
     return true;
   }
 
-  /** The refusal for a spent budget, recorded and worded the same at both places it is checked. */
+  /**
+   * The refusal for a spent budget, worded the same for the client at both places it is checked.
+   * The audit reason tells them apart: `budget exhausted after approval` follows an `accepted`
+   * entry, because the budget ran out while that write's prompt was open.
+   */
   async function budgetExhausted(
     tool: string,
     target: { kind: string; value: string },
+    reason: "budget exhausted" | "budget exhausted after approval",
   ): Promise<McpListResult> {
-    await record(tool, "refused", { reason: "budget exhausted", target });
+    await record(tool, "refused", { reason, target });
     return refused("write budget exhausted for this session");
   }
 
@@ -298,7 +304,7 @@ export function createWriteToolRegistrar(
 
       // 2. BUDGET — same reasoning: a refusal that consent cannot lift comes before consent. Not
       //    the last word on the budget, though: see step 4.
-      if (remaining <= 0) return budgetExhausted(name, target);
+      if (!budget.hasLeft()) return budgetExhausted(name, target, "budget exhausted");
 
       // 3. CONSENT.
       await record(name, "requested", { target, params: args });
@@ -312,7 +318,7 @@ export function createWriteToolRegistrar(
       //    call in flight passed step 2 before any of them got this far, so step 2 alone cannot
       //    hold the cap (see `spendOne`). Spent BEFORE the mutation so a throwing one still
       //    consumes budget — otherwise a failing destructive tool could be retried without limit.
-      if (!spendOne()) return budgetExhausted(name, target);
+      if (!spendOne()) return budgetExhausted(name, target, "budget exhausted after approval");
 
       // 5. PRE-STATE — after approval, before the mutation, so an unrecoverable action leaves a
       //    record of what it destroyed. Capture failure is NOT fatal: refusing here would turn a

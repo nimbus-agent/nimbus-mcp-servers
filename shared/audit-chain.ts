@@ -4,9 +4,12 @@ import { appendFile, readFile } from "node:fs/promises";
 /**
  * What happened to one gated action.
  *
- * `refused` is a server-side denial (out of scope, budget exhausted, or no elicitation-capable
- * client); `declined` is a human saying no. They are kept distinct because only one of them means a
- * person was actually asked.
+ * `declined` is a human saying no, so it always means a person was asked. `refused` is a
+ * server-side denial and does not say on its own whether anyone was asked; its `reason` does.
+ * `out of scope` and `budget exhausted` are decided before any prompt. `budget exhausted after
+ * approval` follows an `accepted` entry: writes in flight together spent the last of the budget
+ * while this one's prompt was open, so a human approved a write that then did not run. A client
+ * that cannot prompt is never offered a write tool at all, so it leaves no entry.
  */
 export type AuditOutcome =
   | "requested"
