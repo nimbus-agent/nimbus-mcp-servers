@@ -49,6 +49,18 @@ export interface AccessTokenCacheConfig {
 /** Body-snippet length in the thrown error. The value every connector used. */
 export const DEFAULT_SNIPPET_MAX = 400;
 
+/** The getter {@link createAccessTokenCache} returns: call it for the token. */
+export interface AccessTokenCache {
+  (): Promise<string>;
+  /**
+   * Forget the cached token, so the next call exchanges again. For tests: the
+   * cache lives as long as the module, which in a test run is the whole process,
+   * so a token one test obtained would otherwise answer every later test's call
+   * without that call's credentials ever being read.
+   */
+  clear(): void;
+}
+
 /**
  * A `() => Promise<string>` that performs the exchange once and then returns
  * the cached token.
@@ -64,7 +76,7 @@ export const DEFAULT_SNIPPET_MAX = 400;
  * auth endpoint. The in-flight promise is cleared whichever way it settles, so
  * a failed exchange stays retryable.
  */
-export function createAccessTokenCache(config: AccessTokenCacheConfig): () => Promise<string> {
+export function createAccessTokenCache(config: AccessTokenCacheConfig): AccessTokenCache {
   const field = config.tokenField ?? "access_token";
   const snippetMax = config.snippetMax ?? DEFAULT_SNIPPET_MAX;
   let cached: string | null = null;
@@ -89,7 +101,7 @@ export function createAccessTokenCache(config: AccessTokenCacheConfig): () => Pr
     return token;
   }
 
-  return async (): Promise<string> => {
+  const get = async (): Promise<string> => {
     if (cached !== null) {
       return cached;
     }
@@ -103,4 +115,9 @@ export function createAccessTokenCache(config: AccessTokenCacheConfig): () => Pr
       inFlight = null;
     }
   };
+  return Object.assign(get, {
+    clear: (): void => {
+      cached = null;
+    },
+  });
 }

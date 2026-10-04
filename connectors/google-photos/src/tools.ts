@@ -17,6 +17,27 @@ async function photosFetch(
   return fetchBearerAuthorizedJson(url, token, init, { "Content-Type": "application/json" });
 }
 
+/**
+ * The `mediaItems:search` body both media tools start from: the page size (default 50), then the
+ * page token and the album scope, each only when non-empty.
+ */
+function mediaSearchBody(parsed: {
+  readonly pageSize?: number | undefined;
+  readonly pageToken?: string | undefined;
+  readonly albumId?: string | undefined;
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    pageSize: parsed.pageSize ?? 50,
+  };
+  if (parsed.pageToken !== undefined && parsed.pageToken !== "") {
+    body["pageToken"] = parsed.pageToken;
+  }
+  if (parsed.albumId !== undefined && parsed.albumId !== "") {
+    body["albumId"] = parsed.albumId;
+  }
+  return body;
+}
+
 export function registerGooglePhotosTools(server: { tool: (...args: never) => unknown }): void {
   const registerSimpleTool = createRegisterSimpleTool(server);
   const reg = createZodToolRegistrar(registerSimpleTool);
@@ -44,7 +65,9 @@ export function registerGooglePhotosTools(server: { tool: (...args: never) => un
       if (parsed.pageToken !== undefined && parsed.pageToken !== "") {
         u.searchParams.set("pageToken", parsed.pageToken);
       }
-      return `${u.pathname}${u.search}`;
+      // Relative to PHOTOS_BASE, like every other tool here: the fetcher prefixes the base, which
+      // already ends in /v1, so returning `u.pathname` requested /v1/v1/albums.
+      return `/albums${u.search}`;
     },
   );
 
@@ -70,18 +93,7 @@ export function registerGooglePhotosTools(server: { tool: (...args: never) => un
     "List media items (metadata + baseUrl/productUrl only). Optional albumId scopes to one album.",
     gphotosMediaListArgs,
     () => "/mediaItems:search",
-    (parsed) => {
-      const body: Record<string, unknown> = {
-        pageSize: parsed.pageSize ?? 50,
-      };
-      if (parsed.pageToken !== undefined && parsed.pageToken !== "") {
-        body["pageToken"] = parsed.pageToken;
-      }
-      if (parsed.albumId !== undefined && parsed.albumId !== "") {
-        body["albumId"] = parsed.albumId;
-      }
-      return { method: "POST", body: JSON.stringify(body) };
-    },
+    (parsed) => ({ method: "POST", body: JSON.stringify(mediaSearchBody(parsed)) }),
   );
 
   const gphotosMediaGetArgs = z.object({
@@ -109,15 +121,7 @@ export function registerGooglePhotosTools(server: { tool: (...args: never) => un
     gphotosMediaSearchArgs,
     () => "/mediaItems:search",
     (parsed) => {
-      const body: Record<string, unknown> = {
-        pageSize: parsed.pageSize ?? 50,
-      };
-      if (parsed.pageToken !== undefined && parsed.pageToken !== "") {
-        body["pageToken"] = parsed.pageToken;
-      }
-      if (parsed.albumId !== undefined && parsed.albumId !== "") {
-        body["albumId"] = parsed.albumId;
-      }
+      const body = mediaSearchBody(parsed);
       const filters: Record<string, unknown> = {};
       if (parsed.includeArchivedMedia === true) {
         filters["includeArchivedMedia"] = true;

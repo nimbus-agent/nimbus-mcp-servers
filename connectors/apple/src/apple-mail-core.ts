@@ -9,6 +9,8 @@
  * the connector must satisfy (EmailReadClient/EmailSendMailer/EmailMessageMeta).
  */
 
+import type { OutgoingMail } from "../../../shared/imap-tool-kit.ts";
+
 export {
   capPreview,
   clampLimit,
@@ -16,7 +18,6 @@ export {
   PREVIEW_FETCH_BYTES,
   PREVIEW_MAX_CHARS,
 } from "../../../shared/imap-mail-core.ts";
-
 // The shared kit already defines the structural client/mailer/message contracts
 // the connector must satisfy (EmailReadClient/EmailSendMailer/EmailMessageMeta).
 export type {
@@ -25,13 +26,8 @@ export type {
   EmailSendMailer,
 } from "../../../shared/imap-tool-kit.ts";
 
-export interface DraftInput {
-  readonly to: string;
-  readonly subject: string;
-  readonly body: string;
-  readonly cc?: string;
-  readonly bcc?: string;
-}
+/** A draft is the same outgoing message a send tool hands its transport. */
+export type DraftInput = OutgoingMail;
 
 export interface DraftResult {
   readonly uid: number | null;

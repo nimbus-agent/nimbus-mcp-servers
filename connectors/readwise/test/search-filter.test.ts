@@ -145,4 +145,15 @@ describe("filterReadwiseBooks", () => {
     const many = Array.from({ length: 10 }, (_, i) => book({ id: i }));
     expect(filterReadwiseBooks(many, { query: "release it", limit: 3 })).toHaveLength(3);
   });
+
+  test("ignores tag names that are not strings", () => {
+    const odd = book({
+      tags: [
+        { id: 1, name: 77421 },
+        { id: 2, name: "ops" },
+      ],
+    });
+    expect(filterReadwiseBooks([odd], { query: "ops" })).toHaveLength(1);
+    expect(filterReadwiseBooks([odd], { query: "77421" })).toHaveLength(0);
+  });
 });

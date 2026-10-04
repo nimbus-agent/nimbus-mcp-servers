@@ -1,36 +1,18 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
+import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterTableauViews } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["TABLEAU_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("TABLEAU_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
-function patName(): string {
-  const v = process.env["TABLEAU_PAT_NAME"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("TABLEAU_PAT_NAME is not set");
-  }
-  return v;
-}
-
-function patSecret(): string {
-  const v = process.env["TABLEAU_PAT_SECRET"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("TABLEAU_PAT_SECRET is not set");
-  }
-  return v;
+  return requiredBaseUrl("TABLEAU_URL");
 }
 
 interface SigninResult {
@@ -45,8 +27,8 @@ async function tableauSignin(): Promise<SigninResult> {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
       credentials: {
-        personalAccessTokenName: patName(),
-        personalAccessTokenSecret: patSecret(),
+        personalAccessTokenName: requiredEnv("TABLEAU_PAT_NAME"),
+        personalAccessTokenSecret: requiredEnv("TABLEAU_PAT_SECRET"),
         site: { contentUrl: "" },
       },
     }),
@@ -55,22 +37,9 @@ async function tableauSignin(): Promise<SigninResult> {
   if (!res.ok) {
     throw new Error(`Tableau signin ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = JSON.parse(text) as unknown;
-  const root =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  const creds = root?.["credentials"];
-  const credsObj =
-    creds !== null && typeof creds === "object" && !Array.isArray(creds)
-      ? (creds as Record<string, unknown>)
-      : null;
+  const credsObj = asRecord(asRecord(JSON.parse(text) as unknown)?.["credentials"]);
   const token = typeof credsObj?.["token"] === "string" ? credsObj["token"] : null;
-  const site = credsObj?.["site"];
-  const siteObj =
-    site !== null && typeof site === "object" && !Array.isArray(site)
-      ? (site as Record<string, unknown>)
-      : null;
+  const siteObj = asRecord(credsObj?.["site"]);
   const siteId = typeof siteObj?.["id"] === "string" ? siteObj["id"] : null;
   if (token === null || siteId === null) {
     throw new Error("Tableau signin response missing credentials.token or credentials.site.id");
@@ -98,21 +67,9 @@ async function listViews(
   if (!res.ok) {
     throw new Error(`Tableau views ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = JSON.parse(text) as unknown;
-  const root =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  const views = root?.["views"];
-  const viewsObj =
-    views !== null && typeof views === "object" && !Array.isArray(views)
-      ? (views as Record<string, unknown>)
-      : null;
-  const pagination = root?.["pagination"];
-  const paginationObj =
-    pagination !== null && typeof pagination === "object" && !Array.isArray(pagination)
-      ? (pagination as Record<string, unknown>)
-      : null;
+  const root = asRecord(JSON.parse(text) as unknown);
+  const viewsObj = asRecord(root?.["views"]);
+  const paginationObj = asRecord(root?.["pagination"]);
   return {
     views: Array.isArray(viewsObj?.["view"]) ? (viewsObj["view"] as unknown[]) : [],
     totalAvailable: Number(paginationObj?.["totalAvailable"]) || 0,
@@ -159,10 +116,7 @@ export function registerTableauTools(reg: ZodToolRegistrar, server: unknown): vo
   reg(
     "tableau_list",
     "List Tableau views/dashboards (`GET /api/3.4/sites/{siteId}/views`). Requires a PAT sign-in first. Paginated (1-based): `cursor` (page number) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const pageSize = p.limit ?? 200;
       // 1-based: null / "" / "0" / non-numeric / negative / fractional all resolve to page 1
@@ -186,10 +140,7 @@ export function registerTableauTools(reg: ZodToolRegistrar, server: unknown): vo
       const { token, siteId } = await tableauSignin();
       const { views } = await listViews(token, siteId);
       const found = views.find((v) => {
-        const obj =
-          v !== null && typeof v === "object" && !Array.isArray(v)
-            ? (v as Record<string, unknown>)
-            : null;
+        const obj = asRecord(v);
         return obj?.["luid"] === p.id || obj?.["id"] === p.id;
       });
       if (found === undefined) {

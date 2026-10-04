@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   createJsonGetter,
+  createJsonPoster,
   DEFAULT_SNIPPET_MAX,
   envAuthHeaders,
   optionalBaseUrl,
@@ -211,5 +212,82 @@ describe("createJsonGetter", () => {
     stubFetch({ body: "<html>not json</html>" });
     const get = createJsonGetter({ base: "https://api.test", label: "T", headers: () => ({}) });
     await expect(get("/x")).rejects.toThrow();
+  });
+
+  it("resolves the base before building the headers, so a missing URL is named first", async () => {
+    const { calls } = stubFetch({});
+    const get = createJsonGetter({
+      base: () => requiredBaseUrl(BASE_ENV),
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    await expect(get("/x")).rejects.toThrow(`${BASE_ENV} is not set`);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createJsonPoster", () => {
+  it("POSTs the body as JSON, adding Content-Type to the factory's headers", async () => {
+    const { calls } = stubFetch({ body: '{"queued":true}' });
+    process.env[ENV] = "tok";
+    const post = createJsonPoster({
+      base: "https://api.test",
+      label: "Test",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    expect(await post("/v1/apps/a/sync", { prune: true })).toEqual({ queued: true });
+    const call = calls[0];
+    expect(call?.method).toBe("POST");
+    expect(call?.url).toBe("https://api.test/v1/apps/a/sync");
+    expect(call?.headers.get("authorization")).toBe("Bearer tok");
+    expect(call?.headers.get("accept")).toBe("application/json");
+    expect(call?.headers.get("content-type")).toBe("application/json");
+    expect(await call?.text()).toBe('{"prune":true}');
+  });
+
+  it("resolves an empty 2xx body to {}", async () => {
+    stubFetch({ body: "" });
+    const post = createJsonPoster({ base: "https://api.test", label: "T", headers: () => ({}) });
+    expect(await post("/x", {})).toEqual({});
+  });
+
+  it("names the path in the error, unlike the getter", async () => {
+    stubFetch({ status: 409, body: "already syncing" });
+    const post = createJsonPoster({
+      base: "https://api.test",
+      label: "ArgoCD",
+      headers: () => ({}),
+    });
+    await expect(post("/applications/a/sync", {})).rejects.toThrow(
+      "ArgoCD /applications/a/sync 409: already syncing",
+    );
+  });
+
+  it("refuses before sending anything when the credential is missing", async () => {
+    const { calls } = stubFetch({});
+    const post = createJsonPoster({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    await expect(post("/x", {})).rejects.toThrow(`${ENV} is not set`);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("uses the configured fetch instead of the global one", async () => {
+    const { calls } = stubFetch({});
+    const seen: string[] = [];
+    const post = createJsonPoster({
+      base: "https://api.test",
+      label: "T",
+      headers: () => ({}),
+      fetch: (url) => {
+        seen.push(url);
+        return Promise.resolve(new Response('{"via":"seam"}'));
+      },
+    });
+    expect(await post("/x", {})).toEqual({ via: "seam" });
+    expect(seen).toEqual(["https://api.test/x"]);
+    expect(calls).toHaveLength(0);
   });
 });

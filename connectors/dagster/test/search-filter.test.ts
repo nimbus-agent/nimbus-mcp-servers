@@ -54,6 +54,11 @@ describe("filterDagsterJobs", () => {
     expect(filterDagsterJobs([odd], { query: "7" })).toHaveLength(0);
   });
 
+  test("matches a tag's value even when its key is empty", () => {
+    const keyless = job({ tags: [{ key: "", value: "gold-tier" }] });
+    expect(filterDagsterJobs([keyless], { query: "gold-tier" })).toHaveLength(1);
+  });
+
   test("honors the limit cap", () => {
     const many = Array.from({ length: 10 }, (_, i) => job({ name: `nightly_etl_${String(i)}` }));
     expect(filterDagsterJobs(many, { query: "nightly", limit: 3 })).toHaveLength(3);

@@ -11,6 +11,15 @@ const APP_DISTRIBUTION_API = "https://firebaseappdistribution.googleapis.com";
 // App Distribution OAuth2 tokens last ~1h; cache and refresh conservatively.
 let cachedToken: { token: string; expiresAt: number } | null = null;
 
+/**
+ * Forget the cached access token. Tests only: the cache is module state shared by every test in
+ * the process, and a token one test left behind lets a later tool call skip reading its
+ * credential entirely.
+ */
+export function __resetFirebaseTokenCacheForTests(): void {
+  cachedToken = null;
+}
+
 async function accessToken(): Promise<string> {
   const now = Date.now();
   if (cachedToken !== null && cachedToken.expiresAt > now + 60_000) {

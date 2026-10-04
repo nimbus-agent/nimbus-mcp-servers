@@ -2,26 +2,21 @@ import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
+  GH_ACCEPT,
+  GH_API,
+  GH_API_VERSION,
+  ghFetch,
+  ghQueryPath,
+  ghRepoPath,
+  setGhPaging,
+} from "../../../shared/github-rest.ts";
+import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
-import { makeRestFetcher, makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
-
-const GH_API = "https://api.github.com";
-const GH_HEADERS: Record<string, string> = {
-  Accept: "application/vnd.github+json",
-  "X-GitHub-Api-Version": "2022-11-28",
-};
-
-function ghFetch(
-  token: string,
-  path: string,
-  init?: RequestInit,
-): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
-  return makeRestFetcher({ apiBase: GH_API, token, defaultHeaders: GH_HEADERS })(path, init);
-}
+import { makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const GITHUB_ACTIONS_TOOL_NAMES = [
@@ -58,9 +53,6 @@ export function registerGithubActionsTools(
     fetch: ghFetch,
   });
 
-  const slug = (owner: string, repo: string): string =>
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-
   const repoSlugArgs = z.object({
     owner: z.string().min(1),
     repo: z.string().min(1),
@@ -81,37 +73,25 @@ export function registerGithubActionsTools(
       perPage: z.number().int().min(1).max(100).optional(),
       page: z.number().int().min(1).optional(),
     }),
-    (parsed) => {
-      const u = new URL(`${GH_API}${slug(parsed.owner, parsed.repo)}/actions/workflows`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
-      return `${u.pathname}${u.search}`;
-    },
+    (parsed) =>
+      ghQueryPath(`${ghRepoPath(parsed.owner, parsed.repo)}/actions/workflows`, (q) => {
+        setGhPaging(q, parsed);
+      }),
   );
 
-  registerGhaTool(
-    "gha_run_list",
-    "List workflow runs for a repository.",
-    runListSchema,
-    (parsed) => {
-      const u = new URL(`${GH_API}${slug(parsed.owner, parsed.repo)}/actions/runs`);
-      u.searchParams.set("per_page", String(parsed.perPage ?? 30));
-      if (parsed.page !== undefined) {
-        u.searchParams.set("page", String(parsed.page));
-      }
+  registerGhaTool("gha_run_list", "List workflow runs for a repository.", runListSchema, (parsed) =>
+    ghQueryPath(`${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs`, (q) => {
+      setGhPaging(q, parsed);
       if (parsed.branch !== undefined) {
-        u.searchParams.set("branch", parsed.branch);
+        q.set("branch", parsed.branch);
       }
       if (parsed.event !== undefined) {
-        u.searchParams.set("event", parsed.event);
+        q.set("event", parsed.event);
       }
       if (parsed.status !== undefined) {
-        u.searchParams.set("status", parsed.status);
+        q.set("status", parsed.status);
       }
-      return `${u.pathname}${u.search}`;
-    },
+    }),
   );
 
   const runIdSchema = repoSlugArgs.extend({
@@ -122,14 +102,15 @@ export function registerGithubActionsTools(
     "gha_run_get",
     "Get a single workflow run by id.",
     runIdSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}`,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}`,
   );
 
   registerGhaTool(
     "gha_run_jobs",
     "List jobs for a workflow run.",
     runIdSchema,
-    (parsed) => `${slug(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}/jobs`,
+    (parsed) =>
+      `${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}/jobs`,
   );
 
   reg(
@@ -141,12 +122,12 @@ export function registerGithubActionsTools(
     }),
     async (parsed) => {
       const token = requireProcessEnv("GITHUB_PAT");
-      const url = `${GH_API}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/actions/jobs/${String(parsed.jobId)}/logs`;
+      const url = `${GH_API}${ghRepoPath(parsed.owner, parsed.repo)}/actions/jobs/${String(parsed.jobId)}/logs`;
       const res = await fetch(url, {
         headers: {
-          Accept: "application/vnd.github+json",
+          Accept: GH_ACCEPT,
           Authorization: `Bearer ${token}`,
-          "X-GitHub-Api-Version": "2022-11-28",
+          "X-GitHub-Api-Version": GH_API_VERSION,
         },
         redirect: "follow",
       });
@@ -184,7 +165,7 @@ export function registerGithubActionsTools(
     async (parsed) => {
       const token = requireProcessEnv("GITHUB_PAT");
       const encWf = encodeURIComponent(parsed.workflowId);
-      const path = `${slug(parsed.owner, parsed.repo)}/actions/workflows/${encWf}/dispatches`;
+      const path = `${ghRepoPath(parsed.owner, parsed.repo)}/actions/workflows/${encWf}/dispatches`;
       const ref = parsed.ref ?? "main";
       const res = await ghFetch(token, path, {
         method: "POST",
@@ -217,7 +198,7 @@ export function registerGithubActionsTools(
     runIdSchema,
     async (parsed) => {
       const token = requireProcessEnv("GITHUB_PAT");
-      const path = `${slug(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}/cancel`;
+      const path = `${ghRepoPath(parsed.owner, parsed.repo)}/actions/runs/${String(parsed.runId)}/cancel`;
       const res = await ghFetch(token, path, { method: "POST" });
       if (!res.ok) {
         throw new Error(`GitHub Actions cancel ${String(res.status)}: ${res.text.slice(0, 400)}`);

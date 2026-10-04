@@ -115,6 +115,15 @@ describe("gdrive_file_list", () => {
       "Drive API 403: insufficient permissions",
     );
   });
+
+  it("quotes at most the first 200 characters of a failure body", async () => {
+    always({ status: 500, body: `${"x".repeat(200)}TAIL` });
+    const err = await tools.call("gdrive_file_list", {}).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err instanceof Error ? err.message : err).toBe(`Drive API 500: ${"x".repeat(200)}`);
+  });
 });
 
 describe("gdrive_file_metadata", () => {
@@ -218,6 +227,38 @@ describe("gdrive_file_download", () => {
     const detail = JSON.parse(err?.message ?? "{}") as { code: string; webViewLink: string };
     expect(detail.code).toBe("EXPORT_NOT_SUPPORTED");
     expect(detail.webViewLink).toBe("https://docs.google.com/forms/d/f1");
+  });
+
+  it("reports a null web link for an unexportable type whose metadata carries none", async () => {
+    respond(() => meta({ mimeType: "application/vnd.google-apps.form" }));
+    const err = await tools.call("gdrive_file_download", { fileId: "f1" }).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    const detail = JSON.parse(err?.message ?? "{}") as { code: string; webViewLink: unknown };
+    expect([detail.code, detail.webViewLink]).toEqual(["EXPORT_NOT_SUPPORTED", null]);
+  });
+
+  it("downloads a media file whose declared size and Content-Length are AT maxBytes", async () => {
+    // The limit is inclusive: a file of exactly maxBytes is allowed through both header checks.
+    const body = "x".repeat(1024);
+    respond((_url, i) =>
+      i === 0 ? meta({ size: "1024" }) : { body, headers: { "content-length": "1024" } },
+    );
+    const out = (await tools.callJson("gdrive_file_download", {
+      fileId: "f1",
+      maxBytes: 1024,
+    })) as { encoding: string; content: string };
+    expect([out.encoding, out.content]).toEqual(["utf-8", body]);
+    expect(seen[1]?.url).toBe("https://www.googleapis.com/drive/v3/files/f1?alt=media");
+  });
+
+  it("does not treat a size it cannot read as too large", async () => {
+    respond((_url, i) => (i === 0 ? meta({ size: "unknown" }) : { body: "ok" }));
+    const out = (await tools.callJson("gdrive_file_download", { fileId: "f1" })) as {
+      content: string;
+    };
+    expect(out.content).toBe("ok");
   });
 
   it("truncates an over-large export rather than failing", async () => {
@@ -354,6 +395,20 @@ describe("gdrive_file_create", () => {
     await expect(tools.call("gdrive_file_create", { name: "x" })).rejects.toThrow(
       "Drive API 400: bad request",
     );
+  });
+
+  it("surfaces a multipart upload failure the same way", async () => {
+    always({ status: 413, body: "too large" });
+    await expect(tools.call("gdrive_file_create", { name: "x", content: "hello" })).rejects.toThrow(
+      "Drive API 413: too large",
+    );
+  });
+
+  it("returns the created file as Drive answered it", async () => {
+    always({ body: '{"id":"new","name":"note.txt"}' });
+    expect(
+      await tools.callJson("gdrive_file_create", { name: "note.txt", content: "hello" }),
+    ).toEqual({ id: "new", name: "note.txt" });
   });
 });
 

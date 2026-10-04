@@ -1,7 +1,7 @@
 import { FLUX_KINDS, type FluxKindEntry, trimTrailingSlash } from "@nimbus-dev/sdk";
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
@@ -19,12 +19,9 @@ function kindEntry(kind: string): FluxKindEntry {
   return found;
 }
 
+/** Only ONE trailing slash is dropped here — not `requiredBaseUrl`'s strip-them-all. */
 function apiBase(): string {
-  const v = process.env["FLUX_API_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("FLUX_API_URL is not set");
-  }
-  return trimTrailingSlash(v);
+  return trimTrailingSlash(requiredEnv("FLUX_API_URL"));
 }
 
 /**

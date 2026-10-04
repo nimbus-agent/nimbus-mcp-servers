@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -7,17 +7,9 @@ import { filterIntercomConversations } from "./search-filter.ts";
 
 const BASE = "https://api.intercom.io";
 
-function apiToken(): string {
-  const t = process.env["INTERCOM_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("INTERCOM_TOKEN is not set");
-  }
-  return t;
-}
-
 function authHeader(): Record<string, string> {
   return {
-    Authorization: `Bearer ${apiToken()}`,
+    Authorization: `Bearer ${requiredEnv("INTERCOM_TOKEN")}`,
     "Intercom-Version": "2.11",
     Accept: "application/json",
   };

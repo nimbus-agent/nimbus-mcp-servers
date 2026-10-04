@@ -7,6 +7,9 @@ import {
   filterByQuery,
   makeQueryFilter,
   nestedString,
+  nonEmptyStringsText,
+  objectNamesText,
+  recordFieldsFromKeys,
   stringField,
   tagNamesFromObjects,
   tagText,
@@ -129,6 +132,45 @@ describe("tagText", () => {
   });
 });
 
+describe("nonEmptyStringsText", () => {
+  test("joins the string entries of the array at `key` with spaces", () => {
+    expect(nonEmptyStringsText({ owners: ["airflow", "data-eng"] }, "owners")).toBe(
+      "airflow data-eng",
+    );
+  });
+
+  test("skips empty strings and non-strings, so no double space reaches the haystack", () => {
+    const row = { tags: ["a", "", 42, null, "b"] };
+    expect(nonEmptyStringsText(row, "tags")).toBe("a b");
+    // The rule it does NOT share with tagText, which joins the empty entry.
+    expect(tagText(row)).toBe("a  b");
+  });
+
+  test("returns empty string when the key is missing or not an array", () => {
+    expect(nonEmptyStringsText({}, "tags")).toBe("");
+    expect(nonEmptyStringsText({ tags: "a" }, "tags")).toBe("");
+    expect(nonEmptyStringsText({ tags: null }, "tags")).toBe("");
+  });
+});
+
+describe("objectNamesText", () => {
+  test("joins the non-empty string `name` of each objectish entry at `key`", () => {
+    const row = { projects: [{ name: "web" }, { name: "" }, "plain", null, { name: 7 }, {}] };
+    expect(objectNamesText(row, "projects")).toBe("web");
+  });
+
+  test("returns empty string when the key is missing or not an array", () => {
+    expect(objectNamesText({}, "projects")).toBe("");
+    expect(objectNamesText({ projects: { name: "x" } }, "projects")).toBe("");
+  });
+
+  test("tagNamesFromObjects is the same rule at the `tags` key", () => {
+    const row = { tags: [{ name: "finance" }, { name: "" }, 3, { name: "ops" }] };
+    expect(tagNamesFromObjects(row)).toBe(objectNamesText(row, "tags"));
+    expect(tagNamesFromObjects(row)).toBe("finance ops");
+  });
+});
+
 describe("tagNamesFromObjects", () => {
   test("joins the string `name` of each tag object with spaces", () => {
     expect(tagNamesFromObjects({ tags: [{ name: "finance" }, { name: "ops" }] })).toBe(
@@ -198,6 +240,33 @@ describe("fieldsFromKeys", () => {
     // asObjectish accepts arrays, so string-indexed keys resolve to "".
     const extract = fieldsFromKeys(["0"]);
     expect(extract(["first", "second"])).toEqual(["first"]);
+  });
+});
+
+describe("recordFieldsFromKeys", () => {
+  test("reads the requested string keys off a plain-object row", () => {
+    expect(recordFieldsFromKeys(["name", "id"])({ name: "Revenue", id: 7 })).toEqual([
+      "Revenue",
+      "",
+    ]);
+  });
+
+  test("returns null for an array row as well as for non-objects", () => {
+    const extract = recordFieldsFromKeys(["0"]);
+    expect(extract(["first"])).toBeNull();
+    expect(extract(null)).toBeNull();
+    expect(extract("str")).toBeNull();
+  });
+
+  test("never matches an array row — the one case where it differs from fieldsFromKeys", () => {
+    // An array row read as an object yields only empty fields, and those join to spaces — so a
+    // query made only of spaces matches it under fieldsFromKeys, but not here.
+    const rows = [["a", "b"], { name: "x" }];
+    const opts = { query: " " };
+    expect(makeQueryFilter(fieldsFromKeys(["name", "id"]))(rows, opts)).toEqual(rows);
+    expect(makeQueryFilter(recordFieldsFromKeys(["name", "id"]))(rows, opts)).toEqual([
+      { name: "x" },
+    ]);
   });
 });
 

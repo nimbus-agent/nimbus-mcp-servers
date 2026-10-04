@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,18 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { resolveConnectorEntry, runStandalone, standaloneEligibility } from "./launcher.ts";
+import {
+  bootOverStubbedStdio,
+  connectOverStubbedStdio,
+  withEnv,
+} from "../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests } from "../../shared/connector-mode.ts";
+import {
+  registersWriteTool,
+  resolveConnectorEntry,
+  runStandalone,
+  standaloneEligibility,
+} from "./launcher.ts";
 
 describe("resolveConnectorEntry", () => {
   test("resolves a known connector id to its server entry", () => {
@@ -67,6 +79,27 @@ describe("standaloneEligibility", () => {
     expect(v.reason).toMatch(/not been routed through the consent kit/);
   });
 
+  test("a delete declaration alone counts as mutating, gated or not", () => {
+    const root = mkdtempSync(join(tmpdir(), "elig-"));
+    for (const [id, source] of [
+      ["ungated", 'reg("x_delete", handler);\n'],
+      ["gated", 'registerWriteTool("x_delete", cfg, "d", s, h);\n'],
+    ] as const) {
+      mkdirSync(join(root, id, "src"), { recursive: true });
+      writeFileSync(
+        join(root, id, "nimbus.extension.json"),
+        JSON.stringify({ hitlRequired: ["delete"] }),
+      );
+      writeFileSync(join(root, id, "src", "tools.ts"), source);
+    }
+    try {
+      expect(standaloneEligibility("ungated", root).eligible).toBe(false);
+      expect(standaloneEligibility("gated", root)).toEqual({ eligible: true, reason: "hardened" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("a read-only connector that POSTs is eligible — the verb is not the signal", () => {
     // snyk POSTs for its queries (snyk_get/list/search only), as do dagster's GraphQL, prefect's
     // filter endpoint, and ramp/wiz/superset's auth. An earlier verb-based check refused all
@@ -78,6 +111,32 @@ describe("standaloneEligibility", () => {
 
   test("an unknown connector is refused rather than assumed safe", () => {
     expect(standaloneEligibility("definitely-not-a-connector").eligible).toBe(false);
+  });
+
+  test("a manifest that parses to no object declares nothing, like one without hitlRequired", () => {
+    // Only an UNREADABLE manifest fails safe. One that parses has said what it declares, and
+    // `null` declares no more than `{}` does.
+    const root = mkdtempSync(join(tmpdir(), "elig-"));
+    for (const [id, manifest] of [
+      ["null-manifest", "null"],
+      ["empty-manifest", "{}"],
+    ] as const) {
+      mkdirSync(join(root, id, "src"), { recursive: true });
+      writeFileSync(join(root, id, "nimbus.extension.json"), manifest);
+      writeFileSync(join(root, id, "src", "server.ts"), 'reg("x_list", handler);\n');
+    }
+    try {
+      expect(standaloneEligibility("null-manifest", root)).toEqual({
+        eligible: true,
+        reason: "no-writes",
+      });
+      expect(standaloneEligibility("empty-manifest", root)).toEqual({
+        eligible: true,
+        reason: "no-writes",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -112,22 +171,57 @@ describe("the hardened-registration scan runs in linear time", () => {
     expect(elapsed).toBeLessThan(2_000);
   }, 60_000);
 
-  test("blank lines before a registration call still count as hardened", () => {
+  /** Sources that register write tools in a shape the narrower scan must still call hardened. */
+  const HARDENED: readonly (readonly [label: string, serverTs: string])[] = [
     // The semantic half: `\s*` could span newlines and `[^\S\r\n]*` cannot, so this is the shape
     // that would regress if the narrower class changed which sources match.
-    const root = fixture("import x;\n\n\n\t  registerJiraWriteTool(server, {});\n");
-    expect(standaloneEligibility("c", root)).toEqual({ eligible: true, reason: "hardened" });
-  });
-
-  test("the registrar-passed-to-a-kit form still counts as hardened", () => {
-    const root = fixture("runKit({\n\n  registerWriteTool,\n});\n");
-    expect(standaloneEligibility("c", root)).toEqual({ eligible: true, reason: "hardened" });
-  });
+    [
+      "blank lines before a registration call still count as hardened",
+      "import x;\n\n\n\t  registerJiraWriteTool(server, {});\n",
+    ],
+    [
+      "the registrar-passed-to-a-kit form still counts as hardened",
+      "runKit({\n\n  registerWriteTool,\n});\n",
+    ],
+    // trim(), not trimStart(): `registerWriteTool,` plus a carriage return was refused here, while
+    // the consent audit's own copy of this scan — which already trimmed both ends — called the
+    // same source hardened. The audit now imports this one.
+    [
+      "a CRLF checkout's registrar-handed-to-a-kit line still counts as hardened",
+      "runKit({\r\n  registerWriteTool,\r\n});\r\n",
+    ],
+  ];
+  for (const [label, serverTs] of HARDENED) {
+    test(label, () => {
+      expect(standaloneEligibility("c", fixture(serverTs))).toEqual({
+        eligible: true,
+        reason: "hardened",
+      });
+    });
+  }
 
   test("a bare mention that is not a call is still not hardened", () => {
     const root = fixture("const registerWriteTool = makeRegistrar();\n");
     expect(standaloneEligibility("c", root).eligible).toBe(false);
   });
+});
+
+describe("registersWriteTool, the one scan the launcher and audit:connector-consent share", () => {
+  const CASES: readonly (readonly [label: string, src: string, expected: boolean])[] = [
+    ["a registration call", "registerWriteTool(\n", true],
+    ["a connector-named registrar call", "\t  registerJiraWriteTool(server, {});", true],
+    ["the registrar handed to a kit", "runKit({\n  registerWriteTool,\n});", true],
+    ["the registrar handed to a kit, CRLF", "runKit({\r\n  registerWriteTool,\r\n});\r\n", true],
+    ["the registrar's own declaration", "const registerWriteTool = makeRegistrar();", false],
+    ["a dotted name between register and WriteTool(", "registerFoo.WriteTool(x);", false],
+    ["the trailing-comma form not ending its line", "registerWriteTool, other", false],
+    ["no source at all", "", false],
+  ];
+  for (const [label, src, expected] of CASES) {
+    test(label, () => {
+      expect(registersWriteTool(src)).toBe(expected);
+    });
+  }
 });
 
 describe("runStandalone", () => {
@@ -144,9 +238,10 @@ describe("runStandalone", () => {
   });
 
   test("exit code 3 is reserved for an ineligible connector, distinct from 2", () => {
-    // Exercised through standaloneEligibility above rather than runStandalone: every real
-    // connector is now migrated, so there is none left to refuse. 3 means "not safe standalone
-    // yet" and 2 means "no such connector" — a human triaging should not have to read the message.
+    // Every real connector is now migrated, so none is left for runStandalone to refuse; its own
+    // exit 3 is asserted end to end over a fixture connectors directory, further down. 3 means
+    // "not safe standalone yet" and 2 means "no such connector" — a human triaging should not
+    // have to read the message.
     expect(standaloneEligibility("definitely-not-a-connector").eligible).toBe(false);
   });
 });
@@ -177,7 +272,7 @@ describe("connector startup shapes", () => {
     //
     // This case named `snowflake` as its ineligible example and broke the moment snowflake was
     // migrated. Every real connector is now migrated, so it asserts the same short-circuit via the
-    // unknown-id path; the ineligible-verdict branch itself is covered by standaloneEligibility.
+    // unknown-id path; the ineligible-verdict branch is asserted over a fixture directory below.
     let imported = 0;
     const code = await runStandalone(["definitely-not-a-connector"], () => {
       imported += 1;
@@ -185,6 +280,107 @@ describe("connector startup shapes", () => {
     });
     expect(code).not.toBe(0);
     expect(imported).toBe(0);
+  });
+});
+
+describe("runStandalone over a fixture connectors directory", () => {
+  /** A connectors dir holding one connector that declares a write, with `serverTs` as its entry. */
+  function connectorsRoot(id: string, serverTs: string): string {
+    const root = mkdtempSync(join(tmpdir(), "launch-"));
+    mkdirSync(join(root, id, "src"), { recursive: true });
+    writeFileSync(
+      join(root, id, "nimbus.extension.json"),
+      JSON.stringify({ hitlRequired: ["write"] }),
+    );
+    writeFileSync(join(root, id, "src", "server.ts"), serverTs);
+    return root;
+  }
+
+  test("an unhardened write-declaring connector exits 3, says why, and is never imported", async () => {
+    // The ineligible-verdict branch end to end: every real connector is migrated, so a fixture is
+    // the only connector left that the launcher would refuse.
+    const root = connectorsRoot("unmigrated", 'reg("x_delete", handler);\n');
+    const stderr = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let imported = 0;
+    let code: number | undefined;
+    let written: unknown[][] = [];
+    try {
+      code = await runStandalone(
+        ["unmigrated"],
+        () => {
+          imported += 1;
+          return Promise.resolve({});
+        },
+        root,
+      );
+      written = [...stderr.mock.calls];
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(code).toBe(3);
+    expect(imported).toBe(0);
+    expect(written).toHaveLength(1);
+    expect(String(written[0]?.[0])).toStartWith(
+      "unmigrated declares write or delete tools in its manifest that have not been routed through the consent kit",
+    );
+  });
+
+  test("a hardened connector is imported from that directory and started", async () => {
+    const root = connectorsRoot("hardened", 'registerWriteTool("x_delete", cfg, "d", s, h);\n');
+    const entries: string[] = [];
+    let code: number | undefined;
+    try {
+      code = await runStandalone(
+        ["hardened"],
+        (entry) => {
+          entries.push(entry);
+          return Promise.resolve({});
+        },
+        root,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(code).toBe(0);
+    expect(entries).toEqual([join(root, "hardened", "src", "server.ts")]);
+  });
+});
+
+describe("runStandalone's own importer, in this process", () => {
+  // snowflake, a GUARDED connector, on purpose. Its import has no side effect and every
+  // startConnector() builds a fresh server, so this cannot collide with connector-boot.test.ts
+  // booting the same module; an unguarded entry point connects only on its FIRST import in a
+  // process. Standalone mode is the default the launcher relies on — it deliberately never sets
+  // it — so the mode is only cleared here, never set.
+  async function launched(elicitation: boolean): Promise<string[]> {
+    resetConnectorModeForTests();
+    try {
+      let code: number | undefined;
+      const stdio = await withEnv({ NIMBUS_MCP_SNOWFLAKE_WRITE_SCOPE: "object:db.s.t" }, () =>
+        bootOverStubbedStdio(async () => {
+          code = await runStandalone(["snowflake"]);
+        }),
+      );
+      expect(code).toBe(0);
+      const client = await connectOverStubbedStdio(stdio, elicitation ? { elicitation: {} } : {});
+      try {
+        expect(client.getServerVersion()?.name).toBe("nimbus-snowflake");
+        return (await client.listTools()).tools
+          .map((t) => t.name)
+          .sort((a, b) => a.localeCompare(b));
+      } finally {
+        await client.close();
+      }
+    } finally {
+      resetConnectorModeForTests();
+    }
+  }
+
+  test("starts the real entry point, and offers its writes only to a client that can prompt", async () => {
+    const reads = ["snowflake_get", "snowflake_list", "snowflake_search"];
+    expect(await launched(false)).toEqual(reads);
+    expect(await launched(true)).toEqual(["snowflake_comment_set", ...reads, "snowflake_tag_set"]);
   });
 });
 

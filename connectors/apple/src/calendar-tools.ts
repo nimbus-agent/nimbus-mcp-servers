@@ -1,4 +1,8 @@
-import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import {
+  type ConsentServer,
+  createWriteToolRegistrar,
+  type WriteToolRegistrar,
+} from "../../../shared/consent-kit.ts";
 /**
  * Apple Calendar tool handlers (read + write) over an injected CalDavClient.
  *
@@ -76,6 +80,22 @@ interface ViewEvent {
 
 const DEFAULT_MAX_INSTANCES = 200;
 
+/**
+ * The apple connector's ONE write-scope configuration, for its mail and calendar writes alike.
+ *
+ * Both read NIMBUS_MCP_APPLE_WRITE_SCOPE, and the consent kit refuses at startup a scope term
+ * whose kind its registrar did not declare. They used to be built by two registrars declaring one
+ * kind each, so every non-empty scope was fatal: a `recipient:` term crashed the calendar
+ * registrar and a `calendar:` term the mail one, leaving standalone apple unable to enable any
+ * write at all. One registrar declaring both kinds also gives the connector one write budget,
+ * where two had silently doubled it.
+ */
+export const APPLE_WRITE_SCOPE = {
+  connector: "apple",
+  scopeEnv: "NIMBUS_MCP_APPLE_WRITE_SCOPE",
+  scopeKinds: ["recipient", "calendar"],
+} as const;
+
 // ---------------------------------------------------------------------------
 // registerAppleCalendarTools
 // ---------------------------------------------------------------------------
@@ -86,7 +106,9 @@ const DEFAULT_MAX_INSTANCES = 200;
  * @param server  - The MCP server instance.
  * @param options - Injected dependencies: the CalDAV client, a `now` factory
  *                  (returns the current UTC timestamp in iCalendar DTSTAMP
- *                  format, e.g. "20260601T090000Z"), and optional config.
+ *                  format, e.g. "20260601T090000Z"), optional config, and the
+ *                  write registrar to share with the connector's mail writes
+ *                  (built from {@link APPLE_WRITE_SCOPE} when omitted).
  */
 export function registerAppleCalendarTools(
   // Widened: the consent kit needs the real server surface, not just the `.tool` shim.
@@ -95,6 +117,7 @@ export function registerAppleCalendarTools(
     calendar: CalDavClient;
     now: () => string;
     config?: CalendarToolConfig | undefined;
+    registerWriteTool?: WriteToolRegistrar | undefined;
   },
 ): void {
   const { calendar, now, config } = options;
@@ -132,7 +155,7 @@ export function registerAppleCalendarTools(
       const items: ViewEvent[] = [];
 
       for (const cal of allCals) {
-        const rows = await calendar.listEvents(cal, window);
+        const rows = await calendar.listEvents(cal, window); // NOSONAR S9382: calendars are queried in order until maxInstances is reached — each clamp depends on how many events the earlier calendars returned, and a calendar past the cap is never queried at all.
         const clamped = clampInstances(rows, maxInstances - items.length);
 
         for (const { href, event } of clamped) {
@@ -166,11 +189,8 @@ export function registerAppleCalendarTools(
   // apple_calendar_event_create
   // -------------------------------------------------------------------------
 
-  const registerWriteTool = createWriteToolRegistrar(server, {
-    connector: "apple",
-    scopeEnv: "NIMBUS_MCP_APPLE_WRITE_SCOPE",
-    scopeKinds: ["calendar"],
-  });
+  const registerWriteTool =
+    options.registerWriteTool ?? createWriteToolRegistrar(server, APPLE_WRITE_SCOPE);
 
   registerWriteTool(
     "apple_calendar_event_create",

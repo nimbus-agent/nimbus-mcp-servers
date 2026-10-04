@@ -1,21 +1,12 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterDatabricksJobs } from "./search-filter.ts";
 
-function apiBase(): string {
-  const v = process.env["DATABRICKS_HOST"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("DATABRICKS_HOST is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
 const dbGet = createJsonGetter({
-  base: apiBase,
+  base: () => requiredBaseUrl("DATABRICKS_HOST"),
   label: "Databricks",
   headers: envAuthHeaders({ env: "DATABRICKS_TOKEN" }),
 });

@@ -17,6 +17,7 @@
  */
 
 import type { JmapEmailView } from "@nimbus-dev/sdk";
+import type { OutgoingMail } from "../../../shared/imap-tool-kit.ts";
 
 export {
   asRecord,
@@ -45,17 +46,14 @@ export {
   viewEmail,
 } from "@nimbus-dev/sdk";
 
-const DEFAULT_LIST_LIMIT = 50;
-const MAX_LIST_LIMIT = 200;
+/**
+ * The list/search limit clamp (default 50, ceiling 200) is the one every mail connector
+ * applies; the tools' own schemas cap `limit` at the same 200.
+ */
+export { clampLimit } from "../../../shared/imap-mail-core.ts";
 
-/** Outgoing message for the SMTP/JMAP submission send tool. */
-export interface SendMailInput {
-  readonly to: string;
-  readonly subject: string;
-  readonly body: string;
-  readonly cc?: string;
-  readonly bcc?: string;
-}
+/** Outgoing message for the JMAP submission send tool — the shared mail-send shape. */
+export type SendMailInput = OutgoingMail;
 
 export interface SendMailResult {
   readonly emailId: string | null;
@@ -72,15 +70,4 @@ export interface JmapClient {
   get(id: string): Promise<JmapEmailView | null>;
   search(query: string, limit: number): Promise<JmapEmailView[]>;
   send(input: SendMailInput): Promise<SendMailResult>;
-}
-
-export function clampLimit(limit: number | undefined, fallback = DEFAULT_LIST_LIMIT): number {
-  if (limit === undefined || !Number.isFinite(limit)) {
-    return fallback;
-  }
-  const n = Math.trunc(limit);
-  if (n < 1) {
-    return 1;
-  }
-  return Math.min(n, MAX_LIST_LIMIT);
 }

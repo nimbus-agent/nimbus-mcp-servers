@@ -1,20 +1,15 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterPowerBiReports } from "./search-filter.ts";
-
-function requireEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error(`${name} is not set`);
-  }
-  return v;
-}
 
 async function fetchAccessToken(
   tenantId: string,
@@ -39,11 +34,11 @@ async function fetchAccessToken(
   if (!res.ok) {
     throw new Error(`Power BI token error ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = JSON.parse(text) as unknown;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  const root = asRecord(JSON.parse(text) as unknown);
+  if (root === undefined) {
     throw new Error("Power BI token response: unexpected shape");
   }
-  const token = (parsed as Record<string, unknown>)["access_token"];
+  const token = root["access_token"];
   if (typeof token !== "string" || token === "") {
     throw new Error("Power BI token response: missing access_token");
   }
@@ -55,16 +50,10 @@ const POWERBI_API_BASE = "https://api.powerbi.com";
 /** Mint an AAD access token from the connector's client-credentials env. */
 async function accessToken(): Promise<string> {
   return fetchAccessToken(
-    requireEnv("POWERBI_TENANT_ID"),
-    requireEnv("POWERBI_CLIENT_ID"),
-    requireEnv("POWERBI_CLIENT_SECRET"),
+    requiredEnv("POWERBI_TENANT_ID"),
+    requiredEnv("POWERBI_CLIENT_ID"),
+    requiredEnv("POWERBI_CLIENT_SECRET"),
   );
-}
-
-function asRec(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 async function listReports(accessToken: string): Promise<unknown[]> {
@@ -75,7 +64,7 @@ async function listReports(accessToken: string): Promise<unknown[]> {
   if (!res.ok) {
     throw new Error(`Power BI reports error ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const value = asRec(JSON.parse(text) as unknown)?.["value"];
+  const value = asRecord(JSON.parse(text) as unknown)?.["value"];
   return Array.isArray(value) ? value : [];
 }
 
@@ -86,11 +75,11 @@ async function fetchDatasetTables(accessToken: string, datasetId: string): Promi
     { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } },
   );
   if (!res.ok) return [];
-  const value = asRec(JSON.parse(await res.text()) as unknown)?.["value"];
+  const value = asRecord(JSON.parse(await res.text()) as unknown)?.["value"];
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
   for (const item of value) {
-    const name = asRec(item)?.["name"];
+    const name = asRecord(item)?.["name"];
     if (typeof name === "string" && name !== "") out.push(name);
   }
   return out;
@@ -98,7 +87,7 @@ async function fetchDatasetTables(accessToken: string, datasetId: string): Promi
 
 /** Attach each report's dataset-table refs in-session, so the gateway never makes a second credentialed call. */
 async function expandReport(accessToken: string, report: unknown): Promise<unknown> {
-  const r = asRec(report);
+  const r = asRecord(report);
   if (r === undefined) return report;
   const datasetId = r["datasetId"];
   const datasetTables =
@@ -106,6 +95,27 @@ async function expandReport(accessToken: string, report: unknown): Promise<unkno
       ? await fetchDatasetTables(accessToken, datasetId)
       : [];
   return { ...r, datasetTables };
+}
+
+/**
+ * Queue a refresh by POSTing `{ notifyOption: "NoNotification" }` to a `…/refreshes` URL. Power BI
+ * answers 202 and refreshes asynchronously; a failure throws `Power BI <what> refresh <status>`.
+ */
+async function queueRefresh(
+  accessToken: string,
+  url: string,
+  what: "dataset" | "dataflow",
+): Promise<void> {
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ notifyOption: "NoNotification" }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Power BI ${what} refresh ${String(res.status)}: ${(await res.text()).slice(0, 400)}`,
+    );
+  }
 }
 
 export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): void {
@@ -120,19 +130,13 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
   reg(
     "powerbi_list",
     "List Power BI reports (`GET /v1.0/myorg/reports`), each expanded with its dataset-table refs for lineage. The reports endpoint returns the full org list in one response and has no reliable server paging, so this is a single fetch returning ALL reports with `nextCursor: null` (`cursor`/`limit` are accepted for `_list` API symmetry but never truncate).",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (_p) => {
-      const tenantId = requireEnv("POWERBI_TENANT_ID");
-      const clientId = requireEnv("POWERBI_CLIENT_ID");
-      const clientSecret = requireEnv("POWERBI_CLIENT_SECRET");
-      const accessToken = await fetchAccessToken(tenantId, clientId, clientSecret);
+      const token = await accessToken();
       // Return EVERY report: slicing to `limit` would silently drop reports (nextCursor is null, so
       // the gateway drain stops) and lose them from the index for orgs with many reports.
-      const reports = await listReports(accessToken);
-      const items = await Promise.all(reports.map((r) => expandReport(accessToken, r)));
+      const reports = await listReports(token);
+      const items = await Promise.all(reports.map((r) => expandReport(token, r)));
       return jsonResult({ items, nextCursor: null });
     },
   );
@@ -144,15 +148,8 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
       id: z.string().min(1),
     }),
     async (p) => {
-      const tenantId = requireEnv("POWERBI_TENANT_ID");
-      const clientId = requireEnv("POWERBI_CLIENT_ID");
-      const clientSecret = requireEnv("POWERBI_CLIENT_SECRET");
-      const accessToken = await fetchAccessToken(tenantId, clientId, clientSecret);
-      const reports = await listReports(accessToken);
-      const found = reports.find((r) => {
-        if (r === null || typeof r !== "object" || Array.isArray(r)) return false;
-        return (r as Record<string, unknown>)["id"] === p.id;
-      });
+      const reports = await listReports(await accessToken());
+      const found = reports.find((r) => asRecord(r)?.["id"] === p.id);
       if (found === undefined) {
         throw new Error(`Power BI report not found: ${p.id}`);
       }
@@ -165,11 +162,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
     "Substring search across Power BI reports. Matches the query (case-insensitive) against report name and description. Returns a `{ matches: [...] }` envelope.",
     searchToolInputSchema(200),
     async (p) => {
-      const tenantId = requireEnv("POWERBI_TENANT_ID");
-      const clientId = requireEnv("POWERBI_CLIENT_ID");
-      const clientSecret = requireEnv("POWERBI_CLIENT_SECRET");
-      const accessToken = await fetchAccessToken(tenantId, clientId, clientSecret);
-      const reports = await listReports(accessToken);
+      const reports = await listReports(await accessToken());
       const matches = filterPowerBiReports(reports, { query: p.query, limit: p.limit });
       return jsonResult({ matches });
     },
@@ -195,16 +188,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
         group === undefined
           ? `${POWERBI_API_BASE}/v1.0/myorg/datasets/${encodeURIComponent(p.datasetId)}/refreshes`
           : `${POWERBI_API_BASE}/v1.0/myorg/groups/${encodeURIComponent(group)}/datasets/${encodeURIComponent(p.datasetId)}/refreshes`;
-      const res = await fetchWithTimeout(datasetUrl, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ notifyOption: "NoNotification" }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          `Power BI dataset refresh ${String(res.status)}: ${(await res.text()).slice(0, 400)}`,
-        );
-      }
+      await queueRefresh(token, datasetUrl, "dataset");
       return jsonResult({
         status: "queued",
         ...(group === undefined ? {} : { groupId: group }),
@@ -225,16 +209,7 @@ export function registerPowerBiTools(reg: ZodToolRegistrar, server: unknown): vo
     async (p) => {
       const token = await accessToken();
       const url = `${POWERBI_API_BASE}/v1.0/myorg/groups/${encodeURIComponent(p.groupId)}/dataflows/${encodeURIComponent(p.dataflowId)}/refreshes`;
-      const res = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ notifyOption: "NoNotification" }),
-      });
-      if (!res.ok) {
-        throw new Error(
-          `Power BI dataflow refresh ${String(res.status)}: ${(await res.text()).slice(0, 400)}`,
-        );
-      }
+      await queueRefresh(token, url, "dataflow");
       return jsonResult({ status: "queued", groupId: p.groupId, dataflowId: p.dataflowId });
     },
   );

@@ -1,3 +1,4 @@
+import { fetchJsonText } from "./fetch-json-text.ts";
 import { encodeBasicAuthHeader } from "./mcp-tool-kit.ts";
 import { stripTrailingSlashes } from "./strip-trailing-slashes.ts";
 
@@ -23,20 +24,9 @@ export async function fetchAtlassianBasicAuthJsonText(
   token: string,
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; text: string }> {
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    Authorization: encodeBasicAuthHeader(email, token),
-  };
-  if (init?.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      ...headers,
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, text };
+  return fetchJsonText(
+    url,
+    { Accept: "application/json", Authorization: encodeBasicAuthHeader(email, token) },
+    init,
+  );
 }

@@ -10,6 +10,7 @@ import {
   putOptionalNonEmptyString,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 
 type SlackApiRecord = Record<string, unknown>;
 
@@ -33,10 +34,7 @@ async function slackApi(
   } catch {
     return { ok: false, json: {}, text };
   }
-  const json =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as SlackApiRecord)
-      : {};
+  const json: SlackApiRecord = asRecord(parsed) ?? {};
   const okField = json["ok"];
   return { ok: okField === true && res.ok, json, text };
 }
@@ -122,7 +120,9 @@ export function registerSlackTools(
   const registerWriteTool = createWriteToolRegistrar(server, {
     connector: "slack",
     scopeEnv: "NIMBUS_MCP_SLACK_WRITE_SCOPE",
-    scopeKinds: ["channel"],
+    // `user` scopes a direct message by the recipient's user id, which is all a DM has before
+    // `conversations.open` creates its channel.
+    scopeKinds: ["channel", "user"],
   });
 
   const slackChannelListSchema = z.object({
@@ -287,9 +287,16 @@ export function registerSlackTools(
     text: z.string().min(1),
   });
 
-  reg(
+  // A WRITE: it sends a message. It was registered as a read, which in standalone mode offered it
+  // to every client with no consent prompt, scope check, budget or audit record.
+  registerWriteTool(
     "slack_message_post_dm",
-    "Open or find a DM with user id(s) and send a message (requires HITL slack.message.post).",
+    {
+      mutates: "slack.message.post",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "user", value: p.user_ids }),
+    },
+    "Open or find a DM with user id(s) and send a message.",
     slackMessagePostDmSchema,
     async (parsed) => {
       const token = requireProcessEnv("SLACK_USER_ACCESS_TOKEN");
@@ -300,11 +307,7 @@ export function registerSlackTools(
       if (!open.ok) {
         throw new Error(`Slack conversations.open: ${open.text.slice(0, 400)}`);
       }
-      const ch = open.json["channel"];
-      const chRec =
-        ch !== null && typeof ch === "object" && !Array.isArray(ch)
-          ? (ch as SlackApiRecord)
-          : undefined;
+      const chRec = asRecord(open.json["channel"]);
       const channelId = chRec !== undefined && typeof chRec["id"] === "string" ? chRec["id"] : "";
       if (channelId === "") {
         throw new Error("Slack conversations.open: missing channel id");

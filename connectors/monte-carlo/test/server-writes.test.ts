@@ -137,3 +137,83 @@ describe("monte carlo write tools", () => {
     ).rejects.toThrow("403");
   });
 });
+
+describe("monte carlo write tools in STANDALONE mode", () => {
+  // Both write tools come from one registration helper. What tells them apart is the action type
+  // each asks the human to approve and the feedback value it sends, and gateway mode never shows
+  // the first, so this pins it — and the incident scope both declare — on the guarded path.
+  const origFetch = globalThis.fetch;
+  let feedbackSent: unknown[] = [];
+
+  beforeEach(() => {
+    // The file-level hook has just set gateway mode, and the setter refuses a conflicting change.
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    process.env["NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE"] = "incident:i1";
+    process.env["MONTECARLO_API_ID"] = "id";
+    process.env["MONTECARLO_API_TOKEN"] = "token";
+    feedbackSent = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+      feedbackSent.push(body.variables["feedback"]);
+      return new Response(JSON.stringify({ data: { setIncidentFeedback: {} } }), { status: 200 });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = origFetch;
+    delete process.env["NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE"];
+    delete process.env["MONTECARLO_API_ID"];
+    delete process.env["MONTECARLO_API_TOKEN"];
+  });
+
+  /** A client that can prompt, and approves every prompt, recording the first line of each. */
+  function approvingStandaloneTools(prompts: string[]): Map<string, Handler> {
+    const tools = new Map<string, Handler>();
+    let ready = false;
+    const srv = {
+      server: {
+        getClientCapabilities: () => (ready ? { elicitation: {} } : undefined),
+        oninitialized: undefined as (() => void) | undefined,
+        elicitInput: (req: { message: string }) => {
+          prompts.push(req.message.split("\n")[0] ?? "");
+          return Promise.resolve({ action: "accept", content: { confirm: true } });
+        },
+      },
+      registerTool: (name: string, _cfg: unknown, handler: Handler) => {
+        tools.set(name, handler);
+        return { disable: () => undefined };
+      },
+      sendToolListChanged: () => undefined,
+      sendLoggingMessage: () => Promise.resolve(),
+    };
+    registerMonteCarloTools(() => undefined, srv);
+    ready = true;
+    srv.server.oninitialized?.();
+    return tools;
+  }
+
+  it("each tool asks approval for its own action type and sends its own feedback", async () => {
+    const prompts: string[] = [];
+    const tools = approvingStandaloneTools(prompts);
+    await tool(tools, "montecarlo_incident_acknowledge")({ incidentId: "i1" });
+    await tool(tools, "montecarlo_incident_resolve")({ incidentId: "i1" });
+    expect(prompts).toEqual([
+      "Nimbus is about to perform montecarlo.incident.acknowledge with:",
+      "Nimbus is about to perform montecarlo.incident.resolve with:",
+    ]);
+    expect(feedbackSent).toEqual(["ACKNOWLEDGED", "RESOLVED"]);
+  });
+
+  it("an incident outside the write scope is refused before any prompt or request", async () => {
+    const prompts: string[] = [];
+    const tools = approvingStandaloneTools(prompts);
+    const out = payload(await tool(tools, "montecarlo_incident_resolve")({ incidentId: "i9" }));
+    expect(out).toEqual({
+      ok: false,
+      error: "out of scope: incident:i9 is not in NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE",
+    });
+    expect(prompts).toEqual([]);
+    expect(feedbackSent).toEqual([]);
+  });
+});

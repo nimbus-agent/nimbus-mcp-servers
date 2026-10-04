@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
-import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { optionalEnv, requiredEnv } from "../../../shared/env-json-api.ts";
+import { postGraphql } from "../../../shared/graphql-json.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -12,13 +13,11 @@ const SEVERITIES = ["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"] as con
 const STATUSES = ["OPEN", "IN_PROGRESS", "RESOLVED", "REJECTED"] as const;
 
 function apiUrl(): string {
-  const v = process.env["WIZ_API_URL"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_API : v;
+  return optionalEnv("WIZ_API_URL", DEFAULT_API);
 }
 
 function authUrl(): string {
-  const v = process.env["WIZ_AUTH_URL"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_AUTH : v;
+  return optionalEnv("WIZ_AUTH_URL", DEFAULT_AUTH);
 }
 
 /** OAuth2 client-credentials against the Wiz auth endpoint. */
@@ -40,29 +39,20 @@ const getToken = createAccessTokenCache({
   },
 });
 
+/** Forget the exchanged token. Tests only: the cache otherwise outlives the test that filled it. */
+export function __resetWizTokenForTests(): void {
+  getToken.clear();
+}
+
 async function wizGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const token = await getToken();
-  const res = await fetch(apiUrl(), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({ query, variables }),
+  return postGraphql<T>({
+    url: apiUrl(),
+    label: "Wiz",
+    headers: { Authorization: `Bearer ${token}` },
+    query,
+    variables,
   });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Wiz ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  const parsed = JSON.parse(text) as { data?: T; errors?: unknown };
-  if (parsed.errors !== undefined) {
-    throw new Error(`Wiz GraphQL error: ${JSON.stringify(parsed.errors).slice(0, 400)}`);
-  }
-  if (parsed.data === undefined) {
-    throw new Error("Wiz GraphQL: response missing `data` field");
-  }
-  return parsed.data;
 }
 
 const ISSUES_QUERY = `

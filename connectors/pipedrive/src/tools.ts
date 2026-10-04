@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -6,17 +7,10 @@ import { filterPipedriveDeals } from "./search-filter.ts";
 
 const BASE = "https://api.pipedrive.com";
 
-function apiToken(): string {
-  const t = process.env["PIPEDRIVE_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("PIPEDRIVE_TOKEN is not set");
-  }
-  return t;
-}
-
+/** Pipedrive takes its token in the query string, not a header. */
 function withToken(path: string): string {
   const sep = path.includes("?") ? "&" : "?";
-  return `${BASE}${path}${sep}api_token=${encodeURIComponent(apiToken())}`;
+  return `${BASE}${path}${sep}api_token=${encodeURIComponent(requiredEnv("PIPEDRIVE_TOKEN"))}`;
 }
 
 async function pipedriveGet(path: string, resourceLabel: string): Promise<unknown> {

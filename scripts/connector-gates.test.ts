@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,128 @@ describe("report()", () => {
 
   test("connector-entrypoints: a violation exits 1", () => {
     expect(reportEntrypoints([{ connector: "acme", reason: "guards without exporting" }])).toBe(1);
+  });
+
+  /** Run `fn` with the console captured; return what it printed to each stream. */
+  function printed(fn: () => number): { code: number; errors: unknown[][]; logs: unknown[][] } {
+    const error = spyOn(console, "error").mockImplementation(() => undefined);
+    const log = spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const code = fn();
+      return { code, errors: [...error.mock.calls], logs: [...log.mock.calls] };
+    } finally {
+      error.mockRestore();
+      log.mockRestore();
+    }
+  }
+
+  test("connector-deps: annotates each violation against the manifest that declares it", () => {
+    expect(
+      printed(() =>
+        reportDeps([
+          { connector: "<root>", dependency: "node-gyp-build" },
+          { connector: "acme", dependency: "better-sqlite3" },
+        ]),
+      ),
+    ).toEqual({
+      code: 1,
+      errors: [
+        [
+          '::error file=package.json::dependency "node-gyp-build" is not in ALLOWED_CONNECTOR_DEPS — connectors are bundled into the gateway binary, so a native dependency breaks it silently',
+        ],
+        [
+          '::error file=connectors/acme/package.json::dependency "better-sqlite3" is not in ALLOWED_CONNECTOR_DEPS — connectors are bundled into the gateway binary, so a native dependency breaks it silently',
+        ],
+      ],
+      logs: [["connector deps: 2 violation(s)"]],
+    });
+    expect(printed(() => reportDeps([]))).toEqual({
+      code: 0,
+      errors: [],
+      logs: [["connector deps: ok"]],
+    });
+  });
+
+  test("connector-entrypoints: annotates the offending server.ts with the reason", () => {
+    expect(
+      printed(() => reportEntrypoints([{ connector: "acme", reason: "guards without exporting" }])),
+    ).toEqual({
+      code: 1,
+      errors: [["::error file=connectors/acme/src/server.ts::guards without exporting"]],
+      logs: [["connector entrypoints: 1 violation(s)"]],
+    });
+    expect(printed(() => reportEntrypoints([]))).toEqual({
+      code: 0,
+      errors: [],
+      logs: [["connector entrypoints: ok"]],
+    });
+  });
+});
+
+describe("the gates' edge cases", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function tracked(opts: Parameters<typeof fixture>[0]): ReturnType<typeof fixture> {
+    const f = fixture(opts);
+    roots.push(f.root);
+    return f;
+  }
+
+  test("connector-deps: an unreadable manifest is an observation failure, not a violation", () => {
+    const f = tracked({});
+    const manifest = join(f.connectors, "acme", "package.json");
+    writeFileSync(manifest, "{ not json");
+    expect(() => checkConnectorDeps(f.connectors, f.root)).toThrow(
+      `check-connector-deps: cannot read ${manifest}: `,
+    );
+  });
+
+  test("connector-deps: checks optional and peer dependencies, exempts @types/*", () => {
+    const f = tracked({});
+    writeFileSync(
+      join(f.connectors, "acme", "package.json"),
+      JSON.stringify({
+        dependencies: { "@types/nodemailer": "^8.0.0", zod: "^4.0.0" },
+        optionalDependencies: { "cpu-features": "^0.0.10" },
+        peerDependencies: { "better-sqlite3": "^11.0.0" },
+      }),
+    );
+    expect(checkConnectorDeps(f.connectors, f.root)).toEqual([
+      { connector: "acme", dependency: "cpu-features" },
+      { connector: "acme", dependency: "better-sqlite3" },
+    ]);
+  });
+
+  test("connector-deps: skips what is not a manifest or not a dependency map", () => {
+    const f = tracked({});
+    // A manifest that is not an object, one whose dependency field is not a map, a connector
+    // directory with no manifest at all, and a stray file beside the connector directories.
+    writeFileSync(join(f.connectors, "acme", "package.json"), "null");
+    mkdirSync(join(f.connectors, "beta"));
+    writeFileSync(
+      join(f.connectors, "beta", "package.json"),
+      JSON.stringify({ dependencies: "better-sqlite3" }),
+    );
+    mkdirSync(join(f.connectors, "gamma"));
+    writeFileSync(join(f.connectors, "README.md"), "# connectors\n");
+    expect(checkConnectorDeps(f.connectors, f.root)).toEqual([]);
+  });
+
+  test("connector-entrypoints: skips a stray file and a directory with no server.ts", () => {
+    const f = tracked({ server: "if (import.meta.main) { run(); }\n" });
+    mkdirSync(join(f.connectors, "docs-only", "src"), { recursive: true });
+    writeFileSync(join(f.connectors, "docs-only", "src", "index.ts"), "export {};\n");
+    writeFileSync(join(f.connectors, "notes.md"), "if (import.meta.main) {}\n");
+    expect(checkConnectorEntrypoints(f.connectors).map((v) => v.connector)).toEqual(["acme"]);
+  });
+
+  test("connector-entrypoints: a guard named only in a comment is not a guard", () => {
+    const f = tracked({ server: "// started with if (import.meta.main) elsewhere\nrun();\n" });
+    expect(checkConnectorEntrypoints(f.connectors)).toEqual([]);
   });
 });
 

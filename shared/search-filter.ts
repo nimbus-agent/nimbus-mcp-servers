@@ -43,26 +43,48 @@ export function tagText(row: Record<string, unknown>): string {
 }
 
 /**
- * Extract tag names from an array of `{name: string}` tag objects (e.g. Airflow, DependencyTrack).
- * Returns "" when `tags` is absent, not an array, or contains no object entries with a string `name`.
+ * The non-empty string entries of the array at `row[key]`, space-joined; `""` when it is absent or
+ * not an array (Airflow `owners`, Prefect `tags`). Unlike {@link tagText}, an empty-string entry is
+ * skipped rather than joined — which shows in the haystack's spacing, so it is a separate rule.
  */
-export function tagNamesFromObjects(row: Record<string, unknown>): string {
-  const tags = row["tags"];
-  if (!Array.isArray(tags)) {
+export function nonEmptyStringsText(row: Record<string, unknown>, key: string): string {
+  const list = row[key];
+  if (!Array.isArray(list)) {
+    return "";
+  }
+  return list.filter((v): v is string => typeof v === "string" && v !== "").join(" ");
+}
+
+/**
+ * The non-empty string `name` of each objectish entry of the array at `row[key]`, space-joined
+ * (Wiz `projects`). Returns "" when `row[key]` is absent, not an array, or holds no object entry
+ * with a non-empty string `name`.
+ */
+export function objectNamesText(row: Record<string, unknown>, key: string): string {
+  const list = row[key];
+  if (!Array.isArray(list)) {
     return "";
   }
   const names: string[] = [];
-  for (const t of tags) {
-    const tag = asObjectish(t);
-    if (tag === undefined) {
+  for (const entry of list) {
+    const obj = asObjectish(entry);
+    if (obj === undefined) {
       continue;
     }
-    const name = tag["name"];
+    const name = obj["name"];
     if (typeof name === "string" && name !== "") {
       names.push(name);
     }
   }
   return names.join(" ");
+}
+
+/**
+ * Extract tag names from an array of `{name: string}` tag objects (e.g. Airflow, DependencyTrack).
+ * Returns "" when `tags` is absent, not an array, or contains no object entries with a string `name`.
+ */
+export function tagNamesFromObjects(row: Record<string, unknown>): string {
+  return objectNamesText(row, "tags");
 }
 
 export function filterByQuery<T>(items: readonly T[], options: FilterByQueryOptions<T>): T[] {
@@ -88,6 +110,25 @@ export function filterByQuery<T>(items: readonly T[], options: FilterByQueryOpti
 
 export type FieldExtractor = (item: unknown) => readonly (string | null | undefined)[] | null;
 
+/** The one body behind {@link fieldsFromKeys} and {@link recordFieldsFromKeys}. */
+function keyedFields(
+  toRow: (item: unknown) => Record<string, unknown> | undefined,
+  keys: readonly string[],
+  tags: boolean,
+): FieldExtractor {
+  return (item: unknown) => {
+    const row = toRow(item);
+    if (row === undefined) {
+      return null;
+    }
+    const parts = keys.map((key) => stringField(row, key));
+    if (tags) {
+      parts.push(tagText(row));
+    }
+    return parts;
+  };
+}
+
 /**
  * Build a {@link FieldExtractor} that reads a fixed list of string keys off each
  * objectish row, optionally appending the standard `tags` text. Collapses the
@@ -97,17 +138,16 @@ export function fieldsFromKeys(
   keys: readonly string[],
   opts?: { readonly tags?: boolean },
 ): FieldExtractor {
-  return (item: unknown) => {
-    const row = asObjectish(item);
-    if (row === undefined) {
-      return null;
-    }
-    const parts = keys.map((key) => stringField(row, key));
-    if (opts?.tags === true) {
-      parts.push(tagText(row));
-    }
-    return parts;
-  };
+  return keyedFields(asObjectish, keys, opts?.tags === true);
+}
+
+/**
+ * {@link fieldsFromKeys} for rows that must be plain objects: an ARRAY row is skipped
+ * ({@link asRecord}) instead of being read as an object that has none of the keys — which a
+ * query made only of spaces would still match. The BI connectors' filters use this rule.
+ */
+export function recordFieldsFromKeys(keys: readonly string[]): FieldExtractor {
+  return keyedFields(asRecord, keys, false);
 }
 
 /**

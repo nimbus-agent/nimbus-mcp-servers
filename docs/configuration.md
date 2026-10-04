@@ -6,7 +6,9 @@ connector standalone; see [`NOTICE`](../NOTICE).
 
 ## Client config
 
-The shape is the same for Claude Code, Cursor and Claude Desktop.
+The shape is the same for Claude Code, Cursor and Claude Desktop. `npx` needs
+[Bun](https://bun.sh) 1.2 or newer on the `PATH` the client launches it with: the package ships
+TypeScript, and its `nimbus-connector` bin runs under Bun.
 
 ```json
 {
@@ -32,10 +34,10 @@ without `elicitation` it is harmless and unused, because the write tools never r
 
 | Variable | Meaning |
 | --- | --- |
-| `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. **Unset authorises nothing** — it never means unrestricted. |
+| `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. **Unset authorises nothing** — it never means unrestricted. A term matches one target exactly: `repo:acme/api` does not cover `acme/api-secrets`. The kinds a connector accepts are named in the warning it prints when the variable is unset, and a term of any other kind stops it at startup with the same list. |
 | `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Defaults to `10`. Caps a runaway agent loop. |
 | `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables the durable log; the client-visible log messages are always sent. |
-| _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. See `connectors/<id>/README.md`. |
+| _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
 
 ## Two behaviours that look like bugs and are not
 

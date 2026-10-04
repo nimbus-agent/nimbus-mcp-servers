@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, optionalEnv } from "../../../shared/env-json-api.ts";
 import { matchesResult } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -7,13 +7,9 @@ import { filterLaunchDarklyFlags } from "./search-filter.ts";
 
 const DEFAULT_BASE = "https://app.launchdarkly.com";
 
-function baseUrl(): string {
-  const v = process.env["LAUNCHDARKLY_BASE_URL"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_BASE : v;
-}
-
 const ldGet = createJsonGetter({
-  base: () => `${baseUrl()}/api/v2`,
+  // `optionalEnv`, not `optionalBaseUrl`: a trailing slash on the override is left as given.
+  base: () => `${optionalEnv("LAUNCHDARKLY_BASE_URL", DEFAULT_BASE)}/api/v2`,
   label: "LaunchDarkly",
   headers: envAuthHeaders({ env: "LAUNCHDARKLY_TOKEN", scheme: "" }),
 });

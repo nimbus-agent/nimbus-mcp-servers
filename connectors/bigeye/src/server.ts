@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
+import { envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
@@ -8,21 +10,13 @@ import {
 } from "../../../shared/run-read-only-mcp-connector.ts";
 import { filterBigeyeIssues } from "./search-filter.ts";
 
+/** Only ONE trailing slash is dropped here — not `requiredBaseUrl`'s strip-them-all. */
 function apiBase(): string {
-  const v = process.env["BIGEYE_BASE_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("BIGEYE_BASE_URL is not set");
-  }
+  const v = requiredEnv("BIGEYE_BASE_URL");
   return v.endsWith("/") ? v.slice(0, -1) : v;
 }
 
-function authHeader(): Record<string, string> {
-  const k = process.env["BIGEYE_API_KEY"]?.trim();
-  if (k === undefined || k === "") {
-    throw new Error("BIGEYE_API_KEY is not set");
-  }
-  return { Authorization: `Bearer ${k}`, Accept: "application/json" };
-}
+const authHeader = envAuthHeaders({ env: "BIGEYE_API_KEY" });
 
 /** One page of issues (`GET /api/v1/issues?limit&offset`), tolerant of array / `{issues}` / `{data}`. */
 async function fetchIssues(limit: number, offset: number): Promise<unknown[]> {
@@ -80,10 +74,7 @@ export function registerBigeyeTools(reg: ZodToolRegistrar, server: unknown): voi
   reg(
     "bigeye_list",
     "List Bigeye data-quality issues (`GET /api/v1/issues`). Paginated: `cursor` (offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const limit = p.limit ?? 200;
       // null / undefined / "" / non-numeric / negative all clamp to offset 0; fractional truncates.
@@ -121,34 +112,43 @@ export function registerBigeyeTools(reg: ZodToolRegistrar, server: unknown): voi
     },
   );
 
-  registerWriteTool(
-    "bigeye_issue_acknowledge",
-    {
-      mutates: "bigeye.issue.acknowledge",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
-    },
-    "Acknowledge a Bigeye issue.",
-    z.object({ issueId: z.string().min(1) }),
-    async (p) => {
-      await updateIssueStatus(p.issueId, "ISSUE_STATUS_ACKNOWLEDGED");
-      return jsonResult({ status: "ok", issueId: p.issueId });
-    },
-  );
+  /**
+   * Acknowledge and resolve are ONE mutation, `updateIssueStatus`, with a different status, so
+   * they share everything except their name, action type, description and that status.
+   */
+  function registerStatusTool(
+    name: string,
+    mutates: string,
+    description: string,
+    status: "ISSUE_STATUS_ACKNOWLEDGED" | "ISSUE_STATUS_CLOSED",
+  ): void {
+    registerWriteTool(
+      name,
+      {
+        mutates,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
+      },
+      description,
+      z.object({ issueId: z.string().min(1) }),
+      async (p) => {
+        await updateIssueStatus(p.issueId, status);
+        return jsonResult({ status: "ok", issueId: p.issueId });
+      },
+    );
+  }
 
-  registerWriteTool(
+  registerStatusTool(
+    "bigeye_issue_acknowledge",
+    "bigeye.issue.acknowledge",
+    "Acknowledge a Bigeye issue.",
+    "ISSUE_STATUS_ACKNOWLEDGED",
+  );
+  registerStatusTool(
     "bigeye_issue_resolve",
-    {
-      mutates: "bigeye.issue.resolve",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
-    },
+    "bigeye.issue.resolve",
     "Resolve (close) a Bigeye issue.",
-    z.object({ issueId: z.string().min(1) }),
-    async (p) => {
-      await updateIssueStatus(p.issueId, "ISSUE_STATUS_CLOSED");
-      return jsonResult({ status: "ok", issueId: p.issueId });
-    },
+    "ISSUE_STATUS_CLOSED",
   );
 }
 

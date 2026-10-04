@@ -91,4 +91,11 @@ describe("filterStackOverflowQuestions", () => {
       filterStackOverflowQuestions(many, { query: "exponential backoff", limit: 3 }),
     ).toHaveLength(3);
   });
+
+  test("ignores tag and owner names that are not strings", () => {
+    const odd = question({ tags: [{ name: 6011 }, "queues"], owner: { id: 99, name: 51923 } });
+    expect(filterStackOverflowQuestions([odd], { query: "queues" })).toHaveLength(1);
+    expect(filterStackOverflowQuestions([odd], { query: "6011" })).toHaveLength(0);
+    expect(filterStackOverflowQuestions([odd], { query: "51923" })).toHaveLength(0);
+  });
 });

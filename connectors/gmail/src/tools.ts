@@ -1,18 +1,17 @@
 import { z } from "zod";
+import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
-  type ConsentServer,
-  createWriteToolRegistrar,
-  type WriteToolConfig,
-} from "../../../shared/consent-kit.ts";
-import { headerLine } from "../../../shared/header-safe.ts";
+  emailToolSchemas,
+  mailSendConsent,
+  type OutgoingMail,
+  outgoingMail,
+} from "../../../shared/imap-tool-kit.ts";
+import { createRegisterSimpleTool, createZodToolRegistrar } from "../../../shared/mcp-tool-kit.ts";
 import {
-  createRegisterSimpleTool,
-  createZodToolRegistrar,
-  mcpJsonResultIfOk,
-  requireProcessEnv,
-  type ZodObjectSchema,
-} from "../../../shared/mcp-tool-kit.ts";
-import { makeRestFetcher, makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
+  makeRestFetcher,
+  makeRestToolRegistrar,
+  makeRestWriteToolRegistrar,
+} from "../../../shared/rest-tool-kit.ts";
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -24,13 +23,7 @@ function gmailFetch(
   return makeRestFetcher({ apiBase: GMAIL_BASE, token })(path, init);
 }
 
-function buildRfc822Message(params: {
-  to: string;
-  subject: string;
-  body: string;
-  cc?: string;
-  bcc?: string;
-}): string {
+function buildRfc822Message(params: OutgoingMail): string {
   const lines: string[] = [
     `To: ${params.to}`,
     ...(params.cc !== undefined && params.cc !== "" ? [`Cc: ${params.cc}`] : []),
@@ -47,12 +40,24 @@ function toRawBase64Url(rfc822: string): string {
   return Buffer.from(rfc822, "utf-8").toString("base64url");
 }
 
+/** The base64url RFC 822 message Gmail's `raw` fields take, for validated send arguments. */
+function rawMessage(args: Parameters<typeof outgoingMail>[0]): string {
+  return toRawBase64Url(buildRfc822Message(outgoingMail(args)));
+}
+
+/** A POST carrying `body` as JSON. */
+function jsonPost(body: unknown): RequestInit {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
+}
+
 export function registerGmailTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
 ): void {
   const reg = createZodToolRegistrar(createRegisterSimpleTool(server));
-
-  /** Standard Gmail tool: token → gmailFetch(buildPath[, buildInit]) → mcpJsonResultIfOk("Gmail API", …, 200). */
 
   /**
    * Every MUTATING gmail tool goes through here. Outside the gateway this adds the
@@ -66,31 +71,19 @@ export function registerGmailTools(
   });
 
   /**
-   * The write-tool equivalent of `registerGmailTool`: identical fetch and result handling, routed
-   * through the write registrar.
+   * Standard Gmail tool, read or write: token → gmailFetch(buildPath[, buildInit]) →
+   * mcpJsonResultIfOk("Gmail API", …, 200).
    */
-  function registerGmailWriteTool<T>(
-    name: string,
-    cfg: WriteToolConfig<T>,
-    description: string,
-    schema: ZodObjectSchema<T>,
-    buildPath: (p: T) => string,
-    buildInit?: (p: T) => RequestInit,
-  ): void {
-    registerWriteTool(name, cfg, description, schema, async (parsed) => {
-      const token = requireProcessEnv("GOOGLE_OAUTH_ACCESS_TOKEN");
-      const res = await gmailFetch(token, buildPath(parsed), buildInit?.(parsed));
-      return mcpJsonResultIfOk("Gmail API", res, 200);
-    });
-  }
-
-  const registerGmailTool = makeRestToolRegistrar({
-    registrar: reg,
+  const gmailRest = {
     tokenEnv: "GOOGLE_OAUTH_ACCESS_TOKEN",
     serviceLabel: "Gmail API",
     fetch: gmailFetch,
     snippetMax: 200,
-  });
+  } as const;
+
+  const registerGmailTool = makeRestToolRegistrar({ registrar: reg, ...gmailRest });
+  /** The write-tool equivalent of `registerGmailTool`, routed through the write registrar. */
+  const registerGmailWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...gmailRest });
 
   const gmailMessageListArgs = z.object({
     maxResults: z.number().int().min(1).max(100).optional(),
@@ -174,14 +167,6 @@ export function registerGmailTools(
     () => `${GMAIL_BASE}/labels`,
   );
 
-  const gmailDraftCreateArgs = z.object({
-    to: headerLine({ min: 1 }),
-    subject: headerLine({ min: 1, max: 998 }),
-    body: z.string().max(1_000_000),
-    cc: headerLine().optional(),
-    bcc: headerLine().optional(),
-  });
-
   registerGmailWriteTool(
     "gmail_draft_create",
     {
@@ -190,27 +175,9 @@ export function registerGmailTools(
       scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
     },
     "Create a Gmail draft. Requires Gateway HITL email.draft.create.",
-    gmailDraftCreateArgs,
+    emailToolSchemas.sendArgs,
     () => `${GMAIL_BASE}/drafts`,
-    (data) => {
-      const msgParams: { to: string; subject: string; body: string; cc?: string; bcc?: string } = {
-        to: data.to,
-        subject: data.subject,
-        body: data.body,
-      };
-      if (data.cc !== undefined && data.cc !== "") {
-        msgParams.cc = data.cc;
-      }
-      if (data.bcc !== undefined && data.bcc !== "") {
-        msgParams.bcc = data.bcc;
-      }
-      const raw = toRawBase64Url(buildRfc822Message(msgParams));
-      return {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: { raw } }),
-      };
-    },
+    (data) => jsonPost({ message: { raw: rawMessage(data) } }),
   );
 
   const gmailDraftSendArgs = z.object({
@@ -228,52 +195,15 @@ export function registerGmailTools(
     "Send an existing Gmail draft by id. Requires Gateway HITL email.draft.send.",
     gmailDraftSendArgs,
     () => `${GMAIL_BASE}/drafts/send`,
-    (data) => ({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: data.draftId }),
-    }),
+    (data) => jsonPost({ id: data.draftId }),
   );
-
-  const gmailMessageSendArgs = z.object({
-    to: headerLine({ min: 1 }),
-    subject: headerLine({ min: 1, max: 998 }),
-    body: z.string().max(1_000_000),
-    cc: headerLine().optional(),
-    bcc: headerLine().optional(),
-  });
 
   registerGmailWriteTool(
     "gmail_message_send",
-    {
-      mutates: "gmail.message.send",
-      recoverable: false,
-      // A sent mail cannot be recalled and nothing remains to query, so the recipient and subject
-      // ARE the pre-state.
-      capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
-      scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
-    },
+    mailSendConsent("gmail.message.send"),
     "Send a new Gmail message (not a draft). Requires Gateway HITL email.send.",
-    gmailMessageSendArgs,
+    emailToolSchemas.sendArgs,
     () => `${GMAIL_BASE}/messages/send`,
-    (data) => {
-      const sendParams: { to: string; subject: string; body: string; cc?: string; bcc?: string } = {
-        to: data.to,
-        subject: data.subject,
-        body: data.body,
-      };
-      if (data.cc !== undefined && data.cc !== "") {
-        sendParams.cc = data.cc;
-      }
-      if (data.bcc !== undefined && data.bcc !== "") {
-        sendParams.bcc = data.bcc;
-      }
-      const raw = toRawBase64Url(buildRfc822Message(sendParams));
-      return {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ raw }),
-      };
-    },
+    (data) => jsonPost({ raw: rawMessage(data) }),
   );
 }

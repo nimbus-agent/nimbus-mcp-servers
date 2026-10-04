@@ -35,7 +35,8 @@ was first extracted from the Nimbus monorepo, which put **107 entries** at the t
 
 Everything here publishes as a single npm package, `@nimbus-dev/connectors`. The alternative — a
 package per connector — was rejected because it means 94 releases per change to `shared/`, and it
-forces `shared/` to become a versioned dependency that 190 files currently import by relative path.
+forces `shared/` to become a versioned dependency that 212 shipped connector source files currently
+import by relative path.
 
 The per-connector `package.json` files are kept for their metadata but are **not published** and are
 not workspace members. Their `dependencies` are informational; the real dependency set is declared
@@ -61,16 +62,19 @@ carried a copy of the same imapflow client, and only one of the three closed the
 the mailbox lock failed.
 
 If a connector genuinely needs to register from `server.ts`, guard the bootstrap behind
-`if (import.meta.main)` and export the registrar. Ten connectors do this and are covered the same
-way.
+`if (import.meta.main)` and export the registrar plus `startConnector()`. The guard is false under
+an import, so the gateway's bundled registry and the launcher start such a connector by calling
+`startConnector()` — without it the import starts nothing and the process exits 0 in silence.
+Ten connectors do this and are covered the same way.
 
 Three layers sit under it:
 
 **`shared/` — the kits.** Tool registration (`mcp-tool-kit.ts`, `rest-tool-kit.ts`,
-`mcp-search-tool.ts`, `collection-tool-kit.ts`), transport helpers (`fetch-bearer-json.ts`,
-`env-json-api.ts`, `atlassian-json-fetch.ts`, `join-api-path.ts`, `run-cli-json.ts`,
-`cli-json-kit.ts`, `imapflow-adapter.ts`), and the search-filter primitives. A connector composes
-these rather than hand-rolling HTTP and tool plumbing.
+`mcp-search-tool.ts`, `cursor-list-tool.ts`, `collection-tool-kit.ts`), transport helpers
+(`fetch-bearer-json.ts`, `fetch-json-text.ts`, `env-json-api.ts`, `atlassian-json-fetch.ts`,
+`join-api-path.ts`, `run-cli-json.ts`, `cli-json-kit.ts`, `imapflow-adapter.ts`, `graphql-json.ts`,
+`github-rest.ts`), and the search-filter primitives. A connector composes these rather than
+hand-rolling HTTP and tool plumbing.
 
 Four of these exist because the hand-rolled versions had multiplied:
 
@@ -104,14 +108,18 @@ All run by CI on Ubuntu, macOS and Windows:
 | Command | What it establishes |
 | --- | --- |
 | `bun run lint` | Biome formatting and lint rules, including `noExplicitAny`. |
-| `bun run typecheck` | One `tsc` pass over all 94 connectors plus `shared/`, `standalone/` and `scripts/`. |
+| `bun run typecheck` | One `tsc` pass over all 94 connectors plus `shared/`, `standalone/` and `scripts/`. Test files (`*.test.ts`) are excluded, so no gate type-checks them. |
 | `bun run audit:connector-consent` | No connector declares a mutating tool without routing it through the consent kit, and nothing outside `shared/connector-mode.ts` names the mode setter. |
 | `bun run audit:connector-deps` | No connector pulls in a dependency the bundled gateway binary cannot carry. |
-| `bun run audit:connector-entrypoints` | Every connector directory has the entry point that defines it. |
+| `bun run audit:connector-entrypoints` | Every `server.ts` that guards its startup with `import.meta.main` exports `startConnector()`, so the bundled registry can start it. |
 | `bun run audit:tool-names` | Every `*_TOOL_NAMES` export matches what its connector actually registers. `bun run sync:tool-names` rewrites the stale ones. |
-| `bun test` | The suite, 2100+ tests. |
+| `bun test` | The suite, 3600+ tests. |
 
 `bun run check` runs them all in order.
+
+`bun run test:sandbox` is deliberately not among them. It runs the 79 per-connector
+`test/sandbox.test.ts` files, which open real connections to each connector's first declared
+network host, so it is an explicit opt-in and runs in no workflow.
 
 ### The connector contract
 
@@ -128,6 +136,11 @@ properties no per-connector test was checking:
 
 Arguments come from `scripts/tool-arg-fixture.ts`, which derives the smallest object each tool's own
 Zod schema accepts, so a schema change cannot silently leave a fixture stale.
+
+The entry points are covered the same way by `scripts/connector-boot.test.ts`, which boots every
+`server.ts` as the gateway does — in gateway mode, with only stdin and stdout swapped for in-memory
+streams — and asserts over MCP that it is named `nimbus-<id>` and serves exactly the tools its
+registrar registers.
 
 The consent audit is the structural one. It identifies a connector by asking whether the directory
 has `src/server.ts`, not by skipping known non-connector names — a blocklist had already produced a

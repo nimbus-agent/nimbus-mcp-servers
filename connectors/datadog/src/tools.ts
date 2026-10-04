@@ -1,15 +1,12 @@
 import { z } from "zod";
+import { createJsonGetter, optionalEnv } from "../../../shared/env-json-api.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 
-function siteHost(): string {
-  const s = process.env["DD_SITE"]?.trim() || "datadoghq.com";
-  return `api.${s}`;
-}
-
+/** Both keys or neither: one alone authenticates nothing, so the refusal names the pair. */
 function headers(): Record<string, string> {
   const ak = process.env["DD_API_KEY"]?.trim();
   const app = process.env["DD_APP_KEY"]?.trim();
@@ -23,14 +20,11 @@ function headers(): Record<string, string> {
   };
 }
 
-async function ddGet(path: string): Promise<unknown> {
-  const res = await fetch(`https://${siteHost()}${path}`, { headers: headers() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Datadog ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
+const ddGet = createJsonGetter({
+  base: () => `https://api.${optionalEnv("DD_SITE", "datadoghq.com")}`,
+  label: "Datadog",
+  headers,
+});
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const DATADOG_TOOL_NAMES = ["datadog_incident_list", "datadog_monitor_list"] as const;

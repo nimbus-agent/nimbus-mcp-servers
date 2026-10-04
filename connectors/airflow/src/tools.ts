@@ -1,31 +1,16 @@
 import { z } from "zod";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import {
   encodeBasicAuthHeader,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterAirflowDags } from "./search-filter.ts";
 
-function apiBase(): string {
-  const v = process.env["AIRFLOW_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("AIRFLOW_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
 function authHeader(): Record<string, string> {
-  const user = process.env["AIRFLOW_USERNAME"]?.trim();
-  if (user === undefined || user === "") {
-    throw new Error("AIRFLOW_USERNAME is not set");
-  }
-  const password = process.env["AIRFLOW_PASSWORD"]?.trim();
-  if (password === undefined || password === "") {
-    throw new Error("AIRFLOW_PASSWORD is not set");
-  }
+  const user = requiredEnv("AIRFLOW_USERNAME");
+  const password = requiredEnv("AIRFLOW_PASSWORD");
   return {
     Authorization: encodeBasicAuthHeader(user, password),
     Accept: "application/json",
@@ -33,7 +18,7 @@ function authHeader(): Record<string, string> {
 }
 
 const airflowGet = createJsonGetter({
-  base: apiBase,
+  base: () => requiredBaseUrl("AIRFLOW_URL"),
   label: "Airflow",
   headers: authHeader,
 });

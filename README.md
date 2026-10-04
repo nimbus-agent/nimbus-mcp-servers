@@ -10,6 +10,9 @@ stdio with credentials supplied from the environment.
 npx @nimbus-dev/connectors github
 ```
 
+You need [Bun](https://bun.sh) 1.2 or newer on your `PATH`: the package ships TypeScript, and its
+`nimbus-connector` bin runs under Bun.
+
 ## What you get, and what you do not
 
 Run standalone, a connector gives you:
@@ -62,7 +65,12 @@ Credentials come from the environment. There is no Vault outside the gateway, so
 config holds the secret. Every variable, and the two behaviours that look like bugs and are not, are
 in [Configuration](./docs/configuration.md).
 
-Each connector documents its own tools and credentials at `connectors/<id>/README.md`.
+Each connector has its own README at `connectors/<id>/README.md`. Most list their tools and
+credentials, but some — `github`, `slack` and `jira` among them — are still only a short gateway
+quickstart. Until they are filled in, let the connector tell you: a tool called without its
+credential refuses before sending anything, with an error naming the variable to set
+(`GITHUB_PAT is not set`). Those that drive a CLI — `aws`, `azure`, `gcp`, `kubernetes`, `iac` —
+use that tool's own credentials and configuration instead.
 
 ## Documentation
 
@@ -79,10 +87,11 @@ Each connector documents its own tools and credentials at `connectors/<id>/READM
 
 ```bash
 bun install
-bun run check   # lint, typecheck, consent audit, full suite
+bun run check   # lint, typecheck, the four connector audits, full suite
 ```
 
-CI runs those four on Ubuntu, macOS and Windows — platform equality is a Nimbus non-negotiable.
+CI runs the same gates on Ubuntu, macOS and Windows — platform equality is a Nimbus
+non-negotiable.
 
 See [CONTRIBUTING](./CONTRIBUTING.md) before opening a PR, and
 [SECURITY](./SECURITY.md) before reporting a vulnerability — it states what this package does and
@@ -106,7 +115,8 @@ This repo was a scaffold from 2026-06-18 until the connectors landed. Its origin
 AGPL implications for downstream clients. All three were answered before the move: the connectors are
 consent-gated standalone, credentials come from the environment, and `NOTICE` states the tiering. It
 also proposed a package per connector; one package was chosen instead, because 94 packages means 94
-releases and forces `shared/` to become a versioned dependency that 190 files import by relative path.
+releases and forces `shared/` to become a versioned dependency that 212 shipped connector source
+files import by relative path.
 
 ## License
 

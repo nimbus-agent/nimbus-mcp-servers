@@ -236,6 +236,89 @@ describe("apple_calendar_list", () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0]?.calendar).toBe("Work");
   });
+
+  it("stops reading calendars once maxInstances events are collected", async () => {
+    const read: string[] = [];
+    const { client } = makeFakeCalDavClient();
+    const listEvents = client.listEvents;
+    const { server, tools } = stubServer();
+
+    registerAppleCalendarTools(server as never, {
+      calendar: {
+        ...client,
+        listEvents: async (cal, window) => {
+          read.push(cal.displayName);
+          return listEvents(cal, window);
+        },
+      },
+      now: () => "20260601T000000Z",
+      config: { maxInstances: 1 },
+    });
+
+    const result = parseResult(
+      await tools["apple_calendar_list"]!({
+        startUtc: "20260601T000000Z",
+        endUtc: "20260601T235959Z",
+      }),
+    ) as { items: { uid: string }[] };
+
+    expect(result.items.map((i) => i.uid)).toEqual(["event-1"]);
+    // Home is never asked for its events: the cap was reached on Work.
+    expect(read).toEqual(["Work"]);
+  });
+
+  it("reports empty notes for an event without a description", async () => {
+    const { client } = makeFakeCalDavClient({
+      listCalendars: async () => [WORK_CAL],
+      listEvents: async () => [
+        {
+          href: "/calendars/work/bare.ics",
+          event: {
+            uid: "bare",
+            recurrenceId: null,
+            summary: "Focus",
+            description: null,
+            location: null,
+            start: "20260601T120000Z",
+            end: "20260601T130000Z",
+            allDay: false,
+            status: null,
+            organizer: null,
+            attendees: [],
+            rrule: null,
+            dtstamp: "20260601T000000Z",
+          },
+        },
+      ],
+    });
+    const { server, tools } = stubServer();
+    registerAppleCalendarTools(server as never, { calendar: client, now: () => "x" });
+
+    const result = parseResult(
+      await tools["apple_calendar_list"]!({
+        startUtc: "20260601T000000Z",
+        endUtc: "20260601T235959Z",
+      }),
+    ) as { items: { uid: string; notes: string }[] };
+    expect(result.items).toEqual([expect.objectContaining({ uid: "bare", notes: "" })]);
+  });
+
+  it("refuses arguments its schema rejects before touching the calendar", async () => {
+    let listed = 0;
+    const { client } = makeFakeCalDavClient({
+      listCalendars: async () => {
+        listed += 1;
+        return [];
+      },
+    });
+    const { server, tools } = stubServer();
+    registerAppleCalendarTools(server as never, { calendar: client, now: () => "x" });
+
+    await expect(tools["apple_calendar_list"]!({ startUtc: "", endUtc: "e" })).rejects.toThrow(
+      /"startUtc"[\s\S]*Too small/,
+    );
+    expect(listed).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

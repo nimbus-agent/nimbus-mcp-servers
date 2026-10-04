@@ -1,19 +1,16 @@
 import { z } from "zod";
-import {
-  type ConsentServer,
-  createWriteToolRegistrar,
-  type WriteToolConfig,
-} from "../../../shared/consent-kit.ts";
+import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult,
-  mcpJsonResultIfOk,
   requireProcessEnv,
-  type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
-import { makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
+import {
+  makeRestToolRegistrar,
+  makeRestWriteToolRegistrar,
+} from "../../../shared/rest-tool-kit.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -71,33 +68,20 @@ export function registerOnedriveTools(
     scopeKinds: ["item"],
   });
 
-  /** Standard Graph tool: token → graphRequest(buildPath[, buildInit]) → mcpJsonResultIfOk("Graph", …, 200). */
   /**
-   * The write-tool equivalent of `registerOnedriveTool`: identical fetch and result handling, routed
-   * through the write registrar.
+   * Standard Graph tool, read or write: token → graphRequest(buildPath[, buildInit]) →
+   * mcpJsonResultIfOk("Graph", …, 200).
    */
-  function registerOnedriveWriteTool<T>(
-    name: string,
-    cfg: WriteToolConfig<T>,
-    description: string,
-    schema: ZodObjectSchema<T>,
-    buildPath: (p: T) => string,
-    buildInit?: (p: T) => RequestInit,
-  ): void {
-    registerWriteTool(name, cfg, description, schema, async (parsed) => {
-      const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");
-      const res = await graphRequest(token, buildPath(parsed), buildInit?.(parsed));
-      return mcpJsonResultIfOk("Graph", res, 200);
-    });
-  }
-
-  const registerOnedriveTool = makeRestToolRegistrar({
-    registrar: reg,
+  const graphRest = {
     tokenEnv: "MICROSOFT_OAUTH_ACCESS_TOKEN",
     serviceLabel: "Graph",
     fetch: graphRequest,
     snippetMax: 200,
-  });
+  } as const;
+
+  /** The write-tool equivalent of `registerOnedriveTool`, routed through the write registrar. */
+  const registerOnedriveWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...graphRest });
+  const registerOnedriveTool = makeRestToolRegistrar({ registrar: reg, ...graphRest });
 
   const onedriveItemListArgs = z.object({
     parentId: z.string().min(1).optional(),

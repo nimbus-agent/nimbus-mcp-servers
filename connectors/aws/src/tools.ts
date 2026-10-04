@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -9,7 +9,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
-import { runCliJson, runCliOk } from "../../../shared/run-cli-json.ts";
+import { runCliJsonThrowing, runCliOkThrowing } from "../../../shared/run-cli-json.ts";
 
 function awsEnv(): Record<string, string | undefined> {
   const e = { ...process.env } as Record<string, string | undefined>;
@@ -34,11 +34,7 @@ function awsEnv(): Record<string, string | undefined> {
 
 async function awsJson(args: string[]): Promise<unknown> {
   const cmd = ["aws", ...args, "--output", "json"];
-  const r = await runCliJson(cmd, awsEnv());
-  if (!r.ok) {
-    throw new Error(r.message);
-  }
-  return r.data ?? {};
+  return (await runCliJsonThrowing(cmd, awsEnv())) ?? {};
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
@@ -64,7 +60,7 @@ export function registerAwsTools(
   const registerWriteTool = createWriteToolRegistrar(server, {
     connector: "aws",
     scopeEnv: "NIMBUS_MCP_AWS_WRITE_SCOPE",
-    scopeKinds: ["cluster", "function"],
+    scopeKinds: ["cluster", "function", "instance"],
   });
 
   reg(
@@ -104,10 +100,7 @@ export function registerAwsTools(
         p.taskDefinition,
         "--force-new-deployment",
       ];
-      const r = await runCliOk(cmd, awsEnv());
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
+      await runCliOkThrowing(cmd, awsEnv());
       return jsonResult({ ok: true });
     },
   );
@@ -125,72 +118,79 @@ export function registerAwsTools(
       payloadJson: z.string().optional(),
     }),
     async (p) => {
+      // The CLI reads the payload from a file and writes the response to one. Both are the
+      // caller's data, so the directory holding them is removed however the call ends — it used
+      // to be left in the temp dir on every invocation.
       const dir = mkdtempSync(join(tmpdir(), "nimbus-aws-lambda-"));
-      const outFile = join(dir, "response.json");
-      if (p.payloadJson !== undefined && p.payloadJson !== "") {
-        const pf = join(dir, "payload.json");
-        writeFileSync(pf, p.payloadJson, "utf8");
-        const cmd = [
-          "aws",
-          "lambda",
-          "invoke",
-          "--function-name",
-          p.functionName,
-          "--payload",
-          `file://${pf}`,
-          outFile,
-        ];
-        const r = await runCliOk(cmd, awsEnv());
-        if (!r.ok) {
-          throw new Error(r.message);
-        }
-      } else {
-        const r = await runCliOk(
-          ["aws", "lambda", "invoke", "--function-name", p.functionName, outFile],
-          awsEnv(),
-        );
-        if (!r.ok) {
-          throw new Error(r.message);
-        }
-      }
-      let body: unknown;
       try {
-        body = JSON.parse(readFileSync(outFile, "utf8")) as unknown;
-      } catch {
-        body = { ok: true };
+        const outFile = join(dir, "response.json");
+        if (p.payloadJson !== undefined && p.payloadJson !== "") {
+          const pf = join(dir, "payload.json");
+          writeFileSync(pf, p.payloadJson, "utf8");
+          const cmd = [
+            "aws",
+            "lambda",
+            "invoke",
+            "--function-name",
+            p.functionName,
+            "--payload",
+            `file://${pf}`,
+            outFile,
+          ];
+          await runCliOkThrowing(cmd, awsEnv());
+        } else {
+          await runCliOkThrowing(
+            ["aws", "lambda", "invoke", "--function-name", p.functionName, outFile],
+            awsEnv(),
+          );
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(readFileSync(outFile, "utf8")) as unknown;
+        } catch {
+          body = { ok: true };
+        }
+        return jsonResult(body);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-      return jsonResult(body);
     },
   );
 
-  reg(
+  // The two EC2 actions are WRITES. They were registered as reads, which in standalone mode offered
+  // them to every client with no consent prompt, scope check, budget or audit record.
+  registerWriteTool(
     "aws_ec2_instance_stop",
-    "Stop EC2 instances. HITL.",
+    {
+      mutates: "aws.ec2.instance.stop",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "instance", value: p.instanceIds }),
+    },
+    "Stop EC2 instances.",
     z.object({ instanceIds: z.string().min(1) }),
     async (p) => {
-      const r = await runCliOk(
+      await runCliOkThrowing(
         ["aws", "ec2", "stop-instances", "--instance-ids", p.instanceIds],
         awsEnv(),
       );
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
       return jsonResult({ ok: true });
     },
   );
 
-  reg(
+  registerWriteTool(
     "aws_ec2_instance_start",
-    "Start EC2 instances. HITL.",
+    {
+      mutates: "aws.ec2.instance.start",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "instance", value: p.instanceIds }),
+    },
+    "Start EC2 instances.",
     z.object({ instanceIds: z.string().min(1) }),
     async (p) => {
-      const r = await runCliOk(
+      await runCliOkThrowing(
         ["aws", "ec2", "start-instances", "--instance-ids", p.instanceIds],
         awsEnv(),
       );
-      if (!r.ok) {
-        throw new Error(r.message);
-      }
       return jsonResult({ ok: true });
     },
   );

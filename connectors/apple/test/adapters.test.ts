@@ -1,4 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
+import { ImapFlow } from "imapflow";
+import { DAVClient } from "tsdav";
 import {
   type AppendCapableFlow,
   buildRfc822Message,
@@ -8,6 +10,7 @@ import {
   createAppleSmtpMailer,
   type DavClientLike,
   DRAFTS_MAILBOX,
+  ICLOUD_CALDAV_BOOTSTRAP_URL,
   ICLOUD_IMAP_HOST,
   ICLOUD_IMAP_PORT,
   ICLOUD_SMTP_HOST,
@@ -319,5 +322,100 @@ describe("createAppleCalDavClient", () => {
 describe("icalTimestamp", () => {
   it("emits RFC 5545 basic format, not ISO-8601", () => {
     expect(icalTimestamp(new Date("2026-01-02T03:04:05.678Z"))).toBe("20260102T030405Z");
+  });
+
+  it("stamps the current time when given no date", () => {
+    setSystemTime(new Date("2026-03-04T05:06:07.890Z"));
+    try {
+      expect(icalTimestamp()).toBe("20260304T050607Z");
+    } finally {
+      setSystemTime();
+    }
+  });
+});
+
+/**
+ * The PRODUCTION factories — a real `ImapFlow` and a real tsdav `DAVClient` — rather than the
+ * injected fakes above. Their network methods are swapped on the prototype for the length of one
+ * test, so the real constructor runs against the real config and no socket is ever opened.
+ */
+describe("the default client factories", () => {
+  type Method = (this: Record<string, unknown>, ...args: unknown[]) => Promise<unknown>;
+
+  /** Replace `names` on `proto` with `impl`, run `fn`, and put the originals back. */
+  async function patched(
+    proto: object,
+    impl: Record<string, Method>,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    const target = proto as Record<string, unknown>;
+    const saved = new Map(Object.keys(impl).map((name) => [name, target[name]]));
+    Object.assign(target, impl);
+    try {
+      await fn();
+    } finally {
+      for (const [name, original] of saved) target[name] = original;
+    }
+  }
+
+  it("the draft appender drives a real ImapFlow for iCloud over implicit TLS", async () => {
+    const seen: { options?: unknown; appended?: unknown[]; loggedOut: number } = { loggedOut: 0 };
+    await patched(
+      ImapFlow.prototype,
+      {
+        async connect() {
+          seen.options = this["options"];
+        },
+        async append(...args: unknown[]) {
+          seen.appended = args;
+          return { uid: 7 };
+        },
+        async logout() {
+          seen.loggedOut += 1;
+        },
+      },
+      async () => {
+        const appender = createAppleDraftAppender("me@icloud.test", "app-pw");
+        expect(
+          await appender.appendDraft({ to: "you@example.test", subject: "s", body: "b" }),
+        ).toEqual({ uid: 7, mailbox: DRAFTS_MAILBOX });
+      },
+    );
+    expect(seen.options).toEqual({
+      host: ICLOUD_IMAP_HOST,
+      port: ICLOUD_IMAP_PORT,
+      secure: true,
+      auth: { user: "me@icloud.test", pass: "app-pw" },
+      logger: false,
+    });
+    expect(seen.appended?.[0]).toBe(DRAFTS_MAILBOX);
+    expect(seen.appended?.[2]).toEqual(["\\Draft"]);
+    expect(seen.loggedOut).toBe(1);
+  });
+
+  it("the CalDAV client logs a real DAVClient in at the iCloud bootstrap host", async () => {
+    const seen: Record<string, unknown> = {};
+    await patched(
+      DAVClient.prototype,
+      {
+        async login() {
+          Object.assign(seen, {
+            serverUrl: this["serverUrl"],
+            credentials: this["credentials"],
+            authMethod: this["authMethod"],
+            accountType: this["accountType"],
+          });
+        },
+      },
+      async () => {
+        await createAppleCalDavClient("me@icloud.test", "app-pw").login();
+      },
+    );
+    expect(seen).toEqual({
+      serverUrl: ICLOUD_CALDAV_BOOTSTRAP_URL,
+      credentials: { username: "me@icloud.test", password: "app-pw" },
+      authMethod: "Basic",
+      accountType: "caldav",
+    });
   });
 });

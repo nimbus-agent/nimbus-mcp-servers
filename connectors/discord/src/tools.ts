@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { createRegisterSimpleTool, createZodToolRegistrar } from "../../../shared/mcp-tool-kit.ts";
-import { makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
+import {
+  makeRestToolRegistrar,
+  type RestFetchResult,
+  toRestFetchResult,
+} from "../../../shared/rest-tool-kit.ts";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -8,12 +12,7 @@ async function discordFetch(
   token: string,
   path: string,
   init?: RequestInit,
-): Promise<{
-  ok: boolean;
-  status: number;
-  json: unknown;
-  text: string;
-}> {
+): Promise<RestFetchResult> {
   const url = path.startsWith("http") ? path : `${DISCORD_API}${path}`;
   const res = await fetch(url, {
     ...init,
@@ -23,14 +22,7 @@ async function discordFetch(
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = JSON.parse(text) as unknown;
-  } catch {
-    json = null;
-  }
-  return { ok: res.ok, status: res.status, json, text };
+  return toRestFetchResult(res);
 }
 
 export function registerDiscordTools(server: { tool: (...args: never) => unknown }): void {
@@ -69,12 +61,15 @@ export function registerDiscordTools(server: { tool: (...args: never) => unknown
     }),
     (parsed) => {
       const lim = parsed.limit ?? 50;
-      const u = new URL(`${DISCORD_API}/channels/${encodeURIComponent(parsed.channelId)}/messages`);
+      const path = `/channels/${encodeURIComponent(parsed.channelId)}/messages`;
+      const u = new URL(`${DISCORD_API}${path}`);
       u.searchParams.set("limit", String(lim));
       if (parsed.after !== undefined && parsed.after !== "") {
         u.searchParams.set("after", parsed.after);
       }
-      return `${u.pathname}${u.search}`;
+      // Relative to DISCORD_API, like every other tool here: the fetcher prefixes the base, which
+      // already ends in /api/v10, so returning `u.pathname` requested /api/v10/api/v10/….
+      return `${path}${u.search}`;
     },
   );
 

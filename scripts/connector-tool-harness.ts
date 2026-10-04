@@ -14,7 +14,16 @@
  * published to consumers, while anything under `shared/` would be.
  */
 
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { ClientCapabilities, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { type AuditEntry, verifyAuditChain } from "../shared/audit-chain.ts";
 import type { McpListResult } from "../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../shared/run-read-only-mcp-connector.ts";
 
@@ -132,7 +141,36 @@ interface Recorders {
   readonly server: never;
 }
 
-function makeRecorders(captured: CapturedTools): Recorders {
+/** How the stand-in client answers a consent prompt. */
+export interface ConsentAnswer {
+  readonly action: "accept" | "decline" | "cancel";
+  readonly content?: Record<string, unknown>;
+}
+
+/** Approval, with the form's own `confirm` answer the consent kit also requires. */
+export const APPROVE: ConsentAnswer = { action: "accept", content: { confirm: true } };
+
+/**
+ * The client half of the server object the consent kit talks to: what the client advertised at
+ * `initialize`, the hook the kit chains to learn when that happened, and the consent prompt.
+ */
+interface ClientSurface {
+  getClientCapabilities(): { elicitation?: unknown } | undefined;
+  oninitialized?: (() => void) | undefined;
+  elicitInput?: (params: { message: string }) => Promise<ConsentAnswer>;
+}
+
+/**
+ * The client a capture stands in with when the caller supplies none. In gateway mode the consent
+ * kit never reads the capability surface, so it exists to complete the shape, not because it is
+ * exercised. A new one per capture: a standalone-mode kit chains its handshake hook onto the client
+ * it is given, and a shared default would carry one capture's hook into the next.
+ */
+function silentClient(): ClientSurface {
+  return { getClientCapabilities: (): undefined => undefined };
+}
+
+function makeRecorders(captured: CapturedTools, client: ClientSurface = silentClient()): Recorders {
   const handle = { disable: (): undefined => undefined };
   const reg = ((
     name: string,
@@ -144,9 +182,7 @@ function makeRecorders(captured: CapturedTools): Recorders {
   }) as unknown as ZodToolRegistrar;
 
   const server = {
-    // In gateway mode the consent kit never reads the capability surface; this
-    // exists so the shape is complete, not because it is exercised.
-    server: { getClientCapabilities: (): undefined => undefined },
+    server: client,
     // `createRegisterSimpleTool` binds `.tool` and passes a raw Zod SHAPE where
     // the Zod registrar passes a built schema. Rebuilding the object here means
     // a caller sees one schema type whichever path a tool was registered by.
@@ -200,19 +236,35 @@ function makeRecorders(captured: CapturedTools): Recorders {
  * read AND write tools land in the same captured surface.
  */
 export function captureTools(register: ConnectorRegistrar): CapturedTools {
+  return captureWith(register, (captured) => ({
+    recorders: makeRecorders(captured),
+    settle: (): undefined => undefined,
+  }));
+}
+
+/**
+ * {@link captureTools}' probe, over recorders the caller builds. `settle` runs once the
+ * registrar has returned and before anything is counted — the handshake, for a standalone capture,
+ * since the consent kit registers write tools only then.
+ */
+function captureWith(
+  register: ConnectorRegistrar,
+  attempt: (captured: CapturedTools) => { recorders: Recorders; settle: () => void },
+): CapturedTools {
   const failures: unknown[] = [];
   for (const serverFirst of [false, true]) {
     const captured = new CapturedTools();
-    const { reg, server } = makeRecorders(captured);
+    const { recorders, settle } = attempt(captured);
     try {
       // The union has three members and only a runtime probe can say which one
       // this connector is, so the call is made through one widened signature.
       const call = register as (a: unknown, b: unknown) => void;
       if (serverFirst) {
-        call(server, server);
+        call(recorders.server, recorders.server);
       } else {
-        call(reg, server);
+        call(recorders.reg, recorders.server);
       }
+      settle();
       if (captured.names().length > 0) {
         return captured;
       }
@@ -235,6 +287,55 @@ export function captureTools(register: ConnectorRegistrar): CapturedTools {
   throw new Error("register…Tools registered no tools");
 }
 
+/** What {@link captureStandaloneTools} saw. */
+export interface StandaloneCapture {
+  /** Every tool registered once the handshake ran: the reads, plus the writes if they were offered. */
+  readonly tools: CapturedTools;
+  /** The message of every consent prompt the connector raised, in order. */
+  readonly prompts: string[];
+}
+
+/**
+ * {@link captureTools} in STANDALONE mode, where the connector's own consent kit is the gate.
+ *
+ * The kit queues write tools until the client's `initialize`, because only then are its
+ * capabilities knowable, and registers them only for a client that can prompt a human. This
+ * stand-in client completes that handshake as soon as registration returns, advertising
+ * elicitation when `elicitation` is true, and answers every consent prompt with `answer`
+ * (approval when omitted).
+ *
+ * The caller locks the mode first (`setConnectorMode("standalone")`) and sets the connector's
+ * `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE`, which the kit reads when its registrar is built.
+ */
+export function captureStandaloneTools(
+  register: ConnectorRegistrar,
+  opts: { readonly elicitation: boolean; readonly answer?: ConsentAnswer },
+): StandaloneCapture {
+  const prompts: string[] = [];
+  const tools = captureWith(register, (captured) => {
+    let initialized = false;
+    const client: ClientSurface = {
+      getClientCapabilities: () => {
+        if (!initialized) return undefined;
+        return opts.elicitation ? { elicitation: {} } : {};
+      },
+      oninitialized: undefined,
+      elicitInput: (params) => {
+        prompts.push(params.message);
+        return Promise.resolve(opts.answer ?? APPROVE);
+      },
+    };
+    return {
+      recorders: makeRecorders(captured, client),
+      settle: () => {
+        initialized = true;
+        client.oninitialized?.();
+      },
+    };
+  });
+  return { tools, prompts };
+}
+
 /** One request the stub saw. */
 export interface RecordedRequest {
   readonly url: string;
@@ -255,6 +356,9 @@ export interface FetchStub {
   restore(): void;
 }
 
+/** The three forms `fetch` accepts as its first argument. */
+type FetchInput = Request | string | URL;
+
 /**
  * The URL of a fetch argument, whichever of the three forms it takes.
  *
@@ -262,7 +366,7 @@ export interface FetchStub {
  * `[object Object]`, so a connector calling `fetch(new Request(url))` would
  * have every URL assertion in the tree silently compare against that.
  */
-function requestUrl(input: Request | string | URL): string {
+function requestUrl(input: FetchInput): string {
   if (typeof input === "string") {
     return input;
   }
@@ -309,7 +413,8 @@ export function stubFetch(
 ): FetchStub {
   const original = globalThis.fetch;
   const calls: RecordedRequest[] = [];
-  globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
+  /** Record one request and build its reply. Throws on a request `reply` does not answer. */
+  const answer = (input: FetchInput, init?: RequestInit): Response => {
     const req: RecordedRequest = {
       url: requestUrl(input),
       method: init?.method ?? "GET",
@@ -323,7 +428,9 @@ export function stubFetch(
     }
     const spec = typeof chosen === "string" ? { body: chosen } : chosen;
     return new Response(spec.body ?? "{}", { status: spec.status ?? 200 });
-  }) as typeof globalThis.fetch;
+  };
+  const stub = async (input: FetchInput, init?: RequestInit) => answer(input, init); // NOSONAR S7503: real fetch rejects and never throws, so the stub is async only to turn answer's throws (an unexpected request, a throwing reply, a bad status) into that same rejection.
+  globalThis.fetch = stub as typeof globalThis.fetch;
 
   return {
     calls,
@@ -364,9 +471,18 @@ export interface SpawnStub {
  * Without it a contract test that calls their tools runs the real binaries: an
  * observed two seconds per connector, and a genuine subprocess on the machine
  * running the suite.
+ *
+ * `onSpawn` runs with the command at the moment of the spawn, which is when a
+ * real CLI reads its input files and writes its output files, so a test can
+ * check or play that side of the exchange while the connector waits on it.
  */
 export function stubSpawn(
-  reply: { stdout?: string; stderr?: string; exitCode?: number } = {},
+  reply: {
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number;
+    onSpawn?: (command: readonly string[]) => void;
+  } = {},
 ): SpawnStub {
   const original = Bun.spawn;
   const calls: RecordedSpawn[] = [];
@@ -375,6 +491,7 @@ export function stubSpawn(
     options?: { env?: Record<string, string | undefined> },
   ): unknown => {
     calls.push({ command: [...command], env: options?.env ?? {} });
+    reply.onSpawn?.(command);
     return {
       exited: Promise.resolve(reply.exitCode ?? 0),
       stdout: new Blob([reply.stdout ?? "{}"]),
@@ -390,16 +507,109 @@ export function stubSpawn(
   };
 }
 
+/** The test's two ends of a server booted by {@link bootOverStubbedStdio}. */
+export interface StubbedStdio {
+  /** What the server reads as its stdin: a client writes its requests here. */
+  readonly toServer: PassThrough;
+  /** What the server writes as its stdout: its responses arrive here. */
+  readonly fromServer: PassThrough;
+}
+
+/**
+ * Run a connector's bootstrap with `process.stdin` and `process.stdout` replaced by in-memory
+ * streams, and hand back the two ends.
+ *
+ * Every entry point connects the SDK's real `StdioServerTransport`, which takes the process's
+ * stdin and stdout when it is CONSTRUCTED and keeps them. Swapping the pair for exactly the length
+ * of the boot gives a test the server's two ends without a subprocess — and a subprocess is no
+ * substitute, because bun's coverage does not follow a child process: that is how 85 of the 94
+ * entry points went unexecuted by the whole suite. Nothing else is stubbed. The server, its
+ * transport and the JSON-RPC framing between them are the production ones.
+ *
+ * The real streams are put back in `finally`, so a bootstrap that throws leaves them in place.
+ */
+export async function bootOverStubbedStdio(boot: () => Promise<void>): Promise<StubbedStdio> {
+  const stdio: StubbedStdio = { toServer: new PassThrough(), fromServer: new PassThrough() };
+  const proc = process as unknown as { stdin: unknown; stdout: unknown };
+  const real = { stdin: proc.stdin, stdout: proc.stdout };
+  proc.stdin = stdio.toServer;
+  proc.stdout = stdio.fromServer;
+  try {
+    await boot();
+  } finally {
+    proc.stdin = real.stdin;
+    proc.stdout = real.stdout;
+  }
+  return stdio;
+}
+
+/**
+ * The client half of {@link bootOverStubbedStdio}: newline-delimited JSON-RPC over the two
+ * streams, framed by the SDK's own `ReadBuffer` and `serializeMessage` — the framing its stdio
+ * transports use on both sides.
+ */
+class StubbedStdioClientTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+  private readonly buffer = new ReadBuffer();
+  private readonly onData = (chunk: Buffer): void => {
+    this.buffer.append(chunk);
+    let message = this.buffer.readMessage();
+    while (message !== null) {
+      this.onmessage?.(message);
+      message = this.buffer.readMessage();
+    }
+  };
+
+  constructor(private readonly stdio: StubbedStdio) {}
+
+  start(): Promise<void> {
+    this.stdio.fromServer.on("data", this.onData);
+    return Promise.resolve();
+  }
+
+  send(message: JSONRPCMessage): Promise<void> {
+    this.stdio.toServer.write(serializeMessage(message));
+    return Promise.resolve();
+  }
+
+  close(): Promise<void> {
+    this.stdio.fromServer.off("data", this.onData);
+    this.onclose?.();
+    return Promise.resolve();
+  }
+}
+
+/**
+ * An MCP client connected to a server booted by {@link bootOverStubbedStdio}, advertising
+ * `capabilities`. Connecting runs the real `initialize` handshake, so a bootstrap that never
+ * connected its transport fails right here — its `initialize` is never answered — rather than
+ * passing later as an empty tool surface.
+ */
+export async function connectOverStubbedStdio(
+  stdio: StubbedStdio,
+  capabilities: ClientCapabilities = {},
+): Promise<Client> {
+  const client = new Client(
+    { name: "nimbus-connector-harness", version: "0.0.0" },
+    { capabilities },
+  );
+  await client.connect(new StubbedStdioClientTransport(stdio));
+  return client;
+}
+
 /**
  * Set environment variables for the duration of `fn`, restoring exactly what was
  * there before — including restoring "absent" as absent rather than as `""`,
  * which is what a naive save/restore gets wrong and which matters here because
- * every connector treats empty and unset identically.
+ * every connector treats empty and unset identically. Resolves to what `fn`
+ * returned.
  */
-export async function withEnv(
+export async function withEnv<T>(
   env: Record<string, string | undefined>,
-  fn: () => Promise<void> | void,
-): Promise<void> {
+  fn: () => Promise<T> | T,
+): Promise<T> {
   const saved = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(env)) {
     saved.set(key, process.env[key]);
@@ -410,7 +620,7 @@ export async function withEnv(
     }
   }
   try {
-    await fn();
+    return await fn();
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {
@@ -419,5 +629,57 @@ export async function withEnv(
         process.env[key] = value;
       }
     }
+  }
+}
+
+/**
+ * The entries of a `NIMBUS_MCP_AUDIT_LOG` file the consent kit wrote, in order — how a standalone
+ * test sees what a write recorded (its target, and the pre-state an unrecoverable write captured).
+ * The chain's own integrity is `verifyAuditChain`'s job, not this one's.
+ */
+function auditEntries(auditLog: string): AuditEntry[] {
+  return readFileSync(auditLog, "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => (JSON.parse(line) as { entry: AuditEntry }).entry);
+}
+
+/** What {@link approvedStandaloneWrite} saw. */
+export interface ApprovedWrite {
+  /** The tool's JSON answer. */
+  readonly answer: unknown;
+  /** Every audit entry the call recorded, in order. */
+  readonly audit: AuditEntry[];
+  /** Whether the audit log the call wrote verifies as an intact chain. */
+  readonly chain: Awaited<ReturnType<typeof verifyAuditChain>>;
+}
+
+/**
+ * Make ONE write the way an operator would see it run standalone: registered for a client that can
+ * prompt, under `scopeEnv`, approved, with a fresh audit log that is read back, verified and
+ * deleted. The caller locks standalone mode first and stubs whatever the write reaches.
+ */
+export async function approvedStandaloneWrite(
+  register: ConnectorRegistrar,
+  scopeEnv: Readonly<Record<string, string>>,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<ApprovedWrite> {
+  const dir = mkdtempSync(join(tmpdir(), "nimbus-audit-"));
+  const auditLog = join(dir, "audit.jsonl");
+  try {
+    let answer: unknown;
+    await withEnv(
+      { ...scopeEnv, NIMBUS_MCP_AUDIT_LOG: auditLog, NIMBUS_MCP_WRITE_BUDGET: undefined },
+      async () => {
+        answer = await captureStandaloneTools(register, { elicitation: true }).tools.callJson(
+          tool,
+          args,
+        );
+      },
+    );
+    return { answer, audit: auditEntries(auditLog), chain: await verifyAuditChain(auditLog) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }

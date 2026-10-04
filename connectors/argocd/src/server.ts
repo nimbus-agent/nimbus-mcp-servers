@@ -1,49 +1,38 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import {
+  createJsonGetter,
+  createJsonPoster,
+  envAuthHeaders,
+  type JsonApiConfig,
+  requiredBaseUrl,
+} from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterArgocdApplications } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["ARGOCD_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("ARGOCD_URL is not set");
-  }
-  return `${stripTrailingSlashes(v)}/api/v1`;
+  return `${requiredBaseUrl("ARGOCD_URL")}/api/v1`;
 }
 
 /**
- * `fetchWithTimeout`, not the global fetch: this is a self-hosted control plane,
- * and one that stops answering must fail the tool call rather than hang it.
+ * One config for reads and the mutating requests alike. `fetchWithTimeout`, not the global
+ * fetch: this is a self-hosted control plane, and one that stops answering must fail the tool
+ * call rather than hang it.
  */
-/** Shared with the mutating request below, which adds its own Content-Type. */
-const authHeader = envAuthHeaders({ env: "ARGOCD_TOKEN" });
-
-const agGet = createJsonGetter({
+const api: JsonApiConfig = {
   base: apiBase,
   label: "ArgoCD",
-  headers: authHeader,
+  headers: envAuthHeaders({ env: "ARGOCD_TOKEN" }),
   fetch: fetchWithTimeout,
-});
+};
 
-async function agPost(path: string, body: unknown): Promise<unknown> {
-  const res = await fetchWithTimeout(`${apiBase()}${path}`, {
-    method: "POST",
-    headers: { ...authHeader(), "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`ArgoCD ${path} ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return text === "" ? {} : (JSON.parse(text) as unknown);
-}
+const agGet = createJsonGetter(api);
+const agPost = createJsonPoster(api);
 
 function applicationsFrom(root: unknown): unknown[] {
   if (Array.isArray(root)) {
@@ -58,7 +47,10 @@ export function registerArgocdTools(reg: ZodToolRegistrar, server: unknown): voi
   // kit needs the real server, which the helper now passes through as its second argument.
   const registerWriteTool = createWriteToolRegistrar(server as ConsentServer, {
     connector: "argocd",
-    scopeEnv: "NIMBUS_MCP_APP_WRITE_SCOPE",
+    // NIMBUS_MCP_<SERVICE>_WRITE_SCOPE, as docs/configuration.md documents for every connector.
+    // This read NIMBUS_MCP_APP_WRITE_SCOPE (the scope KIND, not the service), so the documented
+    // variable was ignored and every argocd write refused as out of scope.
+    scopeEnv: "NIMBUS_MCP_ARGOCD_WRITE_SCOPE",
     scopeKinds: ["app"],
   });
 

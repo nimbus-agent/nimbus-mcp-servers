@@ -7,7 +7,7 @@ The **94 first-party Nimbus MCP connectors**, extracted from the
 **`@nimbus-dev/connectors`**. Each connector is an MCP server over stdio, runnable by any MCP client
 without a Nimbus gateway.
 
-**Runtime:** Bun 1.2+ / TypeScript strict · **Linter:** Biome · **License:** AGPL-3.0-only
+**Runtime:** Bun 1.2+ (CI runs 1.3) / TypeScript 7.x strict · **Linter:** Biome · **License:** AGPL-3.0-only
 
 Read [`docs/architecture.md`](./docs/architecture.md) before changing structure, and
 [`docs/adding-a-connector.md`](./docs/adding-a-connector.md) before adding or modifying one.
@@ -46,11 +46,20 @@ file: `../../../shared/…`. A test file at the connector root rather than in `s
 module scope cannot be imported by a test (importing it opens a real stdio transport), so its whole
 tool surface is unreachable and it drops out of the connector contract test. A connector that must
 register from `server.ts` guards the bootstrap with `if (import.meta.main)` and exports the
-registrar; ten do.
+registrar plus `startConnector()`, which is how the gateway's bundled registry and the launcher
+start it — `audit:connector-entrypoints` fails a guarded entry point without it. Ten do.
+
+The entry points themselves are booted by `scripts/connector-boot.test.ts`: imported in gateway
+mode with stdin and stdout swapped for in-memory streams (`bootOverStubbedStdio` in the tools
+harness), then asked over MCP for their name and tools. An unguarded entry point evaluates only on
+its FIRST import in a process, so no other test file may import one — a second import is a cached
+no-op and that boot fails at an unanswered `initialize`. A test that needs a live connector uses a
+guarded one, whose `startConnector()` builds a fresh server on every call.
 
 Before hand-rolling plumbing, check the kits — `env-json-api.ts` (env-token JSON GET),
 `collection-tool-kit.ts` (the list/get/search triple), `cli-json-kit.ts` (spawn a CLI, parse JSON,
-`cliArg`-guard every argv value), `imapflow-adapter.ts` (IMAP/SMTP).
+`cliArg`-guard every argv value), `imapflow-adapter.ts` (IMAP/SMTP). The full set is listed in
+[`docs/architecture.md`](./docs/architecture.md#how-a-connector-is-built).
 
 ## Commands
 
@@ -58,20 +67,42 @@ Before hand-rolling plumbing, check the kits — `env-json-api.ts` (env-token JS
 | --- | --- |
 | `bun run check` | Every gate, in order. **Run this before pushing.** |
 | `bun run lint` / `lint:fix` | Biome. |
-| `bun run typecheck` | One `tsc` pass over everything. |
+| `bun run typecheck` | One `tsc` pass over the connector, `shared/`, `standalone/` and `scripts/` sources. Test files (`*.test.ts`) are excluded, so nothing type-checks them. |
 | `bun run audit:connector-consent` | The structural consent gate. |
+| `bun run audit:connector-deps` | Every runtime dependency is on the pure-JavaScript allow-list. |
+| `bun run audit:connector-entrypoints` | A `server.ts` guarded by `import.meta.main` exports `startConnector()`. |
 | `bun run audit:tool-names` | Every `*_TOOL_NAMES` matches what the connector registers. |
 | `bun run sync:tool-names` | Rewrites the stale ones. Run after adding or renaming a tool. |
-| `bun test` | Full suite (2100+ tests). |
+| `bun test` | Full suite (3600+ tests). |
+| `bun run test:coverage` | The suite plus `coverage/lcov.info`, which the SonarQube Cloud workflow uploads. |
+| `bun run test:sandbox` | Opt-in, in neither `check` nor CI: the 79 connector sandbox tests, which open **real** connections to vendor hosts. |
+
+Dependencies are updated by hand, in periodic bulk PRs; Dependabot opens none here (its alerts stay
+on). The procedure, and the traps it has to avoid, are in
+[CONTRIBUTING § Updating dependencies](./CONTRIBUTING.md#updating-dependencies).
 
 ## Traps that have already cost time here
 
 - **A green audit can mean an empty scan.** `audit:connector-consent` reports `ok` both when nothing
-  is wrong and when it discovered zero connectors. After changing anything about discovery, confirm
-  the count is 94 — do not read `ok` as proof. The same trap has a second form in tests: the
+  is wrong and when it discovered zero connectors, and it prints no count. The count is pinned at 94
+  by `scripts/connector-gates.test.ts`, so `bun test` is the proof — never the `ok` — and adding a
+  connector means raising that number on purpose. The same trap has a second form in tests: the
   connector contract test asserts it discovered more than 40 surfaces, and a per-connector
   assertion that finds nothing to assert must FAIL rather than pass. Deleting Stripe's auth header
   went undetected until the contract gained "this connector demands a credential at all".
+- **The consent audit is per connector, not per tool.** It passes a connector that routes at least
+  one write through `createWriteToolRegistrar`, and the launcher then counts that connector
+  hardened, so a mutating tool registered through the READ registrar beside gated ones is invisible
+  to both. Four were found that way in October 2026 — `aws_ec2_instance_stop`/`_start`,
+  `slack_message_post_dm`, `teams_message_post_chat` — offered to every client, including ones that
+  cannot prompt, with no consent gate, scope check or budget. Check every new tool's registrar by
+  hand.
+- **A URL in a tool argument is the model's choice.** A next-page link a tool takes back must reach
+  the network only through `resolveUrlWithBase` (`shared/fetch-bearer-json.ts`), which refuses
+  another origin before the credential is sent. `bitbucket` fetched its `page` argument as given
+  until October 2026: a read tool, so no consent prompt, that would have sent the username and app
+  password to any host the model named. The Graph connectors (`outlook`, `onedrive`, `teams`)
+  already resolved their `nextLink` that way.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's
   write-registration check is an exact string match, and a CRLF checkout left a trailing carriage
   return that made it report two correctly-hardened connectors as declaring ungated writes.

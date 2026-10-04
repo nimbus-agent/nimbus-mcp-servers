@@ -19,6 +19,14 @@ connectors/<id>/
 `src/server.ts` is what makes the directory a connector. The consent audit and the launcher both
 identify connectors by its presence, so a directory without it is invisible to both.
 
+Two edits outside the directory make it part of the package:
+
+- an `exports` entry in the root `package.json`, `"./<id>": "./connectors/<id>/src/server.ts"` —
+  the gateway imports each connector by that specifier, and `scripts/exports-map.test.ts` fails
+  without it;
+- the connector count `scripts/connector-gates.test.ts` pins (94 today), raised by one. It exists
+  so that a discovery change which finds nothing cannot pass as a clean audit.
+
 **Keep `server.ts` a bootstrap.** It reads the environment, builds the clients, calls
 `register<Name>Tools(...)` and connects the transport — nothing else:
 
@@ -35,6 +43,12 @@ A module that registers its tools at module scope cannot be imported by a test �
 a real stdio transport — so its whole tool surface is unreachable from one, and it is excluded from
 the connector contract test. That is why the split matters rather than being a matter of taste.
 
+If the connector really must register from `server.ts`, guard the bootstrap with
+`if (import.meta.main)` and export both `register<Name>Tools` and `startConnector()`. The guard is
+false under an import, so the gateway and the launcher start the connector by calling
+`startConnector()`; `bun run audit:connector-entrypoints` fails a guarded entry point that does not
+export it.
+
 ## The manifest
 
 `nimbus.extension.json` needs `id` (reverse-domain, e.g. `com.nimbus.acme`), `displayName`,
@@ -48,7 +62,10 @@ appears in the source.
 
 ## The tool surface
 
-Every connector exposes at least `list`, `get` and `search`. Read tools register normally.
+Expose what the service supports. Most connectors offer `list`, `get` and `search` over their main
+collection, but nothing requires that triple — `iac` exposes plan and apply runs, `datadog` two
+lists. The contract test asks for at least one tool, not for any particular set. Read tools
+register normally.
 
 Before writing the plumbing, check whether a kit already owns it:
 
@@ -91,6 +108,12 @@ if (!token) throw new Error("ACME_TOKEN not set");
 
 Never call a Vault API — the connector process has no Vault access by design, in either mode.
 
+A URL that arrives as a tool argument, such as the next-page link a paged tool takes back from an
+earlier response, is chosen by the model. Resolve it with `resolveUrlWithBase` from
+`shared/fetch-bearer-json.ts` before any request that carries the credential: it refuses an
+absolute URL on any other origin. Until October 2026 `bitbucket` fetched its `page` argument as
+given, which would have sent the username and app password to whatever host it named.
+
 ## Dependencies
 
 The real dependency set is declared once, in the **root** `package.json`. A per-connector
@@ -98,7 +121,11 @@ The real dependency set is declared once, in the **root** `package.json`. A per-
 
 If your connector needs a library the other 93 do not, add it to the root `optionalDependencies` so
 a platform that cannot build it does not break every other connector, and document the requirement
-in [Configuration](./configuration.md).
+in [Configuration](./configuration.md). It must also be pure JavaScript and be added to
+`ALLOWED_CONNECTOR_DEPS` in `scripts/check-connector-deps.ts`: the gateway bundles every connector
+into one compiled binary, where a native module fails silently, so `bun run audit:connector-deps`
+refuses anything off that list. List it in the connector's own `package.json` too — nothing
+installs from that file, but GitHub's dependency graph reads it.
 
 ## Before you push
 
@@ -114,6 +141,13 @@ hold it to the same properties as the other 93 — including that every tool ref
 sending anything when its credential is missing. It needs no registration; if your connector cannot
 satisfy a property for a real reason, add it to the annotated exclusion map in that file with the
 reason, rather than loosening the property for everyone.
+
+Its entry point is picked up the same way by `scripts/connector-boot.test.ts`, which boots every
+`server.ts` as the gateway does — in gateway mode, calling `startConnector()` when the bootstrap is
+guarded — with only stdin and stdout swapped for in-memory streams, then asks it over MCP for its
+name and tools: `nimbus-<id>`, serving exactly the tools its registrar registers. A bootstrap that
+reads a variable while starting rather than per call (as `imap` and `protonmail` do) needs a
+stand-in value in that file's `bootEnv`; without one the boot fails naming the variable.
 
 Three failure modes worth knowing in advance:
 

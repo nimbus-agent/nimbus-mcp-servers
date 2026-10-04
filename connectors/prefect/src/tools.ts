@@ -1,16 +1,12 @@
 import { z } from "zod";
+import { createJsonGetter, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterPrefectDeployments } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["PREFECT_API_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("PREFECT_API_URL is not set");
-  }
-  return stripTrailingSlashes(v);
+  return requiredBaseUrl("PREFECT_API_URL");
 }
 
 function authHeaders(): Record<string, string> {
@@ -24,14 +20,7 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
-async function prefectGet(path: string): Promise<unknown> {
-  const res = await fetch(`${apiBase()}${path}`, { headers: authHeaders() });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Prefect ${String(res.status)}: ${text.slice(0, 400)}`);
-  }
-  return JSON.parse(text) as unknown;
-}
+const prefectGet = createJsonGetter({ base: apiBase, label: "Prefect", headers: authHeaders });
 
 async function prefectListDeployments(offset: number, limit: number): Promise<unknown> {
   const res = await fetch(`${apiBase()}/deployments/filter`, {

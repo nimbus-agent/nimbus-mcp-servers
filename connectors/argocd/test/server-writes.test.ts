@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+  captureStandaloneTools,
+  stubFetch,
+  withEnv,
+} from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import type { McpListResult, ZodObjectSchema } from "../../../shared/mcp-tool-kit.ts";
 import { registerArgocdTools } from "../src/server.ts";
@@ -95,5 +100,46 @@ describe("argocd write tools", () => {
     await expect(
       (captureTools().get("argocd_app_sync") as Handler)({ name: "web" }),
     ).rejects.toThrow(/403/);
+  });
+});
+
+describe("argocd write scope (standalone mode)", () => {
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+
+  it("reads the documented NIMBUS_MCP_ARGOCD_WRITE_SCOPE", async () => {
+    const http = stubFetch('{"metadata":{"name":"web"}}');
+    try {
+      await withEnv(
+        {
+          NIMBUS_MCP_ARGOCD_WRITE_SCOPE: "app:web",
+          NIMBUS_MCP_AUDIT_LOG: undefined,
+          ARGOCD_URL: "https://argo.example.com",
+          ARGOCD_TOKEN: "tok",
+        },
+        async () => {
+          const { tools, prompts } = captureStandaloneTools(registerArgocdTools, {
+            elicitation: true,
+          });
+          expect(await tools.callJson("argocd_app_sync", { name: "web" })).toMatchObject({
+            status: "requested",
+          });
+          expect(await tools.callJson("argocd_app_sync", { name: "api" })).toEqual({
+            ok: false,
+            error: "out of scope: app:api is not in NIMBUS_MCP_ARGOCD_WRITE_SCOPE",
+          });
+          expect(prompts.map((p) => p.split("\n")[0])).toEqual([
+            "Nimbus is about to perform argocd.app.sync with:",
+          ]);
+        },
+      );
+      expect(http.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+        "POST https://argo.example.com/api/v1/applications/web/sync",
+      ]);
+    } finally {
+      http.restore();
+    }
   });
 });

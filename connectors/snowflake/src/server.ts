@@ -1,28 +1,19 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterSnowflakeTables } from "./search-filter.ts";
 
-function snowflakeAccount(): string {
-  const v = process.env["SNOWFLAKE_ACCOUNT"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("SNOWFLAKE_ACCOUNT is not set");
-  }
-  return v;
-}
-
 function authHeader(): Record<string, string> {
-  const t = process.env["SNOWFLAKE_TOKEN"]?.trim();
-  if (t === undefined || t === "") {
-    throw new Error("SNOWFLAKE_TOKEN is not set");
-  }
   return {
-    Authorization: `Bearer ${t}`,
+    Authorization: `Bearer ${requiredEnv("SNOWFLAKE_TOKEN")}`,
     "Content-Type": "application/json",
     Accept: "application/json",
   };
@@ -34,7 +25,7 @@ function authHeader(): Record<string, string> {
  * the read-only `fetchTables` path and the HITL-gated write tools so auth/transport stays in one place.
  */
 async function executeStatement(statement: string): Promise<unknown> {
-  const url = `https://${snowflakeAccount()}.snowflakecomputing.com/api/v2/statements`;
+  const url = `https://${requiredEnv("SNOWFLAKE_ACCOUNT")}.snowflakecomputing.com/api/v2/statements`;
   const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: authHeader(),
@@ -67,13 +58,6 @@ function sfLiteral(v: string): string {
 const TABLES_SQL =
   "SELECT table_catalog AS database_name, table_schema AS schema_name, table_name, " +
   "row_count, last_altered FROM information_schema.tables WHERE table_schema <> 'INFORMATION_SCHEMA'";
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
 
 function rowsFromStatementsResponse(parsed: unknown): Record<string, unknown>[] {
   const root = asRecord(parsed);
@@ -141,10 +125,7 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
   reg(
     "snowflake_list",
     "List Snowflake tables across all databases and schemas. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
       const limit = p.limit ?? 200;
       const offset =

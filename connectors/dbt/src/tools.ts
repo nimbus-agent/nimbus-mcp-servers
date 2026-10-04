@@ -1,19 +1,13 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, optionalBaseUrl } from "../../../shared/env-json-api.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterDbtJobs } from "./search-filter.ts";
 
 const DEFAULT_API_BASE = "https://cloud.getdbt.com";
 
-function apiBase(): string {
-  const v = process.env["DBT_API_BASE"]?.trim();
-  return v === undefined || v === "" ? DEFAULT_API_BASE : stripTrailingSlashes(v);
-}
-
 const dbtGet = createJsonGetter({
-  base: () => `${apiBase()}/api/v2`,
+  base: () => `${optionalBaseUrl("DBT_API_BASE", DEFAULT_API_BASE)}/api/v2`,
   label: "dbt Cloud",
   headers: envAuthHeaders({ env: "DBT_TOKEN", scheme: "Token" }),
 });

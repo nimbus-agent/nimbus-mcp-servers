@@ -22,6 +22,15 @@ const GOOGLE_APPS_EXPORT_MIME: Readonly<Record<string, string>> = {
   "application/vnd.google-apps.spreadsheet": "text/csv",
 };
 
+/** A Drive API response's JSON; throws `Drive API <status>: <first 200 chars>` when it is not ok. */
+async function driveJson(res: Response): Promise<unknown> {
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Drive API ${String(res.status)}: ${body.slice(0, 200)}`);
+  }
+  return (await res.json()) as unknown;
+}
+
 async function driveListFiles(
   token: string,
   pageSize: number,
@@ -40,11 +49,7 @@ async function driveListFiles(
   const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Drive API ${String(res.status)}: ${body.slice(0, 200)}`);
-  }
-  return (await res.json()) as unknown;
+  return driveJson(res);
 }
 
 async function driveGetFileMetadata(token: string, fileId: string): Promise<unknown> {
@@ -53,11 +58,7 @@ async function driveGetFileMetadata(token: string, fileId: string): Promise<unkn
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?${params.toString()}`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Drive API ${String(res.status)}: ${body.slice(0, 200)}`);
-  }
-  return (await res.json()) as unknown;
+  return driveJson(res);
 }
 
 type DownloadOk = {
@@ -241,11 +242,7 @@ async function drivePatchJson(
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Drive API ${String(res.status)}: ${errText.slice(0, 200)}`);
-  }
-  return (await res.json()) as unknown;
+  return driveJson(res);
 }
 
 async function drivePostCreateMetadata(
@@ -260,11 +257,7 @@ async function drivePostCreateMetadata(
     },
     body: JSON.stringify(metadata),
   });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Drive API ${String(res.status)}: ${errText.slice(0, 200)}`);
-  }
-  return (await res.json()) as unknown;
+  return driveJson(res);
 }
 
 async function driveMultipartCreate(
@@ -295,21 +288,13 @@ async function driveMultipartCreate(
     },
     body,
   });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Drive API ${String(res.status)}: ${errText.slice(0, 200)}`);
-  }
-  return (await res.json()) as unknown;
+  return driveJson(res);
 }
 
 async function driveListParents(token: string, fileId: string): Promise<string[]> {
   const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=parents`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Drive API ${String(res.status)}: ${errText.slice(0, 200)}`);
-  }
-  const json: unknown = await res.json();
+  const json = await driveJson(res);
   if (json === null || typeof json !== "object" || Array.isArray(json)) {
     return [];
   }

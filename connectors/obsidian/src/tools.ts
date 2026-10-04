@@ -18,6 +18,7 @@ import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
+  type McpListResult,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
 
@@ -172,6 +173,20 @@ function findVaultByIdOrPathPrefix(
   return vaults.find((v) => v.id === needle || v.root === needle);
 }
 
+/**
+ * Adapt a synchronous tool body — every obsidian tool works the vault with synchronous file I/O —
+ * to the registrars' Promise-returning handler contract.
+ *
+ * Async with nothing to await, ON PURPOSE: a body that throws (a malformed id, an unknown vault, an
+ * unreadable note) must REJECT, as every other tool call does. `Promise.resolve(body(parsed))`
+ * would throw at the call site instead.
+ */
+function syncToolHandler<T>(
+  body: (parsed: T) => McpListResult,
+): (parsed: T) => Promise<McpListResult> {
+  return async (parsed) => body(parsed); // NOSONAR S7503: the async is the adapter — it turns a synchronous body's throw into the rejection the handler contract promises.
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const OBSIDIAN_TOOL_NAMES = [
   "obsidian_list",
@@ -263,7 +278,7 @@ export function registerObsidianTools(
     "obsidian_list",
     "List Obsidian notes (optionally filtered by vault id, vault path, or frontmatter tag).",
     obsidianListSchema,
-    async (parsed) => {
+    syncToolHandler((parsed) => {
       const limit = parsed.limit ?? 200;
       const filterVault =
         parsed.vault === undefined ? undefined : findVaultByIdOrPathPrefix(VAULTS, parsed.vault);
@@ -293,7 +308,7 @@ export function registerObsidianTools(
         }
       }
       return jsonResult(out);
-    },
+    }),
   );
 
   const obsidianGetSchema = z.object({
@@ -306,7 +321,7 @@ export function registerObsidianTools(
     "obsidian_get",
     "Read a single Obsidian note by id, or by (vault, path) pair.",
     obsidianGetSchema,
-    async (parsed) => {
+    syncToolHandler((parsed) => {
       let v: VaultEntry | undefined;
       let rel = "";
       if (parsed.id !== undefined) {
@@ -334,7 +349,7 @@ export function registerObsidianTools(
         title: note.title,
         body: note.body,
       });
-    },
+    }),
   );
 
   const obsidianSearchSchema = z.object({
@@ -347,7 +362,7 @@ export function registerObsidianTools(
     "obsidian_search",
     "Substring-match against note title and body across all configured vaults.",
     obsidianSearchSchema,
-    async (parsed) => {
+    syncToolHandler((parsed) => {
       const limit = parsed.limit ?? 50;
       const needle = parsed.query.toLowerCase();
       const targets =
@@ -382,7 +397,7 @@ export function registerObsidianTools(
         }
       }
       return jsonResult(out);
-    },
+    }),
   );
 
   const appendDailyNoteSchema = z.object({
@@ -404,7 +419,7 @@ export function registerObsidianTools(
     },
     "Append text to today's Obsidian daily note. Creates the file if it does not exist. Always appends — never overwrites. Adds a leading newline when the existing file does not end in one. Requires HITL `obsidian.note.append`.",
     appendDailyNoteSchema,
-    async (parsed) => {
+    syncToolHandler((parsed) => {
       const v = findVaultByIdOrPathPrefix(VAULTS, parsed.vault_id);
       if (v === undefined) {
         throw new Error("Unknown vault_id");
@@ -446,6 +461,6 @@ export function registerObsidianTools(
         path: rel,
         bytes,
       });
-    },
+    }),
   );
 }

@@ -112,12 +112,12 @@ export function envAuthHeaders(cfg: {
 }
 
 /**
- * The fetch this getter uses. Defaults to the global `fetch`.
+ * The fetch the getter and the poster use. Defaults to the global `fetch`.
  *
- * A seam because two connectors (argocd, flux) reach self-hosted control planes
- * and use `fetchWithTimeout` instead: a cluster that stops answering should fail
- * the tool call, not hang it. They were the only two still carrying a
- * hand-written copy of this getter, and a timeout was the whole reason.
+ * A seam because the connectors that reach a self-hosted control plane (argocd,
+ * flux, mlflow) use `fetchWithTimeout` instead: a server that stops answering
+ * should fail the tool call, not hang it. A timeout was the whole reason they
+ * had carried hand-written copies of this getter.
  */
 export type JsonFetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -137,6 +137,35 @@ export interface JsonApiConfig {
 }
 
 /**
+ * One request against `config`, shared by the getter and the poster: resolve the
+ * base, send what `init` builds from the request headers, and return the body
+ * text — throwing `"<errorPrefix> <status>: <body snippet>"` on any non-2xx.
+ *
+ * The base is resolved BEFORE the headers are built, so a connector missing both
+ * its URL and its credential names the URL first, as every hand-written copy did.
+ */
+function sendFor(
+  config: JsonApiConfig,
+): (
+  path: string,
+  init: (headers: Record<string, string>) => RequestInit,
+  errorPrefix: string,
+) => Promise<string> {
+  const { base, headers } = config;
+  const snippetMax = config.snippetMax ?? DEFAULT_SNIPPET_MAX;
+  const doFetch = config.fetch ?? ((url, init) => fetch(url, init));
+  return async (path, init, errorPrefix) => {
+    const root = typeof base === "string" ? base : base();
+    const res = await doFetch(`${root}${path}`, init(headers()));
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`${errorPrefix} ${String(res.status)}: ${text.slice(0, snippetMax)}`);
+    }
+    return text;
+  };
+}
+
+/**
  * A `(path) => Promise<unknown>` GET client for `config`. Resolves to the parsed
  * JSON body, and throws `"<label> <status>: <body snippet>"` on any non-2xx.
  *
@@ -144,16 +173,37 @@ export interface JsonApiConfig {
  * `encodeURIComponent` any user-supplied segment, exactly as before.
  */
 export function createJsonGetter(config: JsonApiConfig): (path: string) => Promise<unknown> {
-  const { base, label, headers } = config;
-  const snippetMax = config.snippetMax ?? DEFAULT_SNIPPET_MAX;
-  const doFetch = config.fetch ?? ((url, init) => fetch(url, init));
-  return async (path: string): Promise<unknown> => {
-    const root = typeof base === "string" ? base : base();
-    const res = await doFetch(`${root}${path}`, { headers: headers() });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`${label} ${String(res.status)}: ${text.slice(0, snippetMax)}`);
-    }
-    return JSON.parse(text) as unknown;
+  const { label } = config;
+  const send = sendFor(config);
+  return async (path: string): Promise<unknown> =>
+    JSON.parse(await send(path, (headers) => ({ headers }), label)) as unknown;
+}
+
+/**
+ * The mutating twin of {@link createJsonGetter}: a `(path, body) => Promise<unknown>`
+ * POST client that sends `body` as JSON (adding `Content-Type: application/json` to
+ * the request headers) and resolves to the parsed response — `{}` when the response
+ * body is empty, as a mutation's often is.
+ *
+ * Throws `"<label> <path> <status>: <body snippet>"` on any non-2xx: unlike the
+ * getter's, the message names the path, so a failed mutation says which endpoint
+ * refused it. The argocd and mlflow write tools each carried a copy of this.
+ */
+export function createJsonPoster(
+  config: JsonApiConfig,
+): (path: string, body: unknown) => Promise<unknown> {
+  const { label } = config;
+  const send = sendFor(config);
+  return async (path: string, body: unknown): Promise<unknown> => {
+    const text = await send(
+      path,
+      (headers) => ({
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      `${label} ${path}`,
+    );
+    return text === "" ? {} : (JSON.parse(text) as unknown);
   };
 }

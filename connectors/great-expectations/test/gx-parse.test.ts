@@ -217,6 +217,19 @@ describe("deriveBatchId — fallback ladder (via parseValidationResult)", () => 
     // Non-record active_batch_definition / batch_spec do not throw.
     expect(batchIdFor({ active_batch_definition: "nope", batch_spec: 7 })).toBe("_");
   });
+
+  it("moves past an active_batch_definition that names nothing to batch_spec", () => {
+    expect(
+      batchIdFor({
+        active_batch_definition: { batch_identifiers: "", data_asset_name: 3 },
+        batch_spec: { path: "/data/orders.csv" },
+      }),
+    ).toBe("/data/orders.csv");
+  });
+
+  it("defaults to '_' when batch_spec is a record naming neither a path nor a table", () => {
+    expect(batchIdFor({ batch_spec: { format: "csv", path: "" } })).toBe("_");
+  });
 });
 
 function runFor(meta: Record<string, unknown>): { runId: string | null; runTime: string | null } {
@@ -246,6 +259,15 @@ describe("deriveRunId / deriveRunTime (via parseValidationResult)", () => {
     const { runId, runTime } = runFor({ run_id: { run_time: "2026-03-03T03:03:03Z" } });
     expect(runId).toBe("2026-03-03T03:03:03Z");
     expect(runTime).toBe("2026-03-03T03:03:03Z");
+  });
+
+  it("object run_id without a run_time takes the time from meta.run_time", () => {
+    const { runId, runTime } = runFor({
+      run_id: { run_name: "nightly" },
+      run_time: "2026-05-05T05:05:05Z",
+    });
+    expect(runId).toBe("nightly");
+    expect(runTime).toBe("2026-05-05T05:05:05Z");
   });
 
   it("run_time falls back to validation_time when no run_time anywhere", () => {

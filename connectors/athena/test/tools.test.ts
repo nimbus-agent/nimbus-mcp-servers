@@ -156,6 +156,23 @@ describe("athena_search", () => {
     expect(out.matches).toHaveLength(1);
   });
 
+  it("skips database and table entries that are not objects", async () => {
+    cli({ DatabaseList: [null, "sales", ["sales"], { Name: "sales" }] });
+    const dbs = (await tools.callJson("athena_search", { catalog: "c", query: "sal" })) as {
+      matches: unknown[];
+    };
+    expect(dbs.matches).toEqual([{ Name: "sales" }]);
+
+    spawn?.restore();
+    cli({ TableMetadataList: [7, { Name: "users" }] });
+    const tables = (await tools.callJson("athena_search", {
+      catalog: "c",
+      database: "d",
+      query: "user",
+    })) as { matches: unknown[] };
+    expect(tables.matches).toEqual([{ Name: "users" }]);
+  });
+
   it("returns no matches when the CLI reports an unexpected envelope", async () => {
     cli({ SomethingElse: [{ CatalogName: "x" }] });
     expect((await tools.callJson("athena_search", { query: "x" })) as unknown).toEqual({

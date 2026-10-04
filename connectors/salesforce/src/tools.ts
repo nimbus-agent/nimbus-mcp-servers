@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -9,20 +9,8 @@ const API_VERSION = "v60.0";
 const OPPORTUNITY_FIELDS =
   "Id, Name, StageName, Amount, CloseDate, Probability, Type, IsClosed, IsWon, LastModifiedDate, CreatedDate";
 
-function instanceUrl(): string {
-  let raw = process.env["SALESFORCE_INSTANCE_URL"]?.trim();
-  if (raw === undefined || raw === "") {
-    throw new Error("SALESFORCE_INSTANCE_URL is not set");
-  }
-  // Strip trailing slashes without a backtracking regex.
-  while (raw.endsWith("/")) {
-    raw = raw.slice(0, -1);
-  }
-  return raw;
-}
-
 const salesforceGet = createJsonGetter({
-  base: instanceUrl,
+  base: () => requiredBaseUrl("SALESFORCE_INSTANCE_URL"),
   label: "Salesforce",
   headers: envAuthHeaders({ env: "SALESFORCE_ACCESS_TOKEN" }),
 });

@@ -109,6 +109,15 @@ describe("looker list pagination", () => {
     expect(new URL(urls[0] as string).searchParams.get("offset")).toBe("4");
   });
 
+  it("looker_list: a cursor that is not a number, or is negative, reads from offset 0", async () => {
+    installFetch(() => []);
+    const tools = captureTools();
+    await tool(tools, "looker_list")({ limit: 2, cursor: "page-two" });
+    await tool(tools, "looker_list")({ limit: 2, cursor: "-6" });
+
+    expect(urls.map((u) => new URL(u).searchParams.get("offset"))).toEqual(["0", "0"]);
+  });
+
   it("looker_models_list: paginates LookML models with limit/offset", async () => {
     installFetch((offset) => (offset === 0 ? [{ name: "m1" }, { name: "m2" }] : [{ name: "m3" }]));
     const tools = captureTools();

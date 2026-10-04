@@ -1,6 +1,6 @@
 /**
  * walk-files — the bounded recursive directory walk the local-filesystem
- * connectors share.
+ * connectors share, and the path-traversal guard that goes with it.
  *
  * `great-expectations`, `localdb` and `dataprofile` each scan a configured
  * directory tree for the files they care about (`*.json`, `*.sql`, and a set of
@@ -17,11 +17,15 @@
  * GX run directory is small) so it stays a per-caller argument rather than
  * being averaged away — but it is now visibly an argument rather than three
  * independent constants that happen to differ.
+ *
+ * The same three connectors each carried a copy of {@link assertWithinDir} too,
+ * identical but for the directory named in the error — a second security
+ * control in three hand-written copies, shared for the same reason.
  */
 
 import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 export interface WalkFilesOptions<T> {
   /** Hard cap on results. The walk stops as soon as it is reached. */
@@ -67,7 +71,7 @@ export async function walkFiles<T>(root: string, options: WalkFilesOptions<T>): 
       }
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(full, depth + 1);
+        await walk(full, depth + 1); // NOSONAR S9382: depth-first under one shared maxFiles cap — a subtree must finish before the next starts or the cap stops at a nondeterministic point, and concurrent readdirs over a wide tree are the exhaustion this walk exists to bound.
       } else if (entry.isFile()) {
         const kept = options.select(entry, full);
         if (kept !== undefined) {
@@ -91,4 +95,24 @@ export function byExtension(
   const wanted = extensions.map((x) => x.toLowerCase());
   return (entry: Dirent, full: string): string | undefined =>
     wanted.some((x) => entry.name.toLowerCase().endsWith(x)) ? full : undefined;
+}
+
+/**
+ * The path-traversal guard: throws `"path escapes <what>"` unless `candidate` (an
+ * absolute, resolved path) is `root` itself or a descendant of it. `what` names the
+ * directory for the message, e.g. `"the configured local DB scripts dir"`.
+ *
+ * A `relative()` that starts with `..` climbed out of `root` (this also covers
+ * `..<sep>`); one that is absolute could not be expressed relative to it at all — a
+ * different drive on Windows. It fails closed: a child whose own name begins with
+ * `..` (such as `..cache`) is refused too.
+ */
+export function assertWithinDir(candidate: string, root: string, what: string): void {
+  const rel = relative(root, candidate);
+  if (rel === "") {
+    return;
+  }
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`path escapes ${what}`);
+  }
 }

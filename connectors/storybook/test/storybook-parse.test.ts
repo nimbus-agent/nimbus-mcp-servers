@@ -65,6 +65,20 @@ describe("filterStories", () => {
     expect(filterStories(stories, "  ")).toHaveLength(2);
     expect(filterStories(stories, "nope")).toHaveLength(0);
   });
+
+  test("searches a story with no title or name by its id and tags", () => {
+    const untitled: StorybookStory = {
+      id: "legacy--story",
+      title: null,
+      name: null,
+      importPath: null,
+      tags: ["deprecated"],
+      entryType: "story",
+    };
+    expect(filterStories([untitled], "legacy")).toEqual([untitled]);
+    expect(filterStories([untitled], "deprecated")).toEqual([untitled]);
+    expect(filterStories([untitled], "components")).toEqual([]);
+  });
 });
 
 describe("loadStories (real fs)", () => {

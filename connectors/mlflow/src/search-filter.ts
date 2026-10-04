@@ -2,14 +2,10 @@ import {
   asRecord,
   makeQueryFilter,
   type SearchMatchOptions,
+  stringField,
 } from "../../../shared/search-filter.ts";
 
 export type MlflowSearchMatchOptions = SearchMatchOptions;
-
-function stringAt(row: Record<string, unknown>, key: string): string {
-  const v = row[key];
-  return typeof v === "string" ? v : "";
-}
 
 function tagsHaystack(row: Record<string, unknown>): string {
   const tags = row["tags"];
@@ -22,7 +18,7 @@ function tagsHaystack(row: Record<string, unknown>): string {
     if (tag === undefined) {
       continue;
     }
-    parts.push(`${stringAt(tag, "key")}=${stringAt(tag, "value")}`);
+    parts.push(`${stringField(tag, "key")}=${stringField(tag, "value")}`);
   }
   return parts.join(" ");
 }
@@ -32,7 +28,7 @@ function fieldsOf(item: unknown): readonly string[] | null {
   if (row === undefined) {
     return null;
   }
-  return [stringAt(row, "name"), stringAt(row, "description"), tagsHaystack(row)];
+  return [stringField(row, "name"), stringField(row, "description"), tagsHaystack(row)];
 }
 
 export const filterMlflowModels = makeQueryFilter(fieldsOf);

@@ -1,21 +1,12 @@
 import { z } from "zod";
-import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { createJsonGetter, envAuthHeaders, requiredBaseUrl } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
 import { filterMetabaseDashboards } from "./search-filter.ts";
 
-function apiBase(): string {
-  const v = process.env["METABASE_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("METABASE_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
 const mbGet = createJsonGetter({
-  base: apiBase,
+  base: () => requiredBaseUrl("METABASE_URL"),
   label: "Metabase",
   headers: envAuthHeaders({ env: "METABASE_API_KEY", scheme: "", header: "x-api-key" }),
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { runCliJson, runCliOk, runCliOkThrowing } from "./run-cli-json.ts";
+import { runCliJson, runCliJsonThrowing, runCliOk, runCliOkThrowing } from "./run-cli-json.ts";
 
 // Spawn the current Bun binary with `-e <js>` — present on every platform, no shell.
 const BUN = process.execPath;
@@ -73,5 +73,42 @@ describe("runCliOkThrowing", () => {
 
   it("throws on a non-zero exit", async () => {
     await expect(runCliOkThrowing(evalCmd("process.exit(1)"), {})).rejects.toThrow("exited 1");
+  });
+});
+
+describe("the failure message runCliOk and runCliJson share", () => {
+  it("names the binary, the exit code and the first 500 characters of stderr", async () => {
+    const js = "process.stderr.write('e'.repeat(500) + 'TAIL'); process.exit(4)";
+    const expected = { ok: false as const, message: `${BUN} exited 4: ${"e".repeat(500)}` };
+    expect(await runCliOk(evalCmd(js), {})).toEqual(expected);
+    expect(await runCliJson(evalCmd(js), {})).toEqual(expected);
+  });
+});
+
+describe("runCliJsonThrowing", () => {
+  it("resolves to the parsed JSON", async () => {
+    await expect(
+      runCliJsonThrowing(evalCmd("process.stdout.write(JSON.stringify([1,{a:2}]))"), {}),
+    ).resolves.toEqual([1, { a: 2 }]);
+  });
+
+  it("resolves to null when the command printed nothing", async () => {
+    await expect(runCliJsonThrowing(evalCmd("process.exit(0)"), {})).resolves.toBeNull();
+  });
+
+  it("throws the exit message on a non-zero exit", async () => {
+    await expect(
+      runCliJsonThrowing(evalCmd("process.stderr.write('denied'); process.exit(2)"), {}),
+    ).rejects.toThrow(`${BUN} exited 2: denied`);
+  });
+
+  it("throws on output that is not JSON", async () => {
+    await expect(
+      runCliJsonThrowing(evalCmd("process.stdout.write('not json')"), {}),
+    ).rejects.toThrow("invalid JSON from CLI: not json");
+  });
+
+  it("throws on an empty command", async () => {
+    await expect(runCliJsonThrowing([], {})).rejects.toThrow("empty command");
   });
 });

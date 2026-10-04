@@ -1,14 +1,21 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { type AuditEntry, appendAuditEntry, verifyAuditChain } from "./audit-chain.ts";
 
+const tempDirs: string[] = [];
+
 async function tempLog(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "nimbus-audit-"));
+  tempDirs.push(dir);
   return join(dir, "audit.jsonl");
 }
+
+afterAll(async () => {
+  await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 function entry(tool: string, outcome: AuditEntry["outcome"]): AuditEntry {
   return { ts: "2026-08-23T00:00:00.000Z", tool, outcome, connector: "github", detail: {} };
@@ -98,5 +105,55 @@ describe("audit chain", () => {
     expect(shuffled).toBe(forward);
     // Nested objects go through the same comparator, so pin that too.
     expect(await firstHash({ o: { p: 1, q: 2 } })).toBe(await firstHash({ o: { q: 2, p: 1 } }));
+  });
+
+  test("an entry with an undefined value verifies, hashed as the line that was written", async () => {
+    // JSON.stringify drops a key whose value is undefined, so that key is not in the log. The hash
+    // used to include it as `null`, and the entry then failed verification on its first read.
+    const p = await tempLog();
+    await appendAuditEntry(p, {
+      ts: "2026-08-23T00:00:00.000Z",
+      connector: "kubernetes",
+      tool: "k8s_pod_delete",
+      outcome: "executed",
+      // In an ARRAY, JSON.stringify writes undefined as null - and so must the hash.
+      detail: {
+        preState: { namespace: undefined, podName: "web-1" },
+        list: [1, "two", null, undefined],
+      },
+    });
+    await appendAuditEntry(p, entry("k8s_pod_delete", "executed"));
+    const written = JSON.parse((await readFile(p, "utf8")).split("\n")[0] as string) as {
+      entry: AuditEntry;
+    };
+    expect(written.entry.detail).toEqual({
+      preState: { podName: "web-1" },
+      list: [1, "two", null, null],
+    });
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 2 });
+  });
+
+  test("an undefined value hashes exactly like the absent key, and unlike null", async () => {
+    async function firstHash(detail: Record<string, unknown>): Promise<string> {
+      const p = await tempLog();
+      await appendAuditEntry(p, {
+        ts: "2026-08-23T00:00:00.000Z",
+        connector: "kubernetes",
+        tool: "t",
+        outcome: "executed",
+        detail,
+      });
+      return (JSON.parse((await readFile(p, "utf8")).trimEnd()) as { hash: string }).hash;
+    }
+    const absent = await firstHash({ podName: "web-1" });
+    expect(await firstHash({ namespace: undefined, podName: "web-1" })).toBe(absent);
+    // A null IS written, so it must still count.
+    expect(await firstHash({ namespace: null, podName: "web-1" })).not.toBe(absent);
+  });
+
+  test("a log file that is empty or only whitespace verifies as an empty chain", async () => {
+    const p = await tempLog();
+    await writeFile(p, "\n  \n");
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
   });
 });

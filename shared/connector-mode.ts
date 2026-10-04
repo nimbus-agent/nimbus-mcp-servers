@@ -45,8 +45,9 @@ export function getConnectorMode(): ConnectorMode {
 
 /**
  * TEST-ONLY: clear the lock between cases. Never called from production code — the
- * `audit:connector-consent` gate permits `setConnectorMode` only in the two sanctioned entrypoints,
- * and this function exists so tests never need to reach for it.
+ * `audit:connector-consent` gate lets no production file here but this one name `setConnectorMode`
+ * (its one production caller is the gateway's `run-bundled-connector.ts`), and this function
+ * exists so tests never need to reach for it.
  *
  * This matters more than it looks. `bun test` runs MANY TEST FILES IN ONE PROCESS — verified: two
  * files sharing a module observed the same pid, and state set by the first was visible to the

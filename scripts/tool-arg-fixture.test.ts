@@ -98,4 +98,124 @@ describe("fixtureFor", () => {
       .refine((v) => v.a !== v.b, { message: "a and b must differ" });
     expect(fixtureFor(schema as unknown as ParsableSchema)).toBeUndefined();
   });
+
+  it("grows an array to its minimum length", () => {
+    expect(accepted(z.object({ ids: z.array(z.string()).min(3) }))).toEqual({
+      ids: ["x", "x", "x"],
+    });
+  });
+
+  it("trims a seeded string and lowers a seeded number to their maximums", () => {
+    expect(
+      accepted(z.object({ code: z.string().max(3), n: z.number().max(10) }), {
+        code: "toolong",
+        n: 50,
+      }),
+    ).toEqual({ code: "too", n: 10 });
+  });
+
+  it("gives up on a value over its maximum that it cannot shrink", () => {
+    // An over-long seeded array is not trimmed: the repair would be a no-op, so the caller is
+    // told rather than looping on a value that never changes.
+    const schema = z.object({ ids: z.array(z.string()).max(1) });
+    expect(fixtureFor(schema as unknown as ParsableSchema, { ids: ["a", "b"] })).toBeUndefined();
+  });
+
+  it("stops after a bounded number of repairs when a schema never settles", () => {
+    // Every answer raises the minimum again, so each repair "succeeds" and none is enough.
+    let calls = 0;
+    const restless: ParsableSchema = {
+      safeParse: () => {
+        calls += 1;
+        return {
+          success: false,
+          error: { issues: [{ code: "too_small", path: ["n"], minimum: calls + 1 }] },
+        };
+      },
+    };
+    expect(fixtureFor(restless)).toBeUndefined();
+    expect(calls).toBe(24);
+  });
+});
+
+/**
+ * A schema that reports `issues` until `done(args)` holds — for issue shapes Zod itself does not
+ * produce today but the repair loop is written to read (bigint bounds, `options`, an issue with
+ * no `expected`).
+ */
+function scripted(
+  issues: (args: Record<string, unknown>) => readonly Record<string, unknown>[],
+): ParsableSchema {
+  return {
+    safeParse: (value) => {
+      const found = issues(value as Record<string, unknown>);
+      return found.length === 0
+        ? { success: true }
+        : { success: false, error: { issues: found as never } };
+    },
+  };
+}
+
+describe("fixtureFor, issue shapes beyond Zod's current ones", () => {
+  it("reads a bigint minimum and maximum as numbers", () => {
+    const bounded = scripted((a) => [
+      ...(typeof a["n"] === "number" && a["n"] >= 3
+        ? []
+        : [{ code: "too_small", path: ["n"], minimum: 3n, origin: "number" }]),
+      ...(typeof a["m"] === "number" && a["m"] <= 5
+        ? []
+        : [{ code: "too_big", path: ["m"], maximum: 5n }]),
+    ]);
+    expect(fixtureFor(bounded, { m: 10 })).toEqual({ n: 3, m: 5 });
+  });
+
+  it("takes a missing minimum or maximum to be 1", () => {
+    const unbounded = scripted((a) => [
+      ...(a["s"] === "x" ? [] : [{ code: "too_small", path: ["s"], origin: "string" }]),
+      ...(a["n"] === 1 ? [] : [{ code: "too_big", path: ["n"] }]),
+    ]);
+    expect(fixtureFor(unbounded, { n: 9 })).toEqual({ s: "x", n: 1 });
+  });
+
+  it("picks from `options` when an enum issue carries no `values`", () => {
+    const legacyEnum = scripted((a) =>
+      a["mode"] === "fast"
+        ? []
+        : [{ code: "invalid_enum_value", path: ["mode"], options: ["fast"] }],
+    );
+    expect(fixtureFor(legacyEnum)).toEqual({ mode: "fast" });
+  });
+
+  it("gives up on an enum issue that names no allowed value at all", () => {
+    const nameless = scripted(() => [{ code: "invalid_value", path: ["mode"] }]);
+    expect(fixtureFor(nameless)).toBeUndefined();
+  });
+
+  it("answers an invalid_type issue that names no expected type with a string", () => {
+    const untyped = scripted((a) =>
+      typeof a["id"] === "string" ? [] : [{ code: "invalid_type", path: ["id"] }],
+    );
+    expect(fixtureFor(untyped)).toEqual({ id: "x" });
+  });
+
+  it("gives up on any other issue that names no expected type", () => {
+    // Even though a string would happen to satisfy this one: nothing in the issue says so, and a
+    // guess is how a fixture that cannot reach the behaviour under test gets reported as fine.
+    const custom = scripted((a) =>
+      typeof a["id"] === "string" ? [] : [{ code: "custom", path: ["id"] }],
+    );
+    expect(fixtureFor(custom)).toBeUndefined();
+  });
+
+  it("gives up, rather than looping, on a failure that reports no issues", () => {
+    let calls = 0;
+    const opaque: ParsableSchema = {
+      safeParse: () => {
+        calls += 1;
+        return { success: false };
+      },
+    };
+    expect(fixtureFor(opaque)).toBeUndefined();
+    expect(calls).toBe(1);
+  });
 });

@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { createCliJsonRunner, isRecord, strField } from "../../../shared/cli-json-kit.ts";
+import {
+  createCliJsonRunner,
+  gcloudProjectArgs,
+  isRecord,
+  strField,
+} from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -25,12 +30,6 @@ function asArray(parsed: unknown): unknown[] {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-/** The configured GCP project id, if `GOOGLE_CLOUD_PROJECT` is set at spawn. */
-function projectArgs(): string[] {
-  const project = process.env["GOOGLE_CLOUD_PROJECT"]?.trim();
-  return project !== undefined && project !== "" ? ["--project", project] : [];
-}
-
 /**
  * Run `gcloud logging <args> --format json` and parse stdout. gcloud reads
  * Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS`
@@ -38,7 +37,7 @@ function projectArgs(): string[] {
  */
 const gcloudLogging = createCliJsonRunner(
   {
-    argv: (args) => ["gcloud", "logging", ...args, ...projectArgs(), "--format", "json"],
+    argv: (args) => ["gcloud", "logging", ...args, ...gcloudProjectArgs(), "--format", "json"],
     label: "gcloud logging",
     emptyResult: [],
   },

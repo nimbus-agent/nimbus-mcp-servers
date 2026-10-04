@@ -75,6 +75,32 @@ function render(constant: string, names: readonly string[]): string {
   return `export const ${constant} = [\n${entries}] as const;`;
 }
 
+/** A connector whose names module declares a literal `*_TOOL_NAMES` list. */
+interface DeclaredNames {
+  readonly connector: string;
+  readonly file: string;
+  readonly declared: readonly string[];
+}
+
+/** Every connector under `root` with a literal declaration to check, in directory order. */
+function declaredConnectors(root: string): DeclaredNames[] {
+  const out: DeclaredNames[] = [];
+  for (const entry of readdirSync(join(root, "connectors"), { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const file = namesFile(root, entry.name);
+    if (file === undefined) {
+      continue;
+    }
+    const decl = declaration(readFileSync(file, "utf8"));
+    if (decl !== undefined) {
+      out.push({ connector: entry.name, file, declared: decl.names });
+    }
+  }
+  return out;
+}
+
 /**
  * Compare every connector's declared names against its registered ones.
  *
@@ -87,20 +113,22 @@ export async function findToolNamesDrift(root: string = ROOT): Promise<ToolNames
   resetConnectorModeForTests();
   setConnectorMode("gateway");
   try {
-    for (const entry of readdirSync(join(root, "connectors"), { withFileTypes: true })) {
-      if (!entry.isDirectory()) {
-        continue;
+    // No import depends on another, and each module stays paired with its own connector, so the
+    // modules load together; the comparison below still runs, and reports, in directory order.
+    // allSettled, not all: every load has finished before anything below runs, the `finally`
+    // included, and a module that fails to load is reported as the first such in directory order
+    // rather than as whichever failed first, so the error does not depend on how loads interleave.
+    const loads = await Promise.allSettled(
+      declaredConnectors(root).map(async (c) => ({
+        ...c,
+        mod: (await import(c.file)) as Record<string, unknown>,
+      })),
+    );
+    for (const load of loads) {
+      if (load.status === "rejected") {
+        throw load.reason;
       }
-      const path = namesFile(root, entry.name);
-      if (path === undefined) {
-        continue;
-      }
-      const src = readFileSync(path, "utf8");
-      const decl = declaration(src);
-      if (decl === undefined) {
-        continue;
-      }
-      const mod = (await import(path)) as Record<string, unknown>;
+      const { connector, file, declared, mod } = load.value;
       const register = Object.entries(mod).find(
         ([name, value]) =>
           /^register[A-Za-z]+Tools$/.test(name) && typeof value === "function" && value.length <= 2,
@@ -118,8 +146,8 @@ export async function findToolNamesDrift(root: string = ROOT): Promise<ToolNames
         // its own test covers it.
         continue;
       }
-      if (registered.join(" ") !== decl.names.join(" ")) {
-        drift.push({ connector: entry.name, file: path, declared: decl.names, registered });
+      if (registered.join(" ") !== declared.join(" ")) {
+        drift.push({ connector, file, declared, registered });
       }
     }
   } finally {
@@ -146,25 +174,44 @@ export async function syncToolNames(root: string = ROOT): Promise<string[]> {
   return drift.map((d) => d.connector);
 }
 
-if (import.meta.main) {
-  const drift = await findToolNamesDrift();
-  if (process.argv.includes("--check")) {
+/**
+ * The script: with `--check`, report the drift and return 1 when there is any; without it,
+ * rewrite the stale declarations. Returns the process exit code.
+ *
+ * Split out of the `import.meta.main` block so it can be tested — that guard is false under an
+ * import, so anything inside it is unreachable to every in-process test (the reason
+ * `check-connector-deps.ts` has `report()`).
+ */
+export async function main(
+  argv: readonly string[],
+  root: string = ROOT,
+  write: (text: string) => void = (text) => {
+    process.stdout.write(text);
+  },
+): Promise<number> {
+  if (argv.includes("--check")) {
+    const drift = await findToolNamesDrift(root);
     for (const item of drift) {
-      process.stdout.write(
+      write(
         `::error file=${item.file}::${item.connector} declares [${item.declared.join(", ")}] but registers [${item.registered.join(", ")}]\n`,
       );
     }
-    process.stdout.write(
+    write(
       drift.length === 0
         ? "tool names: ok\n"
         : `tool names: ${String(drift.length)} out of date — run \`bun run sync:tool-names\`\n`,
     );
-    process.exit(drift.length === 0 ? 0 : 1);
+    return drift.length === 0 ? 0 : 1;
   }
-  const updated = await syncToolNames();
-  process.stdout.write(
+  const updated = await syncToolNames(root);
+  write(
     updated.length === 0
       ? "tool names: already in sync\n"
       : `tool names: updated ${updated.join(", ")}\n`,
   );
+  return 0;
+}
+
+if (import.meta.main) {
+  process.exit(await main(process.argv));
 }

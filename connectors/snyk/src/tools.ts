@@ -32,6 +32,30 @@ async function snykPost(path: string, body: unknown): Promise<unknown> {
   return JSON.parse(text) as unknown;
 }
 
+/** Every severity Snyk reports: `snyk_list`'s default filter, and the one get/search always use. */
+const ALL_SEVERITIES: readonly string[] = ["critical", "high", "medium", "low"];
+
+/**
+ * One project's aggregated issues (`POST …/aggregated-issues`): vulnerability and licence issues
+ * of the given severities that are neither ignored nor patched.
+ */
+async function aggregatedIssues(
+  orgId: string,
+  projectId: string,
+  severities: readonly string[] = ALL_SEVERITIES,
+): Promise<unknown> {
+  const body = {
+    filters: {
+      severities,
+      types: ["vuln", "license"],
+      ignored: false,
+      patched: false,
+    },
+  };
+  const path = `/v1/org/${encodeURIComponent(orgId)}/project/${encodeURIComponent(projectId)}/aggregated-issues`;
+  return snykPost(path, body);
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const SNYK_TOOL_NAMES = ["snyk_get", "snyk_list", "snyk_search"] as const;
 
@@ -52,17 +76,7 @@ export function registerSnykTools(reg: ZodToolRegistrar): void {
       if (p.projectId === undefined) {
         return jsonResult(await snykGet(`/v1/org/${encodeURIComponent(p.orgId)}/projects`));
       }
-      const severities = p.severities ?? ["critical", "high", "medium", "low"];
-      const body = {
-        filters: {
-          severities,
-          types: ["vuln", "license"],
-          ignored: false,
-          patched: false,
-        },
-      };
-      const path = `/v1/org/${encodeURIComponent(p.orgId)}/project/${encodeURIComponent(p.projectId)}/aggregated-issues`;
-      const data = await snykPost(path, body);
+      const data = await aggregatedIssues(p.orgId, p.projectId, p.severities);
       if (p.limit !== undefined && data !== null && typeof data === "object") {
         const issues = (data as { issues?: unknown[] }).issues;
         if (Array.isArray(issues) && issues.length > p.limit) {
@@ -85,16 +99,7 @@ export function registerSnykTools(reg: ZodToolRegistrar): void {
       issueId: z.string().min(1),
     }),
     async (p) => {
-      const body = {
-        filters: {
-          severities: ["critical", "high", "medium", "low"],
-          types: ["vuln", "license"],
-          ignored: false,
-          patched: false,
-        },
-      };
-      const path = `/v1/org/${encodeURIComponent(p.orgId)}/project/${encodeURIComponent(p.projectId)}/aggregated-issues`;
-      const root = await snykPost(path, body);
+      const root = await aggregatedIssues(p.orgId, p.projectId);
       const issues = (root as { issues?: unknown[] } | null)?.issues;
       if (!Array.isArray(issues)) {
         throw new TypeError(`Snyk: project ${p.projectId} returned no issues envelope`);
@@ -123,16 +128,7 @@ export function registerSnykTools(reg: ZodToolRegistrar): void {
       limit: z.number().int().min(1).max(200).optional(),
     }),
     async (p) => {
-      const body = {
-        filters: {
-          severities: ["critical", "high", "medium", "low"],
-          types: ["vuln", "license"],
-          ignored: false,
-          patched: false,
-        },
-      };
-      const path = `/v1/org/${encodeURIComponent(p.orgId)}/project/${encodeURIComponent(p.projectId)}/aggregated-issues`;
-      const root = await snykPost(path, body);
+      const root = await aggregatedIssues(p.orgId, p.projectId);
       const issues = (root as { issues?: unknown[] } | null)?.issues;
       return matchesResult(issues, filterSnykAggregatedIssues, p);
     },

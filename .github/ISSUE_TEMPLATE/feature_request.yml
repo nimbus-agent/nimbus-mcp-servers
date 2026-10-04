@@ -6,13 +6,13 @@ body:
     id: problem
     attributes:
       label: What problem would this solve?
-      description: Describe the app / extension / integration use case or pain point.
+      description: Describe the use case — the service, the connector, and what you are trying to do with it.
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
       label: Proposed solution
-      description: What typed method or helper would you like the client to expose? (Remember the single-runtime-dependency constraint — only `@nimbus-dev/sdk`.)
+      description: The tool or connector you would like added or changed. (Remember the constraints — a tool that changes anything must go through the consent kit, and a new runtime dependency must be pure JavaScript.)
     validations:
       required: false

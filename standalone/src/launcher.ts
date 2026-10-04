@@ -10,7 +10,10 @@ const ID_RE = /^[a-z0-9-]+$/;
  *
  * A registration CALL, or the registrar handed to a shared kit — not a bare substring, which the
  * registrar's own `const registerWriteTool = ...` would satisfy even with nothing registered.
- * Kept in step with the twin in check-connector-consent.ts.
+ *
+ * The ONE copy. `audit:connector-consent` (scripts/check-connector-consent.ts) imports it rather
+ * than keeping a twin, so the launcher's runtime verdict and the audit's static one cannot drift.
+ * They had: the audit's twin learned to tolerate a carriage return (below) and this copy never did.
  *
  * Deliberately NOT a regular expression. The previous pattern was
  * `^\s*register[A-Za-z]*WriteTool\(` under `/m`, and it drew two rounds of ReDoS reports. The
@@ -25,9 +28,15 @@ const ID_RE = /^[a-z0-9-]+$/;
  * bounded work, no star sits next to an overlapping literal, and the accepted language is
  * unchanged — including the trailing-comma form, which still requires the comma to end the line.
  */
-function registersWriteTool(src: string): boolean {
+export function registersWriteTool(src: string): boolean {
   for (const line of src.split("\n")) {
-    const t = line.trimStart();
+    // trim(), not trimStart(): the equality below is exact, and a CRLF checkout leaves a trailing
+    // carriage return that breaks it. Observed in the consent audit on the first run of this repo
+    // on its own, before .gitattributes existed: it reported imap and protonmail as declaring
+    // ungated writes while both register through the kit, on a line reading `registerWriteTool,`
+    // plus a CR. That failed SAFE (a false finding there, a false refusal here — never a false
+    // green), but a verdict that depends on the checkout's line endings is waiting to be wrong.
+    const t = line.trim();
     if (t === "registerWriteTool,") return true;
     if (!t.startsWith("register")) continue;
     const at = t.indexOf("WriteTool(");
@@ -57,13 +66,13 @@ function connectorsDir(): string {
  * The id is validated against a strict allow-list BEFORE being joined into a path. A separator or
  * `..` would otherwise let the id escape the connectors directory and import an arbitrary module.
  */
-export function resolveConnectorEntry(id: string): string {
+export function resolveConnectorEntry(id: string, root: string = connectorsDir()): string {
   if (!ID_RE.test(id)) {
     throw new Error(
       `invalid connector id ${JSON.stringify(id)}: expected only lowercase letters, digits and hyphens`,
     );
   }
-  return join(connectorsDir(), id, "src", "server.ts");
+  return join(root, id, "src", "server.ts");
 }
 
 export type Eligibility =
@@ -154,6 +163,9 @@ export type ConnectorImporter = (entry: string) => Promise<{
 export async function runStandalone(
   argv: readonly string[],
   importConnector: ConnectorImporter = (entry) => import(entry),
+  // Injectable for the same reason as standaloneEligibility's root: every real connector is
+  // migrated, so only a fixture can show the refusal path end to end.
+  root: string = connectorsDir(),
 ): Promise<number> {
   const id = argv[0];
   if (id === undefined) {
@@ -162,7 +174,7 @@ export async function runStandalone(
   }
   let entry: string;
   try {
-    entry = resolveConnectorEntry(id);
+    entry = resolveConnectorEntry(id, root);
   } catch (e) {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
     return 2;
@@ -172,7 +184,7 @@ export async function runStandalone(
     return 2;
   }
 
-  const verdict = standaloneEligibility(id);
+  const verdict = standaloneEligibility(id, root);
   if (!verdict.eligible) {
     process.stderr.write(`${verdict.reason}\n`);
     return 3;

@@ -1,11 +1,14 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
+import { requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterMonteCarloIncidents } from "./search-filter.ts";
 
 const GRAPHQL_URL = "https://api.getmontecarlo.com/graphql";
@@ -35,20 +38,6 @@ const GET_INCIDENTS_QUERY = `
   }
 `.trim();
 
-function requireEnv(name: string): string {
-  const v = process.env[name]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error(`${name} is not set`);
-  }
-  return v;
-}
-
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 /**
  * Single POST helper for the Monte Carlo GraphQL endpoint. Sends `{ query, variables }` with the
  * `x-mcd-id`/`x-mcd-token` key-pair auth headers, throws on a non-ok HTTP status or a non-empty
@@ -75,10 +64,10 @@ async function mcGraphql(
   if (!res.ok) {
     throw new Error(`Monte Carlo API error ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = asObject(JSON.parse(text) as unknown) ?? {};
+  const parsed = asRecord(JSON.parse(text) as unknown) ?? {};
   const errors = parsed["errors"];
   if (Array.isArray(errors) && errors.length > 0) {
-    const first = asObject(errors[0])?.["message"];
+    const first = asRecord(errors[0])?.["message"];
     const message = typeof first === "string" ? first : JSON.stringify(errors[0]);
     throw new Error(`Monte Carlo GraphQL error: ${message}`);
   }
@@ -92,14 +81,14 @@ interface IncidentsPage {
 }
 
 function parseIncidentsPage(parsed: unknown): IncidentsPage {
-  const getIncidents = asObject(asObject(asObject(parsed)?.["data"])?.["getIncidents"]);
+  const getIncidents = asRecord(asRecord(asRecord(parsed)?.["data"])?.["getIncidents"]);
   const edges = Array.isArray(getIncidents?.["edges"]) ? (getIncidents["edges"] as unknown[]) : [];
   const incidents: unknown[] = [];
   for (const edge of edges) {
-    const node = asObject(edge)?.["node"];
+    const node = asRecord(edge)?.["node"];
     if (node !== undefined) incidents.push(node);
   }
-  const pageInfo = asObject(getIncidents?.["pageInfo"]);
+  const pageInfo = asRecord(getIncidents?.["pageInfo"]);
   const hasNextPage = pageInfo?.["hasNextPage"] === true;
   const endCursor = typeof pageInfo?.["endCursor"] === "string" ? pageInfo["endCursor"] : null;
   return { incidents, hasNextPage, endCursor };
@@ -151,13 +140,10 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
   reg(
     "montecarlo_list",
     "List Monte Carlo data-quality incidents (relay GraphQL `getIncidents`). Paginated: `cursor` (the relay `after` token) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
-    z.object({
-      cursor: z.string().nullable().optional(),
-      limit: z.number().int().min(1).max(500).optional(),
-    }),
+    cursorListInputSchema(),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const first = p.limit ?? 200;
       const after = p.cursor === undefined || p.cursor === "" ? null : p.cursor;
       const page = await fetchIncidentsPage(apiId, apiToken, first, after);
@@ -173,10 +159,10 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
       id: z.string().min(1),
     }),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const incidents = await fetchIncidents(apiId, apiToken);
-      const found = incidents.find((inc) => asObject(inc)?.["incidentId"] === p.id);
+      const found = incidents.find((inc) => asRecord(inc)?.["incidentId"] === p.id);
       if (found === undefined) {
         throw new Error(`Monte Carlo incident not found: ${p.id}`);
       }
@@ -189,46 +175,53 @@ export function registerMonteCarloTools(reg: ZodToolRegistrar, server: unknown):
     "Substring search across Monte Carlo incidents. Matches the query (case-insensitive) against incidentId, status, severity, and monitoredTable. Returns a `{ matches: [...] }` envelope.",
     searchToolInputSchema(200),
     async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
+      const apiId = requiredEnv("MONTECARLO_API_ID");
+      const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
       const incidents = await fetchIncidents(apiId, apiToken);
       const matches = filterMonteCarloIncidents(incidents, { query: p.query, limit: p.limit });
       return jsonResult({ matches });
     },
   );
 
-  registerWriteTool(
-    "montecarlo_incident_acknowledge",
-    {
-      mutates: "montecarlo.incident.acknowledge",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
-    "Acknowledge a Monte Carlo incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
-      await setIncidentFeedback(apiId, apiToken, p.incidentId, "ACKNOWLEDGED");
-      return jsonResult({ status: "ok", incidentId: p.incidentId });
-    },
-  );
+  /**
+   * Acknowledge and resolve are ONE mutation, `setIncidentFeedback`, with a different feedback
+   * value, so they share everything except their name, action type, description and that value.
+   */
+  function registerFeedbackTool(
+    name: string,
+    mutates: string,
+    description: string,
+    feedback: "ACKNOWLEDGED" | "RESOLVED",
+  ): void {
+    registerWriteTool(
+      name,
+      {
+        mutates,
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
+      },
+      description,
+      z.object({ incidentId: z.string().min(1) }),
+      async (p) => {
+        const apiId = requiredEnv("MONTECARLO_API_ID");
+        const apiToken = requiredEnv("MONTECARLO_API_TOKEN");
+        await setIncidentFeedback(apiId, apiToken, p.incidentId, feedback);
+        return jsonResult({ status: "ok", incidentId: p.incidentId });
+      },
+    );
+  }
 
-  registerWriteTool(
+  registerFeedbackTool(
+    "montecarlo_incident_acknowledge",
+    "montecarlo.incident.acknowledge",
+    "Acknowledge a Monte Carlo incident.",
+    "ACKNOWLEDGED",
+  );
+  registerFeedbackTool(
     "montecarlo_incident_resolve",
-    {
-      mutates: "montecarlo.incident.resolve",
-      recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-    },
+    "montecarlo.incident.resolve",
     "Resolve a Monte Carlo incident.",
-    z.object({ incidentId: z.string().min(1) }),
-    async (p) => {
-      const apiId = requireEnv("MONTECARLO_API_ID");
-      const apiToken = requireEnv("MONTECARLO_API_TOKEN");
-      await setIncidentFeedback(apiId, apiToken, p.incidentId, "RESOLVED");
-      return jsonResult({ status: "ok", incidentId: p.incidentId });
-    },
+    "RESOLVED",
   );
 }
 

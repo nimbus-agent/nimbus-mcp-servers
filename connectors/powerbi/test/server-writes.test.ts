@@ -157,4 +157,51 @@ describe("power bi write tools", () => {
       }),
     ).rejects.toThrow("403");
   });
+
+  // Both refreshes go through one request helper; these pin what it sends and the failure text,
+  // which names the kind of refresh that failed.
+  const REFRESHES = [
+    {
+      tool: "powerbi_dataset_refresh",
+      args: { groupId: "g 1", datasetId: "d/1" },
+      url: "https://api.powerbi.com/v1.0/myorg/groups/g%201/datasets/d%2F1/refreshes",
+      what: "dataset",
+    },
+    {
+      tool: "powerbi_dataflow_refresh",
+      args: { groupId: "g 1", dataflowId: "f/1" },
+      url: "https://api.powerbi.com/v1.0/myorg/groups/g%201/dataflows/f%2F1/refreshes",
+      what: "dataflow",
+    },
+  ] as const;
+
+  for (const { tool, args, url, what } of REFRESHES) {
+    it(`${tool} POSTs with the bearer token and a JSON body to exactly ${url}`, async () => {
+      const seen: { url: string; headers: Record<string, string> }[] = [];
+      globalThis.fetch = (async (input: string, init?: RequestInit) => {
+        const u = String(input);
+        if (new URL(u).hostname === "login.microsoftonline.com") {
+          return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+        }
+        seen.push({ url: u, headers: (init?.headers ?? {}) as Record<string, string> });
+        return new Response("", { status: 202 });
+      }) as unknown as typeof fetch;
+      await (captureTools().get(tool) as Handler)(args);
+      expect(seen).toEqual([
+        { url, headers: { Authorization: "Bearer tok", "Content-Type": "application/json" } },
+      ]);
+    });
+
+    it(`${tool} names the ${what} refresh and quotes the body on failure`, async () => {
+      globalThis.fetch = (async (input: string) => {
+        if (new URL(String(input)).hostname === "login.microsoftonline.com") {
+          return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
+        }
+        return new Response("Forbidden", { status: 403 });
+      }) as unknown as typeof fetch;
+      await expect((captureTools().get(tool) as Handler)(args)).rejects.toThrow(
+        `Power BI ${what} refresh 403: Forbidden`,
+      );
+    });
+  }
 });

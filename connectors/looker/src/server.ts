@@ -1,41 +1,25 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
+import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
 } from "../../../shared/run-read-only-mcp-connector.ts";
-import { stripTrailingSlashes } from "../../../shared/strip-trailing-slashes.ts";
+import { asRecord } from "../../../shared/search-filter.ts";
 import { filterLookerDashboards } from "./search-filter.ts";
 
 function apiBase(): string {
-  const v = process.env["LOOKER_BASE_URL"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("LOOKER_BASE_URL is not set");
-  }
-  return stripTrailingSlashes(v);
-}
-
-function clientId(): string {
-  const v = process.env["LOOKER_CLIENT_ID"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("LOOKER_CLIENT_ID is not set");
-  }
-  return v;
-}
-
-function clientSecret(): string {
-  const v = process.env["LOOKER_CLIENT_SECRET"]?.trim();
-  if (v === undefined || v === "") {
-    throw new Error("LOOKER_CLIENT_SECRET is not set");
-  }
-  return v;
+  return requiredBaseUrl("LOOKER_BASE_URL");
 }
 
 async function lookerLogin(): Promise<string> {
   const base = apiBase();
-  const body = `client_id=${encodeURIComponent(clientId())}&client_secret=${encodeURIComponent(clientSecret())}`;
+  const clientId = encodeURIComponent(requiredEnv("LOOKER_CLIENT_ID"));
+  const clientSecret = encodeURIComponent(requiredEnv("LOOKER_CLIENT_SECRET"));
+  const body = `client_id=${clientId}&client_secret=${clientSecret}`;
   const res = await fetchWithTimeout(`${base}/api/4.0/login`, {
     method: "POST",
     headers: {
@@ -48,11 +32,7 @@ async function lookerLogin(): Promise<string> {
   if (!res.ok) {
     throw new Error(`Looker login ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  const parsed = JSON.parse(text) as unknown;
-  const root =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
+  const root = asRecord(JSON.parse(text) as unknown);
   const token = typeof root?.["access_token"] === "string" ? root["access_token"] : null;
   if (token === null || token === "") {
     throw new Error("Looker login response missing access_token");
@@ -120,23 +100,15 @@ export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): voi
 
   // Both listings are the same offset-cursor page over a different collection.
   for (const { tool, path, description } of PAGINATED_LISTS) {
-    reg(
-      tool,
-      description,
-      z.object({
-        cursor: z.string().nullable().optional(),
-        limit: z.number().int().min(1).max(PAGE_LIMIT_MAX).optional(),
-      }),
-      async (p) => {
-        const limit = p.limit ?? PAGE_LIMIT_DEFAULT;
-        const offset = offsetCursor(p.cursor);
-        const items = await getArray(await lookerLogin(), path, { limit, offset });
-        return jsonResult({
-          items,
-          nextCursor: items.length === limit ? String(offset + limit) : null,
-        });
-      },
-    );
+    reg(tool, description, cursorListInputSchema(PAGE_LIMIT_MAX), async (p) => {
+      const limit = p.limit ?? PAGE_LIMIT_DEFAULT;
+      const offset = offsetCursor(p.cursor);
+      const items = await getArray(await lookerLogin(), path, { limit, offset });
+      return jsonResult({
+        items,
+        nextCursor: items.length === limit ? String(offset + limit) : null,
+      });
+    });
   }
 
   reg(
@@ -148,13 +120,7 @@ export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): voi
     async (p) => {
       const token = await lookerLogin();
       const dashboards = await listDashboards(token);
-      const found = dashboards.find((d) => {
-        const obj =
-          d !== null && typeof d === "object" && !Array.isArray(d)
-            ? (d as Record<string, unknown>)
-            : null;
-        return obj?.["id"] === p.id;
-      });
+      const found = dashboards.find((d) => asRecord(d)?.["id"] === p.id);
       if (found === undefined) {
         throw new Error(`Looker dashboard not found: ${p.id}`);
       }

@@ -1,25 +1,17 @@
 import { z } from "zod";
+import { envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 
+/** Only ONE trailing slash is dropped here — not `requiredBaseUrl`'s strip-them-all. */
 function baseUrl(): string {
-  const u = process.env["GRAFANA_URL"]?.trim();
-  if (u === undefined || u === "") {
-    throw new Error("GRAFANA_URL is not set");
-  }
-  return u.replace(/\/$/, "");
+  return requiredEnv("GRAFANA_URL").replace(/\/$/, "");
 }
 
-function authHeaders(): Record<string, string> {
-  const tok = process.env["GRAFANA_API_TOKEN"]?.trim();
-  if (tok === undefined || tok === "") {
-    throw new Error("GRAFANA_API_TOKEN is not set");
-  }
-  return { Authorization: `Bearer ${tok}`, Accept: "application/json" };
-}
+const authHeaders = envAuthHeaders({ env: "GRAFANA_API_TOKEN" });
 
 async function grafanaGet(path: string): Promise<unknown> {
   const pathPart = path.startsWith("/") ? path : `/${path}`;

@@ -72,6 +72,18 @@ describe.each(IMPLS)("%s", (_label, nimbusSpawn) => {
     // U+FFFD REPLACEMENT CHARACTER is what per-chunk decoding produces at a split boundary.
     expect(r.stdout).not.toContain("�");
   });
+
+  test("a child killed by a signal resolves as a numbered failure, never a null code", async () => {
+    // On Linux and macOS `child_process` reports a signalled child's code as null, and only the
+    // `?? 1` turns that into the number the contract promises; Bun reports 128 + the signal there.
+    // Windows has no signals to deliver, so the kill is a plain exit there and the code is 1.
+    const r = await nimbusSpawn(
+      [process.execPath, "-e", "process.kill(process.pid, 'SIGKILL')"],
+      {},
+    );
+    expect(r.code).toBeNumber();
+    expect(r.code).not.toBe(0);
+  });
 });
 
 describe("runtime selection", () => {

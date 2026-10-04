@@ -1,19 +1,18 @@
 import { z } from "zod";
-import {
-  type ConsentServer,
-  createWriteToolRegistrar,
-  type WriteToolConfig,
-} from "../../../shared/consent-kit.ts";
+import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { headerLine } from "../../../shared/header-safe.ts";
+import { mailSendConsent } from "../../../shared/imap-tool-kit.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult,
-  mcpJsonResultIfOk,
   requireProcessEnv,
-  type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
-import { makeRestFetcher, makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
+import {
+  makeRestFetcher,
+  makeRestToolRegistrar,
+  makeRestWriteToolRegistrar,
+} from "../../../shared/rest-tool-kit.ts";
 import {
   outlookToolShouldRegister,
   parseMicrosoftOAuthScopesFromEnv,
@@ -58,8 +57,6 @@ export function registerOutlookTools(
   const reg = createZodToolRegistrar(createRegisterSimpleTool(server));
   const grantedOutlookScopes = parseMicrosoftOAuthScopesFromEnv();
 
-  /** Standard Graph read tool: token → graphRequest(buildPath[, buildInit]) → mcpJsonResultIfOk("Graph", …, 200). */
-
   /**
    * Every MUTATING outlook tool goes through here. Outside the gateway this adds the
    * consent gate, the write-scope allow-list, the mutation budget and the audit record; inside
@@ -72,31 +69,19 @@ export function registerOutlookTools(
   });
 
   /**
-   * The write-tool equivalent of `registerOutlookTool`: identical fetch and result handling, routed
-   * through the write registrar.
+   * Standard Graph tool, read or write: token → graphRequest(buildPath[, buildInit]) →
+   * mcpJsonResultIfOk("Graph", …, 200).
    */
-  function registerOutlookWriteTool<T>(
-    name: string,
-    cfg: WriteToolConfig<T>,
-    description: string,
-    schema: ZodObjectSchema<T>,
-    buildPath: (p: T) => string,
-    buildInit?: (p: T) => RequestInit,
-  ): void {
-    registerWriteTool(name, cfg, description, schema, async (parsed) => {
-      const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");
-      const res = await graphRequest(token, buildPath(parsed), buildInit?.(parsed));
-      return mcpJsonResultIfOk("Graph", res, 200);
-    });
-  }
-
-  const registerOutlookTool = makeRestToolRegistrar({
-    registrar: reg,
+  const graphRest = {
     tokenEnv: "MICROSOFT_OAUTH_ACCESS_TOKEN",
     serviceLabel: "Graph",
     fetch: graphRequest,
     snippetMax: 200,
-  });
+  } as const;
+
+  /** The write-tool equivalent of `registerOutlookTool`, routed through the write registrar. */
+  const registerOutlookWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...graphRest });
+  const registerOutlookTool = makeRestToolRegistrar({ registrar: reg, ...graphRest });
 
   const outlookMailFoldersArgs = z.object({
     top: z.number().int().min(1).max(200).optional(),
@@ -138,7 +123,8 @@ export function registerOutlookTools(
         const top = data.top ?? 25;
         const fid = data.folderId !== undefined && data.folderId !== "" ? data.folderId : "inbox";
         const skip = data.skip ?? 0;
-        const u = new URL(`${GRAPH}/me/mailFolders/${encodeURIComponent(fid)}/messages`);
+        const path = `/me/mailFolders/${encodeURIComponent(fid)}/messages`;
+        const u = new URL(`${GRAPH}${path}`);
         u.searchParams.set("$top", String(top));
         u.searchParams.set("$skip", String(skip));
         u.searchParams.set(
@@ -148,7 +134,9 @@ export function registerOutlookTools(
         if (data.filter !== undefined && data.filter !== "") {
           u.searchParams.set("$filter", data.filter);
         }
-        return `${u.pathname}${u.search}`;
+        // Relative to GRAPH, like every other tool here: the fetcher prefixes the base, which
+        // already ends in /v1.0, so returning `u.pathname` requested /v1.0/v1.0/me/….
+        return `${path}${u.search}`;
       },
     );
   }
@@ -177,12 +165,7 @@ export function registerOutlookTools(
   if (outlookToolShouldRegister("outlook_mail_send", grantedOutlookScopes)) {
     registerWriteTool(
       "outlook_mail_send",
-      {
-        mutates: "outlook.mail.send",
-        recoverable: false,
-        capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
-        scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
-      },
+      mailSendConsent("outlook.mail.send"),
       "Send an email via Microsoft Graph. Requires Gateway HITL email.send.",
       outlookMailSendArgs,
       async (data) => {

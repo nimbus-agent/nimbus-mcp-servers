@@ -1,20 +1,21 @@
 import { z } from "zod";
-import { asArray, createCliJsonRunner, isRecord, strField } from "../../../shared/cli-json-kit.ts";
+import {
+  asArray,
+  cliArg,
+  createCliJsonRunner,
+  isRecord,
+  strField,
+} from "../../../shared/cli-json-kit.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { isSafeCliArg } from "../../../shared/safe-cli-arg.ts";
 
 /**
- * A SageMaker model name passed as a value to the `aws sagemaker` CLI. Rejected
- * at the schema boundary if it begins with `-` (argv flag smuggling) or contains
- * control characters. Exported so the contract test can assert the guard rejects
- * a `-`-prefixed value.
+ * The argv-injection guard every SageMaker model name passes through on its way to the
+ * `aws sagemaker` CLI. Re-exported so this connector's own test can assert the guard rejects a
+ * `-`-prefixed value.
  */
-export const cliArg = z
-  .string()
-  .min(1)
-  .refine(isSafeCliArg, { message: 'must not start with "-" or contain control characters' });
+export { cliArg };
 
 /**
  * Amazon SageMaker (Tier-3, metadata-only) MCP tool surface. ALL tools index

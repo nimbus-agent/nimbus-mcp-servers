@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import type { FetchMessageObject, ImapFlow } from "imapflow";
+import { type FetchMessageObject, ImapFlow } from "imapflow";
 import type { Transporter } from "nodemailer";
+import Mail from "nodemailer/lib/mailer";
 import { PREVIEW_FETCH_BYTES } from "./imap-mail-core.ts";
 import {
   createImapFlowClient,
@@ -53,6 +54,15 @@ interface FakeImapOptions {
   readonly fetchOneThrows?: boolean;
   /** Make `getMailboxLock` reject, to drive the connection-close-on-failure path. */
   readonly lockThrows?: boolean;
+  /** Make `status` answer `false`, as imapflow does for a STATUS the server rejected. */
+  readonly statusRejected?: boolean;
+  /** Make `status` answer an object with no `messages` count. */
+  readonly statusWithoutCount?: boolean;
+  /**
+   * Make `fetchOne` and `search` answer `undefined`, as imapflow does when it has
+   * no mailbox selected — the connection closed after the lock was taken.
+   */
+  readonly noMailboxSelected?: boolean;
 }
 
 function makeFakeImap(opts: FakeImapOptions = {}): {
@@ -86,7 +96,10 @@ function makeFakeImap(opts: FakeImapOptions = {}): {
     },
     status: async (mailbox: string, query: unknown) => {
       calls.push({ op: "status", args: [mailbox, query] });
-      return { messages: opts.total ?? 0 };
+      if (opts.statusWithoutCount === true) {
+        return {};
+      }
+      return opts.statusRejected === true ? false : { messages: opts.total ?? 0 };
     },
     fetch: async function* (range: unknown, query: unknown, options?: unknown) {
       calls.push({ op: "fetch", args: [range, query, options] });
@@ -99,10 +112,16 @@ function makeFakeImap(opts: FakeImapOptions = {}): {
       if (opts.fetchOneThrows === true) {
         throw new Error("boom");
       }
+      if (opts.noMailboxSelected === true) {
+        return undefined;
+      }
       return opts.fetchOne ?? false;
     },
     search: async (query: unknown, options?: unknown) => {
       calls.push({ op: "search", args: [query, options] });
+      if (opts.noMailboxSelected === true) {
+        return undefined;
+      }
       return opts.searchUids ?? [];
     },
   };
@@ -161,6 +180,39 @@ describe("toMessageMeta", () => {
   it("returns an empty envelope when the message has none", () => {
     const msg = { uid: 1, bodyStructure: null } as unknown as FetchMessageObject;
     expect(toMessageMeta(msg, "INBOX", null).envelope).toEqual({});
+  });
+
+  it("maps absent envelope fields to null and empty address lists", () => {
+    const msg = {
+      uid: 2,
+      envelope: { from: [{ name: "Only A Name" }] },
+      bodyStructure: null,
+    } as unknown as FetchMessageObject;
+    expect(toMessageMeta(msg, "INBOX", null).envelope).toEqual({
+      date: null,
+      subject: null,
+      messageId: null,
+      // No address: the key is absent rather than present-and-undefined.
+      from: [{ name: "Only A Name" }],
+      to: [],
+      cc: [],
+    });
+  });
+
+  it("maps an envelope with no sender to an empty from list", () => {
+    const msg = {
+      uid: 3,
+      envelope: { subject: "Undeliverable", to: [{ address: "me@example.test" }] },
+      bodyStructure: null,
+    } as unknown as FetchMessageObject;
+    expect(toMessageMeta(msg, "INBOX", null).envelope).toEqual({
+      date: null,
+      subject: "Undeliverable",
+      messageId: null,
+      from: [],
+      to: [{ address: "me@example.test" }],
+      cc: [],
+    });
   });
 
   it("extracts the capped preview from the fetched body parts", () => {
@@ -237,6 +289,21 @@ describe("createImapFlowClient", () => {
       expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
     });
 
+    it("reads a STATUS the server rejected as an empty mailbox, without fetching", async () => {
+      // imapflow answers `false` there. Its 2.x declarations made that visible;
+      // the read is the one 1.x already produced at runtime. The fetch would
+      // yield a message, so a missed `false` branch would not return [].
+      const fake = makeFakeImap({ statusRejected: true, messages: [makeMessage(1, "a")] });
+      expect(await createImapFlowClient(imapConfig, fake.factory).list({})).toEqual([]);
+      expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
+    });
+
+    it("reads a STATUS answer that carries no message count as an empty mailbox", async () => {
+      const fake = makeFakeImap({ statusWithoutCount: true, messages: [makeMessage(1, "a")] });
+      expect(await createImapFlowClient(imapConfig, fake.factory).list({})).toEqual([]);
+      expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
+    });
+
     it("fetches the last `limit` messages and returns them most-recent first", async () => {
       const fake = makeFakeImap({
         total: 100,
@@ -275,6 +342,17 @@ describe("createImapFlowClient", () => {
       expect(await createImapFlowClient(imapConfig, fake.factory).get(404)).toBeNull();
     });
 
+    it("fails, rather than answering 'no such message', when no mailbox is selected", async () => {
+      // A dropped connection is not an answer. Under imapflow 1.x this reached
+      // toMessageMeta and failed as a TypeError; it must still fail.
+      const fake = makeFakeImap({ noMailboxSelected: true });
+      await expect(createImapFlowClient(imapConfig, fake.factory).get(7, "Sent")).rejects.toThrow(
+        'mailbox "Sent" is no longer selected',
+      );
+      expect(fake.released).toBe(1);
+      expect(fake.loggedOut).toBe(1);
+    });
+
     it("fetches by uid and stamps the mailbox it was read from", async () => {
       const fake = makeFakeImap({ fetchOne: makeMessage(12, "hi") });
       const meta = await createImapFlowClient(imapConfig, fake.factory).get(12, "Sent");
@@ -302,6 +380,15 @@ describe("createImapFlowClient", () => {
       expect(await createImapFlowClient(imapConfig, fake.factory).search({ query: "q" })).toEqual(
         [],
       );
+    });
+
+    it("fails, rather than answering 'no results', when no mailbox is selected", async () => {
+      const fake = makeFakeImap({ noMailboxSelected: true });
+      await expect(
+        createImapFlowClient(imapConfig, fake.factory).search({ query: "q" }),
+      ).rejects.toThrow('mailbox "INBOX" is no longer selected');
+      expect(fake.calls.map((c) => c.op)).not.toContain("fetch");
+      expect(fake.loggedOut).toBe(1);
     });
 
     it("takes the newest `limit` uids and fetches them descending", async () => {
@@ -444,5 +531,134 @@ describe("createNodemailerMailer", () => {
     });
     expect(out.accepted).toEqual(["1", "b@x"]);
     expect(out.rejected).toEqual(["c@x"]);
+  });
+});
+
+/**
+ * The DEFAULT factories — a real `ImapFlow`, a real nodemailer transport — rather than the fakes
+ * above. Only their network methods are swapped, on the prototype, for the length of one test, so
+ * the real constructors run against the real configuration and no socket is ever opened.
+ */
+describe("the default clients (network methods swapped out)", () => {
+  type Method = (this: Record<string, unknown>, ...args: unknown[]) => Promise<unknown>;
+
+  const smtpTls: SmtpEndpointConfig = {
+    host: "smtp.example.test",
+    port: 465,
+    user: "u@example.test",
+    pass: "secret",
+    secure: true,
+  };
+
+  /** Replace `names` on `proto` with `impl`, run `fn`, and put the originals back. */
+  async function patched(
+    proto: object,
+    impl: Record<string, Method>,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    const target = proto as Record<string, unknown>;
+    const saved = new Map(Object.keys(impl).map((name) => [name, target[name]]));
+    Object.assign(target, impl);
+    try {
+      await fn();
+    } finally {
+      for (const [name, original] of saved) target[name] = original;
+    }
+  }
+
+  it("the IMAP client constructs a real ImapFlow from its configuration", async () => {
+    const seen: { options?: unknown; locked: unknown[]; loggedOut: number } = {
+      locked: [],
+      loggedOut: 0,
+    };
+    await patched(
+      ImapFlow.prototype,
+      {
+        async connect() {
+          seen.options = this["options"];
+        },
+        async getMailboxLock(mailbox: unknown) {
+          seen.locked.push(mailbox);
+          return { release: (): undefined => undefined };
+        },
+        async status() {
+          return { messages: 0 };
+        },
+        async logout() {
+          seen.loggedOut += 1;
+        },
+      },
+      async () => {
+        const client = createImapFlowClient({ ...imapConfig, rejectUnauthorized: false });
+        expect(await client.list({ mailbox: "Archive" })).toEqual([]);
+      },
+    );
+    expect(seen.options).toEqual({
+      host: "imap.example.test",
+      port: 993,
+      secure: true,
+      auth: { user: "u@example.test", pass: "secret" },
+      logger: false,
+      tls: { rejectUnauthorized: false },
+    });
+    expect(seen.locked).toEqual(["Archive"]);
+    expect(seen.loggedOut).toBe(1);
+  });
+
+  /** Send one message through a REAL nodemailer transport; return the transport's options. */
+  async function realTransportOptions(config: SmtpEndpointConfig): Promise<unknown> {
+    let options: unknown;
+    let mail: unknown;
+    await patched(
+      Mail.prototype,
+      {
+        async sendMail(message: unknown) {
+          options = (this["transporter"] as { options: unknown }).options;
+          mail = message;
+          return { messageId: "<m1@example.test>", accepted: ["to@example.test"], rejected: [] };
+        },
+      },
+      async () => {
+        const out = await createNodemailerMailer(config).send({
+          to: "to@example.test",
+          subject: "s",
+          body: "b",
+        });
+        expect(out).toEqual({
+          messageId: "<m1@example.test>",
+          accepted: ["to@example.test"],
+          rejected: [],
+        });
+      },
+    );
+    expect(mail).toEqual({ from: config.user, to: "to@example.test", subject: "s", text: "b" });
+    return options;
+  }
+
+  it("the SMTP mailer builds an implicit-TLS nodemailer transport when TLS is implicit", async () => {
+    const options = (await realTransportOptions(smtpTls)) as Record<string, unknown>;
+    expect(options).toMatchObject({
+      host: "smtp.example.test",
+      port: 465,
+      secure: true,
+      auth: { user: "u@example.test", pass: "secret" },
+    });
+    expect(options["requireTLS"]).toBeUndefined();
+    expect(options["tls"]).toBeUndefined();
+  });
+
+  it("the SMTP mailer builds a STARTTLS-required transport otherwise, with its tls options", async () => {
+    const options = await realTransportOptions({
+      ...smtpTls,
+      port: 587,
+      secure: false,
+      rejectUnauthorized: false,
+    });
+    expect(options).toMatchObject({
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      tls: { rejectUnauthorized: false },
+    });
   });
 });
