@@ -7,7 +7,12 @@ import { z } from "zod";
 
 import { verifyAuditChain } from "./audit-chain.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "./connector-mode.ts";
-import { type ConsentServer, createWriteToolRegistrar } from "./consent-kit.ts";
+import {
+  type ConsentServer,
+  createWriteToolRegistrar,
+  type WriteToolRegistrar,
+} from "./consent-kit.ts";
+import { DEFAULT_WRITE_BUDGET, WRITE_BUDGET_ENV } from "./write-budget.ts";
 
 type Registered = { name: string };
 
@@ -606,4 +611,107 @@ describe("standalone outcomes at the edges", () => {
     srv.handshake();
     expect(listChanged).toBe(0);
   });
+});
+
+describe("NIMBUS_MCP_WRITE_BUDGET at the registrar", () => {
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+  afterEach(() => {
+    resetConnectorModeForTests();
+  });
+
+  /** Approved writes attempted in every case: more than the default, so an uncapped run shows. */
+  const ATTEMPTS = 25;
+
+  type BudgetRun =
+    | { readonly startup: "ok"; readonly executed: number }
+    | { readonly startup: "refused"; readonly executed: 0; readonly error: string };
+
+  /**
+   * Start a standalone registrar with the budget variable set to `raw` (removed when undefined),
+   * make `ATTEMPTS` approved calls to one write tool, one after another, and count the ones that
+   * reached the mutation. A registrar that refuses to start has allowed none.
+   */
+  async function runUnderBudget(raw: string | undefined): Promise<BudgetRun> {
+    if (raw === undefined) delete process.env[WRITE_BUDGET_ENV];
+    else process.env[WRITE_BUDGET_ENV] = raw;
+    process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"] = "repo:acme/api";
+    delete process.env["NIMBUS_MCP_AUDIT_LOG"];
+
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    let reg: WriteToolRegistrar;
+    try {
+      reg = createWriteToolRegistrar(srv, {
+        connector: "github",
+        scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
+        scopeKinds: ["repo"],
+      });
+    } catch (e) {
+      return { startup: "refused", executed: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+    let executed = 0;
+    reg("github_branch_delete", cfgFor(), "Delete a branch.", schema, async () => {
+      executed += 1;
+      return ok();
+    });
+    srv.handshake();
+    const cb = srv.captured;
+    if (cb === undefined) throw new Error("tool was not registered");
+    for (let i = 0; i < ATTEMPTS; i += 1) {
+      await cb({ branch: "acme/api" });
+    }
+    return { startup: "ok", executed };
+  }
+
+  test("unset allows exactly the default", async () => {
+    expect(await runUnderBudget(undefined)).toEqual({
+      startup: "ok",
+      executed: DEFAULT_WRITE_BUDGET,
+    });
+  });
+
+  test("empty and whitespace-only read as unset", async () => {
+    for (const raw of ["", "  "]) {
+      expect(await runUnderBudget(raw)).toEqual({ startup: "ok", executed: DEFAULT_WRITE_BUDGET });
+    }
+  });
+
+  test.each([
+    ["0", 0],
+    ["3", 3],
+    [" 3 ", 3],
+    ["25", 25],
+  ])("%p allows %d", async (raw, n) => {
+    expect(await runUnderBudget(raw)).toEqual({ startup: "ok", executed: n });
+  });
+
+  // `abc`, `ten` and `Infinity` are the values measured allowing all 25 of 25 approved argocd
+  // syncs when the budget was read with `Number()`; the rest ran under a cap nobody wrote.
+  test.each([
+    "abc",
+    "ten",
+    "Infinity",
+    "NaN",
+    "-1",
+    "1.5",
+    "1e3",
+    "0x10",
+    "9007199254740992",
+    "1e309",
+  ])(
+    "%p cannot allow more writes than the default: the registrar refuses to start",
+    async (raw) => {
+      const run = await runUnderBudget(raw);
+      // The property itself, independent of how it is delivered...
+      expect(run.executed).toBeLessThanOrEqual(DEFAULT_WRITE_BUDGET);
+      // ...and the delivery: the connector stops at startup with an error naming the variable.
+      expect(run).toEqual({
+        startup: "refused",
+        executed: 0,
+        error: expect.stringContaining(WRITE_BUDGET_ENV),
+      });
+    },
+  );
 });

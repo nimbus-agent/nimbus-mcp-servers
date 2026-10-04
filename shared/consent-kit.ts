@@ -2,10 +2,8 @@ import type { McpListResult, ZodObjectSchema } from "@nimbus-dev/sdk/connector-k
 
 import { type AuditOutcome, appendAuditEntry } from "./audit-chain.ts";
 import { getConnectorMode } from "./connector-mode.ts";
+import { parseWriteBudget, WRITE_BUDGET_ENV } from "./write-budget.ts";
 import { parseWriteScope, scopeAllows } from "./write-scope.ts";
-
-/** Mutations allowed per process lifetime when NIMBUS_MCP_WRITE_BUDGET is unset. */
-const DEFAULT_BUDGET = 10;
 
 /** The subset of the SDK's `RegisteredTool` this kit needs. */
 export type ToolHandle = { disable(): void };
@@ -172,7 +170,9 @@ export function createWriteToolRegistrar(
 
   const scope = parseWriteScope(process.env[cfg.scopeEnv], cfg.scopeKinds);
   const auditLog = process.env["NIMBUS_MCP_AUDIT_LOG"];
-  let remaining = Number(process.env["NIMBUS_MCP_WRITE_BUDGET"] ?? DEFAULT_BUDGET);
+  // Throws on a value that is not a whole number, as the scope parse above does on a malformed
+  // term: read with `Number()`, `abc` became NaN, which `remaining <= 0` never refuses.
+  let remaining = parseWriteBudget(process.env[WRITE_BUDGET_ENV]);
 
   async function record(
     tool: string,

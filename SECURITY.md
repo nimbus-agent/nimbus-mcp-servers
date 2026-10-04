@@ -20,7 +20,10 @@ The properties this package claims, and therefore the ones a report can be filed
 - **The write-scope allow-list.** `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` is enforced server-side and is
   unreachable by the model. Unset authorises nothing; a write that proceeds on an empty scope is a
   vulnerability.
-- **The mutation budget.** `NIMBUS_MCP_WRITE_BUDGET` caps mutations per session.
+- **The mutation budget.** `NIMBUS_MCP_WRITE_BUDGET` caps mutations per session, `10` when unset.
+  A value that is not a whole number stops the connector at startup rather than running under some
+  other cap. A mutation past the budget, or a connector that runs on an invalid budget, is a
+  vulnerability.
 - **Credential handling.** Credentials come from the environment and must never appear in a tool
   result, a log line, or an error message.
 - **Argument handling.** A connector that shells out must not let a tool argument smuggle a flag or

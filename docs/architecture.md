@@ -92,8 +92,8 @@ five hand-written copies is one that can be strengthened in four of them.
 **`shared/consent-kit.ts` — the write path.** Every mutating tool is registered through
 `createWriteToolRegistrar`, never with the raw MCP registration call. That registrar is what
 enforces consent, the write-scope allow-list and the mutation budget, and it is why those properties
-hold regardless of how a connector is written. `shared/write-scope.ts` and `shared/audit-chain.ts`
-back it.
+hold regardless of how a connector is written. `shared/write-scope.ts`, `shared/write-budget.ts` and
+`shared/audit-chain.ts` back it.
 
 **`shared/connector-mode.ts` — gateway versus standalone.** A connector behaves differently when the
 Nimbus gateway hosts it (the gateway owns consent) than when it runs standalone (the client owns
