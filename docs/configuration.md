@@ -27,8 +27,9 @@ TypeScript, and its `nimbus-connector` bin runs under Bun.
 ```
 
 The write-scope variable is only consulted by a client that can show a consent prompt. On a client
-without `elicitation` it is harmless and unused, because the write tools never register — see
-[Client support](./client-support.md).
+without `elicitation` it is unused, because the write tools never register — see
+[Client support](./client-support.md). It is still parsed at startup, though, so a term the
+connector cannot parse stops it there too, reads included.
 
 ## Environment variables
 
@@ -39,6 +40,11 @@ without `elicitation` it is harmless and unused, because the write tools never r
 | `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables the durable log; the client-visible log messages are always sent. |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
 
+`<SERVICE>` is the connector id you launch, upper-cased, with each `-` written as `_`: `github`
+reads `NIMBUS_MCP_GITHUB_WRITE_SCOPE` and `monte-carlo` reads `NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE`.
+Do not derive it from a connector's tool names or action types — `monte-carlo`'s are
+`montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
+
 ## Two behaviours that look like bugs and are not
 
 **No write tools appear.** Your client does not advertise the MCP `elicitation` capability, so there
@@ -46,8 +52,10 @@ is no way to obtain consent and the tools are not offered at all. Reads work nor
 Desktop this is the expected state today.** The moment your client ships elicitation support, the
 same connector version gains its write tools.
 
-**Every write refuses with "out of scope".** `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` is unset. An empty
-scope authorises nothing. The server prints a warning to stderr at startup saying exactly this.
+**Every write refuses with "out of scope".** `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` is unset, or the
+scope is set under a name the connector does not read. An empty scope authorises nothing. The
+server prints a warning to stderr at startup saying exactly this, naming the variable it reads. An
+`argocd` scope carried over from 0.2.1 or earlier is this case: see [Upgrading](#upgrading).
 
 ## Optional dependencies
 
@@ -58,3 +66,12 @@ out of the box, while a platform that cannot build one does not break the other 
 
 If you install with optional dependencies disabled, those four fail at startup with a
 module-not-found error. The rest are unaffected.
+
+## Upgrading
+
+**`argocd`, from 0.2.1 or earlier to 0.2.2 or later.** From 0.2.2 the connector reads
+`NIMBUS_MCP_ARGOCD_WRITE_SCOPE`; earlier versions read `NIMBUS_MCP_APP_WRITE_SCOPE` by mistake, so
+rename it. The value does not change. The old name is ignored, not read as a fallback: until you
+rename it, `argocd_app_sync` and `argocd_app_rollback` refuse every call as out of scope, and the
+connector warns at startup that `NIMBUS_MCP_ARGOCD_WRITE_SCOPE` is unset. Under the Nimbus gateway
+the write scope is never consulted, so nothing changes there.
