@@ -784,7 +784,8 @@ describe("standalone outcomes at the edges", () => {
       "github_branch_delete ran, but recording that it ran failed: ",
     );
     expect(mutated).toBe(1);
-    // The client was told it executed, and never that it failed.
+    // Every record goes to the logging channel before the durable log, so the channel shows each
+    // record attempted, the one whose append failed included: `executed`, and never `failed`.
     expect(outcomes).toEqual(["requested", "accepted", "executed"]);
     // Nothing was appended after the line the mutation left: in particular, no `failed`.
     const lines = (await readFile(log, "utf8")).trimEnd().split("\n");
