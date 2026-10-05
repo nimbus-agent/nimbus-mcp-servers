@@ -26,6 +26,11 @@ The properties this package claims, and therefore the ones a report can be filed
   included, stops a connector that has write tools at startup rather than running it under some
   other cap. A mutation past the budget, or any mutation while the variable holds a value outside
   that rule, is a vulnerability.
+- **The audit log.** When `NIMBUS_MCP_AUDIT_LOG` is set, each step of every write is appended to a
+  hash-chained log that any number of connector processes may share: appends are serialised within
+  a process and, through a lock file beside the log, across processes. A write runs only once its
+  `requested` and `accepted` lines are in the log. A line that links to anything but the line
+  written before it, or a write that runs without those two lines, is a vulnerability.
 - **Credential handling.** Credentials come from the environment and must never appear in a tool
   result, a log line, or an error message.
 - **Argument handling.** A connector that shells out must not let a tool argument smuggle a flag or
@@ -41,6 +46,9 @@ Stated plainly, because the difference is the whole point of [`NOTICE`](./NOTICE
   Nimbus gateway and no published package can supply them.
 - **A client that does not implement MCP `elicitation`** is served read tools only. That is the
   designed behaviour — a tool the model cannot see is one it cannot call without a human.
+- **The audit log proves its lines are unaltered and in order, not that it is complete.** The chain
+  is unkeyed, so anyone who can write the file can cut lines off its end, or rewrite it from
+  scratch, and still have a chain that verifies.
 
 If a report depends on one of the above, it is a documentation question rather than a
 vulnerability, and an issue is the right place for it.

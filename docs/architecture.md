@@ -95,6 +95,14 @@ enforces consent, the write-scope allow-list and the mutation budget, and it is 
 hold regardless of how a connector is written. `shared/write-scope.ts`, `shared/write-budget.ts` and
 `shared/audit-chain.ts` back it.
 
+The audit chain links each entry to the line before it, so it is only as good as its appends are
+ordered, and appends do arrive together: the SDK runs tool calls concurrently, and every connector a
+client starts may share one `NIMBUS_MCP_AUDIT_LOG`. `audit-chain.ts` therefore serialises them
+twice — per log within a process, and across processes through an `O_EXCL` lock file beside the
+log — and fails closed: an append that cannot take the lock, read the log or link to its last line
+writes nothing, and the registrar runs no write whose `requested` and `accepted` entries did not
+land. [Configuration](./configuration.md#the-audit-log) has the operator's side.
+
 **`shared/connector-mode.ts` — gateway versus standalone.** A connector behaves differently when the
 Nimbus gateway hosts it (the gateway owns consent) than when it runs standalone (the client owns
 consent). The mode is set once, by the entry point. `setConnectorMode` may only be named by

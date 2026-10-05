@@ -38,8 +38,27 @@ its read tools included.
 | --- | --- |
 | `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. **Unset authorises nothing** — it never means unrestricted. A term matches one target exactly: `repo:acme/api` does not cover `acme/api-secrets`. The kinds a connector accepts are named in the warning it prints when the variable is unset, and a term of any other kind stops it at startup with the same list. |
 | `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Caps a runaway agent loop, including one that sends its writes in parallel: a write whose prompt you approve after the budget has run out is still refused. Unset means the default, `10`. A value you set must be a whole number in plain digits, from `0`, which refuses every write, to `9007199254740991`; whitespace around it is ignored. Any other value stops a connector that has write tools at startup, with an error naming the variable: an empty or whitespace-only value, a sign as in `-1` or `+5`, a decimal point as in `2.5` or `10.0`, `1e3`, `0x10`, `ten`, `Infinity`, or a number above `9007199254740991`. It is never replaced by the default, which could be more than you meant. |
-| `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables the durable log; the client-visible log messages are always sent. |
+| `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables the durable log; the client-visible log messages are always sent. One path can serve every connector you run — see [The audit log](#the-audit-log). |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
+
+## The audit log
+
+Each step of a write — `requested`, `accepted`, `declined`, `refused`, `executed`, `failed` — is
+appended to the log as one line, linked by hash to the line before it. Any number of connectors may
+share one log, and so may the separate copies of a connector that each client session starts:
+appends are serialised within a process, and across processes by a lock file beside the log,
+`<path>.lock`. So the directory holding the log must be writable, not only the file.
+
+The log fails closed. A write runs only once its `requested` and `accepted` lines have been
+appended, and one that cannot be recorded is refused: when the log's directory is missing, the log
+cannot be read, its last line is not a complete entry, or its lock cannot be taken within 30
+seconds. If recording fails after the write has run, the call reports that it ran.
+
+A lock left behind by a connector killed mid-append is taken over automatically: at once when its
+process has exited, otherwise once it is 10 seconds old. One writer at a time takes it over, under a
+second lock, `<path>.lock.takeover`, that exists only while it does. Whether a lock is abandoned is
+judged for writers on one machine: a log on a network share written from several machines also needs
+each of them to have its own hostname, and a clock within 10 seconds of the file server's.
 
 ## Two behaviours that look like bugs and are not
 
