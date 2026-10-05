@@ -343,7 +343,17 @@ export function createWriteToolRegistrar(
       try {
         result = await handler(args);
       } catch (e) {
-        await record(name, "failed", { target, preState, error: messageOf(e) });
+        // A tool that threw may still have changed something first. If recording the failure fails
+        // too, the tool's own error still leads what the call reports: an audit error alone reads
+        // as a write that never started, and so as one that is safe to try again.
+        try {
+          await record(name, "failed", { target, preState, error: messageOf(e) });
+        } catch (r) {
+          throw new Error(
+            `${name} failed: ${messageOf(e)}. Recording that failure also failed: ${messageOf(r)}`,
+            { cause: e },
+          );
+        }
         throw e;
       }
       // Outside the `try`: the mutation has happened, so a failure to RECORD it must not be

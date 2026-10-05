@@ -797,6 +797,44 @@ describe("standalone outcomes at the edges", () => {
     ).toEqual(["requested", "accepted"]);
   });
 
+  test("a write that fails, and whose failure cannot be recorded, still reports its own error", async () => {
+    // A tool that threw may have changed something before it did. When recording `failed` failed
+    // as well, its error replaced the tool's, and the caller saw only that the audit log could not
+    // be written — which reads as a write that never started, and so as one safe to try again.
+    // Here the tool leaves the log with a last line nothing can be linked after, then throws.
+    const log = await tempAuditPath();
+    const outcomes: string[] = [];
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    srv.sendLoggingMessage = (p) => {
+      outcomes.push((p.data as { outcome: string }).outcome);
+      return Promise.resolve();
+    };
+    const toolError = new Error("the branch was deleted, but the follow-up comment failed");
+    const call = registerAndGet(
+      srv,
+      async () => {
+        await appendFile(log, "torn\n");
+        throw toolError;
+      },
+      { auditLog: log },
+    );
+    let thrown: unknown;
+    await call({ branch: "acme/api" }).catch((e: unknown) => {
+      thrown = e;
+    });
+    expect(thrown).toBeInstanceOf(Error);
+    const { message, cause } = thrown as Error;
+    expect(message).toStartWith(
+      "github_branch_delete failed: the branch was deleted, but the follow-up comment failed. " +
+        "Recording that failure also failed: ",
+    );
+    expect(message).toContain("is not a chained entry");
+    expect(cause).toBe(toolError);
+    // The failure was attempted, and nothing landed after the line the tool left.
+    expect(outcomes).toEqual(["requested", "accepted", "failed"]);
+    expect((await readFile(log, "utf8")).trimEnd().split("\n").at(-1)).toBe("torn");
+  });
+
   test("a handshake with nothing queued tells the client nothing changed", () => {
     // The client is told to re-read its tool list only when write tools were actually added.
     let listChanged = 0;
