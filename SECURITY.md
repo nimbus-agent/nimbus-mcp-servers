@@ -64,9 +64,10 @@ Stated plainly, because the difference is the whole point of [`NOTICE`](./NOTICE
   Nimbus gateway and no published package can supply them.
 - **A client that does not implement MCP `elicitation`** is served read tools only. That is the
   designed behaviour — a tool the model cannot see is one it cannot call without a human.
-- **The audit log proves its lines are unaltered and in order, not that it is complete.** The chain
-  is unkeyed, so anyone who can write the file can cut lines off its end, or rewrite it from
-  scratch, and still have a chain that verifies.
+- **The audit log's chain shows its lines are consistent and in order, not that they are the
+  originals or all of them.** The chain is unkeyed, so anyone who can write the file can change an
+  entry and recompute every hash after it, cut lines off its end, or rewrite it from scratch, and
+  still have a chain that verifies. It catches an edit made without recomputing the chain.
 - **The audit log's lock has bounds**, listed in full in
   [Configuration](./docs/configuration.md#the-audit-log):
   - A writer stalled for more than 10 seconds partway through an append has its lock taken over.
