@@ -28,9 +28,9 @@
  * AWS resource name, an Azure app, cluster or node pool name, or a subscription id. An Azure
  * resource group may hold `(` and `)`, but never a space, so the runtime never quotes it and
  * `az.cmd` already failed on it as above. What did work and is now refused: an Azure subscription
- * passed by a display name holding one of these characters and a space — its id still works — and
- * a CloudFormation template body, whenever the `aws` that runs is a batch file: a pip-installed v1
- * found on `PATH` before any `aws.exe`.
+ * passed by a display name holding one of these characters and a space — its id still works. A
+ * CloudFormation template, full of quotes, was refused too whenever the `aws` that runs is a batch
+ * file, until it began to reach `aws` as a file instead of an argument.
  *
  * Which file runs is decided the way the runtime decides it — see {@link mayRunAsBatchFile} — so
  * an `aws.exe` found first is never refused, whatever batch file of that name comes later.
@@ -183,11 +183,12 @@ function firstHolderIsBatch(bases: readonly string[], exists: (path: string) => 
  *    and libuv starts only a `.com` or an `.exe`: never a batch file.
  *
  * It says yes where Bun could change without notice, and nowhere else: a PATH variable counts in
- * any spelling, not only `PATH` — today Bun reads no other, and a bare `az` with only `Path` set
- * does not start at all — and each is searched both as written and with whitespace and quotes
- * stripped from its entries; a name written with a `/` is looked up in its directory as one with
- * a `\` is; and the first place holding the name answers yes if it holds a `.cmd` or `.bat` by
- * that name, even beside an `.exe` Bun would try first.
+ * any spelling, not only `PATH` — Bun reads no other, though `nimbus-spawn.ts` respells the
+ * variable `PATH` before every spawn, so a bare `az` under `Path` starts too — and each is searched
+ * both as written and with whitespace and quotes stripped from its entries; a name written with a
+ * `/` is looked up in its directory as one with a `\` is; and the first place holding the name
+ * answers yes if it holds a `.cmd` or `.bat` by that name, even beside an `.exe` Bun would try
+ * first.
  */
 export function mayRunAsBatchFile(
   bin: string,
