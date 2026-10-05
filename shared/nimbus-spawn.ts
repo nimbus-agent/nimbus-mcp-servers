@@ -3,7 +3,8 @@
  *
  * Every connector that reaches its service through a CLI spawns it through {@link nimbusSpawn},
  * directly or by way of `run-cli-json.ts` and `cli-json-kit.ts`, and `scripts/spawn-chokepoint.test.ts`
- * fails any other shipped file that names a process-spawning API. That is what makes a rule
+ * fails any other shipped file that imports a module able to start a process, in any import form,
+ * or refers to the `Bun` global at all. That is what makes a rule
  * enforced here hold for every connector: today, `windows-batch-args.ts`'s refusal of an argument
  * cmd.exe would act on, when the program may start a Windows batch file. Both implementations
  * build the child's environment once and hand the SAME object to that check and to the spawn, so

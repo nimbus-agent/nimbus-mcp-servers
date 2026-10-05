@@ -102,7 +102,9 @@ consent). The mode is set once, by the entry point. `setConnectorMode` may only 
 second caller could re-gate a connector mid-process.
 
 **`shared/nimbus-spawn.ts` — the spawn path.** The only file in the package that starts a process,
-held to that by `scripts/spawn-chokepoint.test.ts`. The eleven connectors that drive a CLI reach it
+held to that by `scripts/spawn-chokepoint.test.ts`, which parses every shipped source file with
+Bun's transpiler and fails any other that imports `child_process`, `cluster`, `bun` or `bun:ffi` in
+any form, or refers to the `Bun` global at all. The eleven connectors that drive a CLI reach it
 directly or through `run-cli-json.ts` and `cli-json-kit.ts`, and a tool argument is checked twice on
 the way:
 

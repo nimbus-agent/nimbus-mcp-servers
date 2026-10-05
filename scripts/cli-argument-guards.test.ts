@@ -19,8 +19,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resetConnectorModeForTests, setConnectorMode } from "../shared/connector-mode.ts";
 import {
@@ -100,18 +101,71 @@ const ALLOWED: readonly {
   },
 ];
 
-/** Connectors whose `src/` imports the spawn chokepoint or the helper built on it. */
+/** The one file that starts a process, held to that by `spawn-chokepoint.test.ts`. */
+const SPAWN_CHOKEPOINT = join(ROOT, "shared", "nimbus-spawn.ts");
+
+const transpiler = new Bun.Transpiler({ loader: "ts" });
+
+/** The relative specifiers `file` imports — statically, dynamically or by `require` — memoised. */
+const relativeImports = new Map<string, readonly string[]>();
+function relativeImportsOf(file: string): readonly string[] {
+  let found = relativeImports.get(file);
+  if (found === undefined) {
+    // The transpiler refuses a `#!` line, which an entry point may start with.
+    const source = readFileSync(file, "utf8").replace(/^#![^\n]*/, "");
+    found = transpiler
+      .scanImports(source)
+      .map((i) => i.path)
+      .filter((path) => path.startsWith("."));
+    relativeImports.set(file, found);
+  }
+  return found;
+}
+
+/** The source file a relative specifier in `from` names: as written, or with `.ts` added. */
+function resolveImport(from: string, specifier: string): string {
+  const base = resolve(dirname(from), specifier);
+  for (const candidate of [base, `${base}.ts`]) {
+    if (statSync(candidate, { throwIfNoEntry: false })?.isFile() === true) {
+      return candidate;
+    }
+  }
+  throw new Error(`${from} imports ${specifier}, which names no file`);
+}
+
+/**
+ * Whether `file`'s imports, followed through every relative specifier, reach `target`. A type-only
+ * import is not followed: it cannot call anything. An import that names no file fails the sweep
+ * rather than ending the search early, so a connector cannot drop out of it unnoticed.
+ */
+function importsReach(file: string, target: string, seen = new Set<string>()): boolean {
+  if (file === target) {
+    return true;
+  }
+  if (seen.has(file)) {
+    return false;
+  }
+  seen.add(file);
+  return relativeImportsOf(file).some(
+    (specifier) =>
+      !specifier.endsWith(".json") && importsReach(resolveImport(file, specifier), target, seen),
+  );
+}
+
+/**
+ * Connectors whose sources reach the spawn chokepoint through their imports, however indirectly:
+ * through `run-cli-json.ts`, `cli-json-kit.ts` or any shared helper written later.
+ */
 function spawningConnectors(): string[] {
   return readdirSync(CONNECTORS, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
     .filter((id) => {
       const src = join(CONNECTORS, id, "src");
-      return readdirSync(src).some((file) =>
-        /from\s+["'][./]+shared\/(?:nimbus-spawn|run-cli-json)\.ts["']/.test(
-          readFileSync(join(src, file), "utf8"),
-        ),
-      );
+      const seen = new Set<string>();
+      return [...new Bun.Glob("**/*.{ts,js,mjs,cjs}").scanSync({ cwd: src })]
+        .filter((file) => !/\.test\.[cm]?[jt]s$/.test(file))
+        .some((file) => importsReach(join(src, file), SPAWN_CHOKEPOINT, seen));
     })
     .sort();
 }
@@ -270,4 +324,80 @@ describe("caller-supplied CLI arguments", () => {
       }
     });
   }
+});
+
+/**
+ * The discovery above, on files written for it: every real CLI connector imports the chokepoint or
+ * `run-cli-json.ts` directly, so only here is the indirect case shown at all.
+ */
+describe("importsReach", () => {
+  function tree(files: Record<string, string>): { at: (name: string) => string; done: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "nimbus-imports-reach-"));
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(dir, name), content);
+    }
+    return {
+      at: (name) => join(dir, name),
+      done: () => rmSync(dir, { recursive: true, force: true }),
+    };
+  }
+
+  test("follows a chain through a helper, in every import form", () => {
+    const t = tree({
+      "target.ts": "export const spawnIt = 1;",
+      "helper.ts": 'export { spawnIt } from "./target.ts";',
+      "chain.ts": 'import { spawnIt } from "./helper.ts"; export const x = spawnIt;',
+      "dynamic.ts": 'export const load = () => import("./helper.ts");',
+      "required.ts": 'const h = require("./helper.ts"); export const y = h;',
+      "extensionless.ts": 'import { spawnIt } from "./helper"; export const z = spawnIt;',
+      "shebang.ts": '#!/usr/bin/env bun\nimport "./chain.ts";',
+    });
+    try {
+      for (const file of [
+        "chain.ts",
+        "dynamic.ts",
+        "required.ts",
+        "extensionless.ts",
+        "shebang.ts",
+      ]) {
+        expect({ file, reaches: importsReach(t.at(file), t.at("target.ts")) }).toEqual({
+          file,
+          reaches: true,
+        });
+      }
+    } finally {
+      t.done();
+    }
+  });
+
+  test("does not reach through a type-only import, a package, or a cycle that never gets there", () => {
+    const t = tree({
+      "target.ts": "export type Spawn = () => void;",
+      "typed.ts": 'import type { Spawn } from "./target.ts"; export type S = Spawn;',
+      "package.ts": 'import { spawn } from "node:child_process"; export const s = spawn;',
+      "a.ts": 'import "./b.ts";',
+      "b.ts": 'import "./a.ts";',
+    });
+    try {
+      for (const file of ["typed.ts", "package.ts", "a.ts"]) {
+        expect({ file, reaches: importsReach(t.at(file), t.at("target.ts")) }).toEqual({
+          file,
+          reaches: false,
+        });
+      }
+    } finally {
+      t.done();
+    }
+  });
+
+  test("fails, rather than ending the search, on an import that names no file", () => {
+    const t = tree({ "broken.ts": 'import "./missing.ts";' });
+    try {
+      expect(() => importsReach(t.at("broken.ts"), t.at("target.ts"))).toThrow(
+        "imports ./missing.ts, which names no file",
+      );
+    } finally {
+      t.done();
+    }
+  });
 });
