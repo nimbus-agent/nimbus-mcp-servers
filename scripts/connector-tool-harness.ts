@@ -128,7 +128,7 @@ export class CapturedTools {
  */
 export function refusalSaying(text: string): RegExp {
   const asInJson = JSON.stringify(text).slice(1, -1);
-  return new RegExp(asInJson.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(asInJson.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`));
 }
 
 /**

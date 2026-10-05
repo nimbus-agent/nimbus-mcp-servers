@@ -278,7 +278,7 @@ describe("iac tools (gateway mode)", () => {
 
   it("deploys a template of exactly 51,200 bytes, the most the CLI takes without a bucket", async () => {
     const templateBody = `#${"é".repeat(25_599)}x`; // 1 + 51,198 + 1 bytes
-    expect(new TextEncoder().encode(templateBody).length).toBe(51_200);
+    expect(new TextEncoder().encode(templateBody)).toHaveLength(51_200);
     cli({ stdout: "" });
     expect(
       await tools.callJson("iac_cloudformation_deploy", { stackName: "web", templateBody }),
