@@ -17,6 +17,7 @@ import {
   captureTools,
   connectOverStubbedStdio,
   type FetchStub,
+  refusalSaying,
   type SpawnStub,
   stubFetch,
   stubSpawn,
@@ -78,6 +79,33 @@ describe("CapturedTools", () => {
     await expect(image.callJson("t")).rejects.toThrow('tool "t" returned no text content');
     const empty = oneTool(undefined, () => Promise.resolve({ content: [] }));
     await expect(empty.callJson("t")).rejects.toThrow('tool "t" returned no text content');
+  });
+});
+
+describe("refusalSaying", () => {
+  const quoted = oneTool(
+    z.object({ v: z.string().refine((s) => !s.startsWith("-"), 'must not start with "-"') }),
+  );
+
+  it("matches a refusal holding quotes, which a pattern written as read does not", async () => {
+    // The refusal arrives as Zod's issues in JSON, so its quotes are escaped. Written as a person
+    // reads it, the pattern never matches — which is the mistake this helper exists to prevent.
+    await expect(quoted.call("t", { v: "-x" })).rejects.toThrow(
+      refusalSaying('must not start with "-"'),
+    );
+    await expect(quoted.call("t", { v: "-x" })).rejects.not.toThrow(/must not start with "-"/);
+  });
+
+  it("matches the text literally, not as a pattern", () => {
+    expect(refusalSaying("a.c").test("abc")).toBe(false);
+    expect(refusalSaying("a.c").test("a.c")).toBe(true);
+    expect(refusalSaying("(x)*").test("(x)*")).toBe(true);
+  });
+
+  it("does not match a different refusal", async () => {
+    await expect(quoted.call("t", { v: "-x" })).rejects.not.toThrow(
+      refusalSaying('must not start with "@"'),
+    );
   });
 });
 

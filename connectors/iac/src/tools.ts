@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { awsCliArg, awsCliDocument, cliArg } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -39,7 +40,7 @@ export function registerIacTools(
   reg(
     "iac_terraform_plan",
     "Run terraform plan in a directory.",
-    z.object({ workingDirectory: z.string().min(1) }),
+    z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(["terraform", "-chdir", p.workingDirectory, "plan", "-input=false"], {
         ...processEnv,
@@ -56,7 +57,7 @@ export function registerIacTools(
       scopeTargetOf: (p) => ({ kind: "dir", value: p.workingDirectory }),
     },
     "Run terraform apply.",
-    z.object({ workingDirectory: z.string().min(1) }),
+    z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(
         ["terraform", "-chdir", p.workingDirectory, "apply", "-auto-approve", "-input=false"],
@@ -78,7 +79,7 @@ export function registerIacTools(
       scopeTargetOf: (p) => ({ kind: "dir", value: p.workingDirectory }),
     },
     "Run terraform destroy.",
-    z.object({ workingDirectory: z.string().min(1) }),
+    z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(
         ["terraform", "-chdir", p.workingDirectory, "destroy", "-auto-approve", "-input=false"],
@@ -97,8 +98,8 @@ export function registerIacTools(
     },
     "Deploy a CloudFormation stack via AWS CLI.",
     z.object({
-      stackName: z.string().min(1),
-      templateBody: z.string().min(1),
+      stackName: awsCliArg,
+      templateBody: awsCliDocument,
     }),
     async (p) => {
       await runCliOkThrowing(
@@ -122,7 +123,7 @@ export function registerIacTools(
   reg(
     "iac_pulumi_preview",
     "Run pulumi preview in a stack directory.",
-    z.object({ workingDirectory: z.string().min(1) }),
+    z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(
         ["pulumi", "preview", "--cwd", p.workingDirectory, "--non-interactive"],
@@ -140,7 +141,7 @@ export function registerIacTools(
       scopeTargetOf: (p) => ({ kind: "dir", value: p.workingDirectory }),
     },
     "Run pulumi up.",
-    z.object({ workingDirectory: z.string().min(1) }),
+    z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(
         ["pulumi", "up", "--yes", "--cwd", p.workingDirectory, "--non-interactive"],

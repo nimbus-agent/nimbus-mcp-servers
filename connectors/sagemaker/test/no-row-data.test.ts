@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { assertNoRowDataTools } from "@nimbus-dev/sdk";
-import { cliArg, SAGEMAKER_TOOL_NAMES } from "../src/tools.ts";
+import { awsCliArg, SAGEMAKER_TOOL_NAMES } from "../src/tools.ts";
 
 /**
  * Tier-3 no-row-data contract. SageMaker exposes only model-REGISTRY metadata
@@ -30,25 +30,32 @@ describe("SageMaker no-row-data contract (Tier-3)", () => {
 
 /**
  * Security guard: every tool-input value passed to the `aws sagemaker` CLI flows
- * through the `cliArg` Zod field, which rejects argv flag-smuggling. A model name
- * beginning with `-` (or carrying control chars) must fail the schema before the
+ * through the `awsCliArg` Zod field, which rejects argv flag-smuggling and the
+ * values the CLI would replace by a file's contents. A model name beginning with
+ * `-` (or carrying control chars, or `file://`) must fail the schema before the
  * handler ever shells out.
  */
-describe("SageMaker cliArg flag-smuggling guard", () => {
+describe("SageMaker awsCliArg flag-smuggling guard", () => {
+  it("rejects a model name the CLI would read from a local file or a URL", () => {
+    expect(awsCliArg.safeParse("file:///etc/passwd").success).toBe(false);
+    expect(awsCliArg.safeParse("fileb://C:/Users/me/.aws/credentials").success).toBe(false);
+    expect(awsCliArg.safeParse("https://example.invalid/model").success).toBe(false);
+  });
+
   it("accepts a normal model name", () => {
-    expect(cliArg.safeParse("my-fraud-model").success).toBe(true);
+    expect(awsCliArg.safeParse("my-fraud-model").success).toBe(true);
   });
 
   it("rejects a `-`-prefixed model name (argv flag smuggling)", () => {
-    expect(cliArg.safeParse("--model-name=attacker").success).toBe(false);
-    expect(cliArg.safeParse("-h").success).toBe(false);
+    expect(awsCliArg.safeParse("--model-name=attacker").success).toBe(false);
+    expect(awsCliArg.safeParse("-h").success).toBe(false);
   });
 
   it("rejects an empty model name", () => {
-    expect(cliArg.safeParse("").success).toBe(false);
+    expect(awsCliArg.safeParse("").success).toBe(false);
   });
 
   it("rejects a model name with control characters", () => {
-    expect(cliArg.safeParse("model\nname").success).toBe(false);
+    expect(awsCliArg.safeParse("model\nname").success).toBe(false);
   });
 });

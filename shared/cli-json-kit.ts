@@ -14,7 +14,13 @@
  *
  * The argument guard is the reason this is worth sharing rather than tolerating:
  * it is a security control, and a security control that exists in five
- * hand-written copies is one that can be strengthened in four of them.
+ * hand-written copies is one that can be strengthened in four of them. Every
+ * caller-supplied value that reaches a CLI's argv, in all eleven connectors
+ * that spawn one, now passes one of the argument schemas here — including in
+ * the connectors that spawn through `run-cli-json.ts` rather than
+ * {@link createCliJsonRunner}; bigquery's values never reach argv at all. And
+ * `scripts/cli-argument-guards.test.ts` fails a tool whose schema lets a value
+ * the CLI would misread through, whether or not something later refuses it.
  *
  * The `gcloud` connectors (bigquery, cloud-logging, gcp, vertex-ai) also share
  * how they hand gcloud its project and credentials: see {@link gcloudEnv} and
@@ -23,10 +29,28 @@
 
 import { z } from "zod";
 import { optionalEnv } from "./env-json-api.ts";
-import { isSafeCliArg } from "./safe-cli-arg.ts";
+import {
+  awsCliArgProblem,
+  awsCliDocumentProblem,
+  azCliArgProblem,
+  cliArgProblem,
+} from "./safe-cli-arg.ts";
 
 /** Body-snippet length in the thrown error. The value every connector used. */
 export const DEFAULT_STDERR_SNIPPET = 400;
+
+/**
+ * A Zod string that refuses every value `problem` names a reason against, with that reason as the
+ * message — so a refused call says which rule it broke rather than listing all of them.
+ */
+function cliArgSchema(problem: (value: unknown) => string | undefined): z.ZodString {
+  return z
+    .string()
+    .min(1)
+    .refine((value) => problem(value) === undefined, {
+      error: (issue) => problem(issue.input) ?? "is not a safe CLI argument",
+    });
+}
 
 /**
  * A value passed to a CLI as an argument.
@@ -35,10 +59,27 @@ export const DEFAULT_STDERR_SNIPPET = 400;
  * `-` would be read by the CLI as a flag rather than as the name it is meant to
  * be, and control characters have no legitimate place in one.
  */
-export const cliArg = z
-  .string()
-  .min(1)
-  .refine(isSafeCliArg, { message: 'must not start with "-" or contain control characters' });
+export const cliArg = cliArgSchema(cliArgProblem);
+
+/**
+ * A value passed to the `aws` CLI as an argument: {@link cliArg}, and not a value the CLI would
+ * replace by reading a file or fetching a URL (`file://`, `fileb://`, `http://`, `https://`), nor
+ * one carrying the shorthand file-load operator `@=`.
+ */
+export const awsCliArg = cliArgSchema(awsCliArgProblem);
+
+/**
+ * A DOCUMENT passed to the `aws` CLI as one argument — a CloudFormation template body. Unlike
+ * {@link awsCliArg} it may span lines and run past 1024 characters; it still may not start with `-`
+ * or with a prefix that makes the CLI read it from somewhere else.
+ */
+export const awsCliDocument = cliArgSchema(awsCliDocumentProblem);
+
+/**
+ * A value passed to the `az` CLI as an argument: {@link cliArg}, and not one `az` would replace by
+ * a file's contents — a leading `@`, or `=@` anywhere.
+ */
+export const azCliArg = cliArgSchema(azCliArgProblem);
 
 /** The spawn seam. Production passes `nimbusSpawn`; tests pass a fake. */
 export type SpawnFn = (

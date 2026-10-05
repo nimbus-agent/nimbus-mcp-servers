@@ -6,6 +6,7 @@ import {
   type CapturedTools,
   captureStandaloneTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   type StandaloneCapture,
   stubSpawn,
@@ -159,6 +160,44 @@ describe("aws_lambda_invoke", () => {
         }),
       ).rejects.toThrow("aws exited 255: ResourceNotFound");
       expectLambdaDirRemoved(stub.calls[0]?.command);
+    });
+  }
+});
+
+describe("aws refuses a value the CLI would load from a file or a URL, before aws runs", () => {
+  // The AWS CLI replaces a parameter written file://<path> or fileb://<path> by that file, and v1
+  // fetches an http(s) URL the same way; an error naming the value it rejects can then quote
+  // what it read back to the caller.
+  const CASES: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ["aws_ecs_service_list", { cluster: "file:///etc/hosts" }, 'must not start with "file://"'],
+    [
+      "aws_ecs_service_update",
+      { cluster: "c1", service: "fileb://C:/Users/me/.aws/credentials", taskDefinition: "api:7" },
+      'must not start with "fileb://"',
+    ],
+    [
+      "aws_lambda_invoke",
+      { functionName: "http://169.254.169.254/latest/meta-data/iam/security-credentials/" },
+      'must not start with "http://"',
+    ],
+    [
+      "aws_ec2_instance_stop",
+      { instanceIds: "https://example.invalid/i" },
+      'must not start with "https://"',
+    ],
+    [
+      "aws_ecs_service_update",
+      { cluster: "c1", service: "api", taskDefinition: "Body@=file:///etc/hosts" },
+      'must not contain "@="',
+    ],
+    ["aws_ec2_instance_start", { instanceIds: "--dry-run" }, 'must not start with "-"'],
+  ];
+
+  for (const [tool, args, refusal] of CASES) {
+    it(`${tool} refuses ${JSON.stringify(args)}`, async () => {
+      const stub = cli({ stdout: "" });
+      await expect(tools.call(tool, args)).rejects.toThrow(refusalSaying(refusal));
+      expect(stub.calls).toEqual([]);
     });
   }
 });

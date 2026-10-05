@@ -64,8 +64,8 @@ Full matrix, versions tested, and the provenance of each claim:
 ```
 
 Credentials come from the environment. There is no Vault outside the gateway, so whoever writes this
-config holds the secret. Every variable, and the two behaviours that look like bugs and are not, are
-in [Configuration](./docs/configuration.md).
+config holds the secret. Every variable, and the three behaviours that look like bugs and are not,
+are in [Configuration](./docs/configuration.md).
 
 Each connector has its own README at `connectors/<id>/README.md`. Most list their tools and
 credentials, but some — `github`, `slack` and `jira` among them — are still only a short gateway
