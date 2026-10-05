@@ -80,6 +80,8 @@ const HOSTILE: readonly { readonly kind: string; readonly cli: string; readonly 
     { kind: "az-load", cli: "az", value: "@/etc/hosts" },
     { kind: "az-load", cli: "az", value: "@-" },
     { kind: "az-load", cli: "az", value: "nimbus=@/etc/hosts" },
+    { kind: "az-load", cli: "az", value: "=@/etc/hosts" },
+    { kind: "az-load", cli: "az", value: "=@-" },
   ];
 
 /**

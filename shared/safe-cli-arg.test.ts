@@ -252,8 +252,10 @@ describe("azCliArgProblem", () => {
     }
   });
 
-  test("refuses =@, after the first = or a later one", () => {
-    for (const v of ["name=@/etc/hosts", "a=b=@c"]) {
+  test("refuses =@, after the first = or a later one, and at the very start", () => {
+    // az splits an argument at its first =, so a value that starts with =@ is = followed by the
+    // file's contents, and =@- by stdin's.
+    for (const v of ["name=@/etc/hosts", "a=b=@c", "=@/etc/hosts", "=@-"]) {
       expect(azCliArgProblem(v)).toBe(
         'must not contain "=@" (az would read what follows from a file)',
       );
