@@ -350,9 +350,9 @@ export function createWriteToolRegistrar(
         // as a write that never started, and so as one that is safe to try again.
         try {
           await record(name, "failed", { target, preState, error: messageOf(e) });
-        } catch (r) {
+        } catch (error_) {
           throw new Error(
-            `${name} failed: ${messageOf(e)}. Recording that failure also failed: ${messageOf(r)}`,
+            `${name} failed: ${messageOf(e)}. Recording that failure also failed: ${messageOf(error_)}`,
             { cause: e },
           );
         }

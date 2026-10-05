@@ -94,7 +94,7 @@ function canonicalJson(value: unknown): string {
  * `ALLOWED_CONNECTOR_DEPS`, and the standalone artifact must run under Node. Same construction,
  * different primitive.
  */
-function linkHash(prev: string, entry: AuditEntry): string {
+function linkHash(prev: string, entry: unknown): string {
   return createHash("sha256").update(prev).update(canonicalJson(entry)).digest("hex");
 }
 
@@ -181,7 +181,8 @@ function inQueue(key: string, task: () => Promise<void>): Promise<void> {
   // A failed append must not stall the ones behind it, so the next waits on the settled result.
   const settled = run.catch(() => undefined);
   appendQueues.set(key, settled);
-  settled.then(() => {
+  // `settled` never rejects, and nothing waits on its cleanup.
+  void settled.then(() => {
     if (appendQueues.get(key) === settled) appendQueues.delete(key);
   });
   return run;
@@ -290,17 +291,18 @@ async function inspectLock(fs: LockFs, lockPath: string): Promise<HeldLock | und
  * read every one of them.
  */
 async function readSettled(fs: LockFs, path: string): Promise<string | undefined> {
-  let content: string | undefined;
-  for (let attempt = 0; ; attempt += 1) {
+  let lastRead: string | undefined;
+  for (let attempt = 0; attempt < SETTLE_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await sleep(backoffMs(attempt - 1)); // NOSONAR S9382: retries of one read, which must not overlap — the next read is worth making only once the lock has had time to settle.
     try {
-      content = await fs.readFile(path, "utf8");
+      const content = await fs.readFile(path, "utf8");
       if (content !== "") return content;
+      lastRead = content;
     } catch {
       // Missing for a moment, or not readable at all: tried again until the attempts run out.
     }
-    if (attempt + 1 >= SETTLE_ATTEMPTS) return content;
-    await sleep(backoffMs(attempt));
   }
+  return lastRead;
 }
 
 /**
@@ -467,24 +469,49 @@ async function acquireLock(
   const deadline = Date.now() + opts.timeoutMs;
   let transient: unknown;
   for (let attempt = 0; ; attempt += 1) {
-    let held: HeldLock | undefined;
-    let freed = false;
-    try {
-      if (await tryCreateLock(fs, lockPath, token)) return token;
-      held = await inspectLock(fs, lockPath);
-      // Released already, or abandoned and now removed: try again at once. A takeover that fails —
-      // another writer's is under way, or a rename was refused while another process had the file
-      // open — is not skipped but retried, after the wait, against a fresh look at the lock.
-      freed =
-        held === undefined ||
-        (isAbandoned(held, opts.staleMs) &&
-          (await takeOver(fs, lockPath, opts).catch(() => false)));
-    } catch (e) {
-      if (!(await lockInTransition(fs, e, lockPath))) throw e;
-      transient = e;
+    const step = await tryLock(fs, lockPath, token, opts);
+    if (step.taken) return token;
+    transient = step.transient ?? transient;
+    if (Date.now() >= deadline) {
+      throw lockTimeout(path, lockPath, opts.timeoutMs, step.held, transient);
     }
-    if (Date.now() >= deadline) throw lockTimeout(path, lockPath, opts.timeoutMs, held, transient);
-    if (!freed) await sleep(backoffMs(attempt));
+    if (!step.freed) await sleep(backoffMs(attempt)); // NOSONAR S9382: the backoff between attempts at one lock, which must not overlap — a waiter backs off to let the holder finish, by a random amount so waiters do not retry in lockstep.
+  }
+}
+
+/** One attempt at the lock: taken, or what stood in the way. */
+type LockTry =
+  | { readonly taken: true }
+  | {
+      readonly taken: false;
+      /** The lock as it was found, when it could be read. */
+      readonly held: HeldLock | undefined;
+      /** Released already, or abandoned and now removed: worth trying again at once. */
+      readonly freed: boolean;
+      /** An error read as the lock changing hands, which is waited out rather than thrown. */
+      readonly transient?: unknown;
+    };
+
+async function tryLock(
+  fs: LockFs,
+  lockPath: string,
+  token: string,
+  opts: AuditLockOptions,
+): Promise<LockTry> {
+  let held: HeldLock | undefined;
+  try {
+    if (await tryCreateLock(fs, lockPath, token)) return { taken: true };
+    held = await inspectLock(fs, lockPath);
+    // A takeover that fails — another writer's is under way, or a rename was refused while another
+    // process had the file open — is not skipped but retried, after the wait, against a fresh look
+    // at the lock.
+    const freed =
+      held === undefined ||
+      (isAbandoned(held, opts.staleMs) && (await takeOver(fs, lockPath, opts).catch(() => false)));
+    return { taken: false, held, freed };
+  } catch (e) {
+    if (!(await lockInTransition(fs, e, lockPath))) throw e;
+    return { taken: false, held, freed: false, transient: e };
   }
 }
 
@@ -526,20 +553,27 @@ async function releaseLock(fs: LockFs, lockPath: string, token: string): Promise
 
 /** The hash a new entry links to: the one the log's last line carries. */
 function tailHash(path: string, last: string, lineNo: number): string {
-  let hash: unknown;
+  const hash = parseLine(last)?.hash;
+  if (typeof hash === "string") return hash;
+  // A torn last line, from a writer that died mid-write or a hand edit. Linking past it would hide
+  // whatever it was; refuse, so the write it records does not run unrecorded.
+  throw new Error(
+    `audit log ${path}: line ${lineNo} is not a chained entry, so no entry can be linked after it`,
+  );
+}
+
+/** A log line as read back: a `ChainedLine`'s fields, none of them checked yet. */
+type UncheckedLine = { readonly [K in keyof ChainedLine]?: unknown };
+
+/** A log line's fields, or `undefined` for a line that is not a JSON object. */
+function parseLine(raw: string): UncheckedLine | undefined {
+  let parsed: unknown;
   try {
-    hash = (JSON.parse(last) as Partial<ChainedLine>).hash;
+    parsed = JSON.parse(raw);
   } catch {
-    hash = undefined;
+    return undefined;
   }
-  if (typeof hash !== "string") {
-    // A torn last line, from a writer that died mid-write or a hand edit. Linking past it would
-    // hide whatever it was; refuse, so the write it records does not run unrecorded.
-    throw new Error(
-      `audit log ${path}: line ${lineNo} is not a chained entry, so no entry can be linked after it`,
-    );
-  }
-  return hash;
+  return typeof parsed === "object" && parsed !== null ? (parsed as UncheckedLine) : undefined;
 }
 
 /**
@@ -647,16 +681,20 @@ export async function verifyAuditChain(
   const lines = await readLines(path);
   let prev = GENESIS_HASH;
   for (const [i, raw] of lines.entries()) {
-    let line: ChainedLine;
-    try {
-      line = JSON.parse(raw) as ChainedLine;
-    } catch {
+    // A line that is not JSON, or JSON without both links (`null`, `{}`), breaks the chain at its
+    // own line too. It used to reject instead, since a missing link is not a string to compare.
+    const line = parseLine(raw);
+    const linked = line?.prev;
+    const hash = line?.hash;
+    if (
+      typeof linked !== "string" ||
+      typeof hash !== "string" ||
+      !hashEquals(linked, prev) ||
+      !hashEquals(hash, linkHash(prev, line?.entry))
+    ) {
       return { ok: false, brokenAtLine: i + 1 };
     }
-    if (!hashEquals(line.prev, prev) || !hashEquals(line.hash, linkHash(prev, line.entry))) {
-      return { ok: false, brokenAtLine: i + 1 };
-    }
-    prev = line.hash;
+    prev = hash;
   }
   return { ok: true, count: lines.length };
 }

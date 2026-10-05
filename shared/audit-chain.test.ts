@@ -353,6 +353,15 @@ describe("audit chain", () => {
     expect(await verifyAuditChain(p)).toEqual({ ok: false, brokenAtLine: 2 });
   });
 
+  test("a JSON line without both links is reported at its own position, not thrown", async () => {
+    for (const torn of ["null", "7", "[]", "{}", '{"prev":1,"hash":2}', '{"hash":"x"}']) {
+      const p = await tempLog();
+      await appendAuditEntry(p, entry("a", "executed"));
+      await writeFile(p, `${(await readFile(p, "utf8")).trimEnd()}\n${torn}\n`);
+      expect(await verifyAuditChain(p)).toEqual({ ok: false, brokenAtLine: 2 });
+    }
+  });
+
   test("key order in detail does not affect verification", async () => {
     const p = await tempLog();
     await appendAuditEntry(p, {

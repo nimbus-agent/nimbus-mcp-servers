@@ -140,6 +140,17 @@ fraction (`10.0`), an exponent (`1e3`), a hex value (`0x10`) or a word. Earlier 
 those as a number, or a word as no limit at all. Unset it for the default of 10, or set a whole
 number, where 0 refuses every write.
 
+**On Windows, an argument a batch file would misread is refused.** `az` and `gcloud` are batch
+files there, so an `azure` or `gcp` call now refuses an argument holding a `cmd.exe` metacharacter
+before anything runs, as
+[Three behaviours that look like bugs and are not](#three-behaviours-that-look-like-bugs-and-are-not)
+describes. Give an Azure subscription by its id rather than by a display name holding one, and put
+the v2 installer's `aws.exe` ahead of a pip-installed `aws` v1 on `PATH` if you deploy CloudFormation
+templates. On every platform, every connector that drives a CLI now refuses a value starting with
+`-` (earlier releases skipped the `aws`, `azure` and `iac` arguments and some `gcp` and
+`kubernetes` positionals), and a value `aws` or `az` would replace by a file's contents is refused
+as well: [SECURITY.md](../SECURITY.md) lists the rules.
+
 ### To 0.2.2
 
 **`argocd` reads a different write-scope variable.** From 0.2.2 the connector reads
