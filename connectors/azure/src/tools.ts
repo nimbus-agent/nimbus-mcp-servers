@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { azCliArg } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -44,8 +45,8 @@ export function registerAzureTools(
     "azure_app_service_list",
     "List App Services in a resource group.",
     z.object({
-      subscriptionId: z.string().min(1),
-      resourceGroup: z.string().min(1),
+      subscriptionId: azCliArg,
+      resourceGroup: azCliArg,
     }),
     async (p) =>
       jsonResult(
@@ -69,9 +70,9 @@ export function registerAzureTools(
     },
     "Restart an App Service.",
     z.object({
-      subscriptionId: z.string().min(1),
-      resourceGroup: z.string().min(1),
-      name: z.string().min(1),
+      subscriptionId: azCliArg,
+      resourceGroup: azCliArg,
+      name: azCliArg,
     }),
     async (p) => {
       await runCliOkThrowing(
@@ -101,10 +102,10 @@ export function registerAzureTools(
     },
     "Scale an AKS node pool.",
     z.object({
-      subscriptionId: z.string().min(1),
-      resourceGroup: z.string().min(1),
-      clusterName: z.string().min(1),
-      poolName: z.string().min(1),
+      subscriptionId: azCliArg,
+      resourceGroup: azCliArg,
+      clusterName: azCliArg,
+      poolName: azCliArg,
       nodeCount: z.number().int().min(0),
     }),
     async (p) => {

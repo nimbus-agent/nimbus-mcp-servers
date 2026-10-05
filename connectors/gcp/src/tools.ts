@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { gcloudEnv } from "../../../shared/cli-json-kit.ts";
+import { cliArg, gcloudEnv } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -40,7 +40,7 @@ export function registerGcpTools(
   reg(
     "gcp_cloud_run_service_list",
     "List Cloud Run services in a region.",
-    z.object({ projectId: z.string().min(1), region: z.string().min(1) }),
+    z.object({ projectId: cliArg, region: cliArg }),
     async (p) =>
       jsonResult(
         await gcloudJson([
@@ -62,10 +62,10 @@ export function registerGcpTools(
     },
     "Deploy a container image to Cloud Run.",
     z.object({
-      projectId: z.string().min(1),
-      region: z.string().min(1),
-      service: z.string().min(1),
-      image: z.string().min(1),
+      projectId: cliArg,
+      region: cliArg,
+      service: cliArg,
+      image: cliArg,
     }),
     async (p) => {
       await runCliOkThrowing(
@@ -94,11 +94,11 @@ export function registerGcpTools(
     },
     "Restart a GKE deployment rollout via kubectl (uses current cluster credentials).",
     z.object({
-      projectId: z.string().min(1),
-      location: z.string().min(1),
-      cluster: z.string().min(1),
-      namespace: z.string().min(1),
-      deployment: z.string().min(1),
+      projectId: cliArg,
+      location: cliArg,
+      cluster: cliArg,
+      namespace: cliArg,
+      deployment: cliArg,
     }),
     async (p) => {
       await runCliOkThrowing(

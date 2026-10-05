@@ -3,6 +3,7 @@ import {
   approvedStandaloneWrite,
   type CapturedTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
 } from "../../../scripts/connector-tool-harness.ts";
@@ -149,6 +150,32 @@ describe("k8s_pod_delete's audited pre-state (standalone mode)", () => {
     // requested, accepted, executed — and the chain over them intact.
     expect(chain).toEqual({ ok: true, count: 3 });
   });
+});
+
+describe("kubernetes refuses an argument that is not a plain value, before kubectl runs", () => {
+  // kubectl reads a positional that starts with "-" as a flag, so a pod named
+  // --kubeconfig=<path> would point it at a kubeconfig whose exec credential plugin runs a command.
+  // The namespace is the value of -n and so cannot be read that way; it is held to the same rule.
+  const SMUGGLED = "--kubeconfig=/tmp/attacker-kubeconfig";
+  const DASH = 'must not start with "-"';
+  const CONTROL = "must not contain control characters";
+  const CASES: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ["k8s_rollout_restart", { resourceType: SMUGGLED, name: "api" }, DASH],
+    ["k8s_rollout_restart", { resourceType: "deployment", name: SMUGGLED }, DASH],
+    ["k8s_pod_delete", { podName: SMUGGLED }, DASH],
+    ["k8s_deployment_scale", { deploymentName: SMUGGLED, replicas: 1 }, DASH],
+    ["k8s_pod_delete", { namespace: SMUGGLED, podName: "api-1" }, DASH],
+    ["k8s_pod_list", { namespace: SMUGGLED }, DASH],
+    ["k8s_pod_delete", { podName: "api-1\napi-2" }, CONTROL],
+  ];
+
+  for (const [tool, args, refusal] of CASES) {
+    it(`${tool} refuses ${JSON.stringify(args)}`, async () => {
+      const stub = cli({ stdout: "" });
+      await expect(tools.call(tool, args)).rejects.toThrow(refusalSaying(refusal));
+      expect(stub.calls).toEqual([]);
+    });
+  }
 });
 
 describe("kubernetes list tools", () => {

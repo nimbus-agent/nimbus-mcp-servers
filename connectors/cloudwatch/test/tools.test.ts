@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { captureTools, refusalSaying, stubSpawn } from "../../../scripts/connector-tool-harness.ts";
 import { registerCloudwatchTools } from "../src/tools.ts";
 
 function stubServer() {
@@ -325,4 +326,36 @@ describe("registerCloudwatchTools", () => {
     const result = parseResult(await tools["cloudwatch_list"]!({})) as Record<string, never>;
     expect(result).toEqual({});
   });
+});
+
+describe("cloudwatch refuses a value the CLI would read from somewhere else, before aws runs", () => {
+  // Through the harness, which parses every call against the tool's own schema the way the MCP
+  // server does. The handlers above are called directly, past the schema, so they cannot show it.
+  const CASES: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ["cloudwatch_get", { logGroupName: "file:///etc/passwd" }, 'must not start with "file://"'],
+    [
+      "cloudwatch_list",
+      { prefix: "fileb://C:/Users/me/.aws/credentials" },
+      'must not start with "fileb://"',
+    ],
+    [
+      "cloudwatch_get",
+      { logGroupName: "--endpoint-url=https://attacker.example" },
+      'must not start with "-"',
+    ],
+  ];
+
+  for (const [tool, args, refusal] of CASES) {
+    it(`${tool} refuses ${JSON.stringify(args)}`, async () => {
+      const spawn = stubSpawn({ stdout: "{}" });
+      try {
+        await expect(captureTools(registerCloudwatchTools).call(tool, args)).rejects.toThrow(
+          refusalSaying(refusal),
+        );
+        expect(spawn.calls).toEqual([]);
+      } finally {
+        spawn.restore();
+      }
+    });
+  }
 });

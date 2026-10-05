@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   asArray,
-  cliArg,
+  awsCliArg,
   createCliJsonRunner,
   isRecord,
   strField,
@@ -13,9 +13,9 @@ import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connect
 /**
  * The argv-injection guard every SageMaker model name passes through on its way to the
  * `aws sagemaker` CLI. Re-exported so this connector's own test can assert the guard rejects a
- * `-`-prefixed value.
+ * `-`-prefixed value, and one the CLI would replace by a file's contents (`file://<path>`).
  */
-export { cliArg };
+export { awsCliArg };
 
 /**
  * Amazon SageMaker (Tier-3, metadata-only) MCP tool surface. ALL tools index
@@ -65,7 +65,7 @@ export function registerSagemakerTools(reg: ZodToolRegistrar): void {
     "sagemaker_list",
     "List Amazon SageMaker models — METADATA ONLY (`aws sagemaker list-models`). Each entry carries `ModelName`, `ModelArn`, and `CreationTime`. Optionally filter by a `nameContains` substring on the model name. Never invokes an endpoint and never fetches inference / training / model-artifact data.",
     z.object({
-      nameContains: cliArg.optional(),
+      nameContains: awsCliArg.optional(),
     }),
     async (p) => {
       const args = ["list-models", "--max-results", PAGE];
@@ -80,7 +80,7 @@ export function registerSagemakerTools(reg: ZodToolRegistrar): void {
     "sagemaker_get",
     "Fetch one Amazon SageMaker model's METADATA (`aws sagemaker describe-model`). Returns the model object including `ModelName`, `ModelArn`, `PrimaryContainer` (container `Image` reference + `ModelDataUrl` S3 pointer — a URI string, NOT the model bytes), `ExecutionRoleArn`, and `CreationTime`. No inference, training, or model-artifact data is returned — registry metadata only.",
     z.object({
-      modelName: cliArg,
+      modelName: awsCliArg,
     }),
     async (p) => {
       return jsonResult(await sagemakerCli(["describe-model", "--model-name", p.modelName]));

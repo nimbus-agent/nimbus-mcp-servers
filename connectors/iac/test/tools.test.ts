@@ -7,6 +7,7 @@ import {
   type CapturedTools,
   captureStandaloneTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
   withEnv,
@@ -132,6 +133,52 @@ describe("iac tools (gateway mode)", () => {
       /"templateBody"[\s\S]*expected string, received undefined/,
     );
     expect(stub.calls).toEqual([]);
+  });
+
+  // A working directory starting with "-" would reach terraform or pulumi as a flag, and a stack
+  // name or template body starting with file:// would make aws read that file as the value.
+  const REFUSED: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ["iac_terraform_plan", { workingDirectory: "-help" }, 'must not start with "-"'],
+    ["iac_pulumi_preview", { workingDirectory: "--stack=prod" }, 'must not start with "-"'],
+    [
+      "iac_pulumi_up",
+      { workingDirectory: "stacks/web\n--yes" },
+      "must not contain control characters",
+    ],
+    [
+      "iac_cloudformation_deploy",
+      { stackName: "file:///etc/hosts", templateBody: "{}" },
+      'must not start with "file://"',
+    ],
+    [
+      "iac_cloudformation_deploy",
+      { stackName: "web", templateBody: "file:///etc/passwd" },
+      'must not start with "file://"',
+    ],
+    [
+      "iac_cloudformation_deploy",
+      { stackName: "web", templateBody: "--debug" },
+      'must not start with "-"',
+    ],
+  ];
+
+  for (const [tool, args, refusal] of REFUSED) {
+    it(`${tool} refuses ${JSON.stringify(args)} before running anything`, async () => {
+      const stub = cli({ stdout: "" });
+      await expect(tools.call(tool, args)).rejects.toThrow(refusalSaying(refusal));
+      expect(stub.calls).toEqual([]);
+    });
+  }
+
+  it("still passes a template body that spans lines and runs past 1024 characters", async () => {
+    // A template is a document, not a name: the argument rules about length and control
+    // characters would make every real one impossible to pass.
+    const templateBody = `AWSTemplateFormatVersion: "2010-09-09"\nDescription: ${"x".repeat(1100)}\nResources: {}\n`;
+    const stub = cli({ stdout: "" });
+    expect(
+      await tools.callJson("iac_cloudformation_deploy", { stackName: "web", templateBody }),
+    ).toEqual({ ok: true });
+    expect(stub.calls[0]?.command[6]).toBe(templateBody);
   });
 });
 

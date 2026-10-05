@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cliArg } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -34,7 +35,7 @@ async function kubectlJson(rest: string[]): Promise<unknown> {
   return runCliJsonThrowing(cmd, kubeEnv());
 }
 
-const optionalNamespaceSchema = z.object({ namespace: z.string().min(1).optional() });
+const optionalNamespaceSchema = z.object({ namespace: cliArg.optional() });
 
 async function k8sListNamespacedResource(p: { namespace?: string | undefined }, resource: string) {
   const ns = p.namespace ?? "default";
@@ -92,9 +93,9 @@ export function registerKubernetesTools(
     },
     "Restart a rollout (e.g. deployment).",
     z.object({
-      namespace: z.string().min(1).optional(),
-      resourceType: z.string().min(1),
-      name: z.string().min(1),
+      namespace: cliArg.optional(),
+      resourceType: cliArg,
+      name: cliArg,
     }),
     async (p) => {
       const ns = p.namespace ?? "default";
@@ -117,8 +118,8 @@ export function registerKubernetesTools(
     },
     "Delete a pod.",
     z.object({
-      namespace: z.string().min(1).optional(),
-      podName: z.string().min(1),
+      namespace: cliArg.optional(),
+      podName: cliArg,
     }),
     async (p) => {
       const ns = p.namespace ?? "default";
@@ -137,8 +138,8 @@ export function registerKubernetesTools(
     },
     "Scale a deployment.",
     z.object({
-      namespace: z.string().min(1).optional(),
-      deploymentName: z.string().min(1),
+      namespace: cliArg.optional(),
+      deploymentName: cliArg,
       replicas: z.number().int().min(0),
     }),
     async (p) => {
