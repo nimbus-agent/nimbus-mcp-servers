@@ -1,15 +1,18 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { readFileSync, readlinkSync } from "node:fs";
 import {
   appendFile,
   type FileHandle,
   link,
   open,
   readFile,
+  realpath,
   rename,
+  stat,
   unlink,
 } from "node:fs/promises";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /**
@@ -140,9 +143,35 @@ export type AuditLockOptions = {
    * always outlasts a left-behind lock it could not prove abandoned straight away.
    */
   readonly timeoutMs: number;
+  /**
+   * The file operations the lock is made of, `node:fs/promises` unless given. Only tests pass
+   * this, to reproduce failures that only some filesystems produce: WSL's `/mnt` drives among them.
+   */
+  readonly fs?: LockFs;
 };
 
+/** One open lock file. */
+export type LockHandle = Pick<FileHandle, "readFile" | "stat" | "writeFile" | "close">;
+
+/** The file operations the lock is made of. The log itself is read and written directly. */
+export type LockFs = {
+  readonly open: (path: string, flags: "r" | "wx") => Promise<LockHandle>;
+  readonly readFile: (path: string, encoding: "utf8") => Promise<string>;
+  readonly rename: (from: string, to: string) => Promise<void>;
+  readonly link: (existing: string, created: string) => Promise<void>;
+  readonly unlink: (path: string) => Promise<void>;
+  readonly stat: (path: string) => Promise<{ isDirectory(): boolean }>;
+};
+
+const NODE_FS: LockFs = { open, readFile, rename, link, unlink, stat };
+
 const DEFAULT_AUDIT_LOCK: AuditLockOptions = { staleMs: 10_000, timeoutMs: 30_000 };
+
+/**
+ * How many times `readSettled` reads before it gives up, with `backoffMs` between: under a tenth of
+ * a second in all.
+ */
+const SETTLE_ATTEMPTS = 6;
 
 /** The appends queued in THIS process, per log; each starts when the one before it has settled. */
 const appendQueues = new Map<string, Promise<void>>();
@@ -158,7 +187,11 @@ function inQueue(key: string, task: () => Promise<void>): Promise<void> {
   return run;
 }
 
-type LockOwner = { readonly pid: number; readonly host: string };
+type LockOwner = {
+  readonly pid: number;
+  readonly host: string;
+  readonly pidSpace: string | undefined;
+};
 
 function lockOwner(content: string): LockOwner | undefined {
   let parsed: unknown;
@@ -168,14 +201,44 @@ function lockOwner(content: string): LockOwner | undefined {
     return undefined;
   }
   if (typeof parsed !== "object" || parsed === null) return undefined;
-  const { pid, host } = parsed as Record<string, unknown>;
-  return typeof pid === "number" && typeof host === "string" ? { pid, host } : undefined;
+  const { pid, host, pidSpace } = parsed as Record<string, unknown>;
+  if (typeof pid !== "number" || typeof host !== "string") return undefined;
+  return { pid, host, pidSpace: typeof pidSpace === "string" ? pidSpace : undefined };
 }
 
 /**
- * Whether a process on THIS host has provably exited. Signal 0 tests for a process without
- * delivering anything, and only ESRCH proves it gone: EPERM is a live process this one may not
- * signal. A pid that is not a positive integer is never signalled, since 0 and negative pids
+ * The processes a pid probe from this process can see, named so that two processes share the name
+ * only when they see the same ones. On Linux that is the running kernel, by its boot id, and this
+ * process's PID namespace: containers, Flatpak sandboxes and WSL each run in a namespace of their
+ * own, often under the hostname of the machine they run on, and a pid from another namespace means
+ * nothing here. On Windows and macOS it is the platform: WSL runs under its Windows host's
+ * hostname, and the platform keeps its Linux pids apart from Windows ones.
+ *
+ * `undefined` where it cannot be read, and then no lock is judged by its pid at all.
+ */
+function readPidSpace(): string | undefined {
+  if (process.platform === "win32" || process.platform === "darwin") return process.platform;
+  if (process.platform !== "linux") return undefined;
+  try {
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return `linux ${boot} ${readlinkSync("/proc/self/ns/pid")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read once: a process stays in the PID namespace, and on the kernel, it started in. */
+let ownPidSpace: { readonly value: string | undefined } | undefined;
+
+function localPidSpace(): string | undefined {
+  ownPidSpace ??= { value: readPidSpace() };
+  return ownPidSpace.value;
+}
+
+/**
+ * Whether a process in this one's pid space has provably exited. Signal 0 tests for a process
+ * without delivering anything, and only ESRCH proves it gone: EPERM is a live process this one may
+ * not signal. A pid that is not a positive integer is never signalled, since 0 and negative pids
  * address process groups.
  */
 function hasExited(pid: number): boolean {
@@ -190,11 +253,17 @@ function hasExited(pid: number): boolean {
 
 type HeldLock = { readonly content: string; readonly ageMs: number };
 
+/** Whether an error says the file is no longer there: ESTALE is NFS's word for it. */
+function isGone(e: unknown): boolean {
+  const code = errorCode(e);
+  return code === "ENOENT" || code === "ESTALE";
+}
+
 /** Read a held lock through ONE handle, so its content and its age describe the same file. */
-async function inspectLock(lockPath: string): Promise<HeldLock | undefined> {
-  let handle: FileHandle;
+async function inspectLock(fs: LockFs, lockPath: string): Promise<HeldLock | undefined> {
+  let handle: LockHandle;
   try {
-    handle = await open(lockPath, "r");
+    handle = await fs.open(lockPath, "r");
   } catch (e) {
     // Released between the failed create and this read.
     if (errorCode(e) === "ENOENT") return undefined;
@@ -210,52 +279,94 @@ async function inspectLock(lockPath: string): Promise<HeldLock | undefined> {
 }
 
 /**
- * A lock may be taken over when its holder is provably gone — a process on this host that has
- * exited — or when it is older than any live append. The second covers what the first cannot
- * judge: a holder on another host sharing the log, a pid that has since been reused, and a lock
- * whose body was never written because its holder died between creating and writing it.
+ * Read a lock, trying again for a moment while the read fails or comes back empty. Resolves to the
+ * last content read, which can be empty, or to `undefined` when no read succeeded.
  *
- * The pid check trusts the hostname, so two machines sharing one log must not share a hostname.
+ * A lock is empty only from its creation until its token is written, or for good when its holder
+ * died between the two, so an empty read is not yet an answer about whose it is. A failed read is
+ * often not one either: WSL's `/mnt` drives report a lock that was renamed a moment ago as missing,
+ * even to the process that renamed it. Measured there: 345 of 730 reads straight after a rename
+ * failed while two other processes were reading the lock, and a single retry a millisecond later
+ * read every one of them.
+ */
+async function readSettled(fs: LockFs, path: string): Promise<string | undefined> {
+  let content: string | undefined;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      content = await fs.readFile(path, "utf8");
+      if (content !== "") return content;
+    } catch {
+      // Missing for a moment, or not readable at all: tried again until the attempts run out.
+    }
+    if (attempt + 1 >= SETTLE_ATTEMPTS) return content;
+    await sleep(backoffMs(attempt));
+  }
+}
+
+/**
+ * A lock may be taken over when its holder is provably gone — a process this one can see, that has
+ * exited — or when it is older than any live append. The second covers what the first cannot
+ * judge: a holder on another host or in another PID namespace, a pid that has since been reused,
+ * and a lock whose body was never written because its holder died between creating and writing it.
+ *
+ * The pid is probed only for a lock written on this host and in this pid space (`readPidSpace`).
+ * A holder the probe cannot see reads as exited while it runs: WSL beside Windows, both under one
+ * hostname, took over each other's live locks at once and broke the chain. On Windows and macOS
+ * the hostname is all that tells two machines apart, so two machines sharing a log must not share
+ * a hostname.
  */
 function isAbandoned(lock: HeldLock, staleMs: number): boolean {
   if (lock.ageMs > staleMs) return true;
   const owner = lockOwner(lock.content);
-  return owner !== undefined && owner.host === hostname() && hasExited(owner.pid);
+  const here = localPidSpace();
+  return (
+    owner !== undefined &&
+    here !== undefined &&
+    owner.pidSpace === here &&
+    owner.host === hostname() &&
+    hasExited(owner.pid)
+  );
 }
 
 /**
  * Remove the lock file only if it is the one whose content is `expected`; resolves to whether it
  * was. Reading it and then unlinking it would remove a lock another writer took between the two
  * calls, so the file is renamed aside first — one atomic step that claims exactly one file — and a
- * file that turns out to be someone else's lock is linked back.
+ * file that turns out to be someone else's lock is linked back. So is one that cannot be read back,
+ * whose owner is then unknown, and this rejects.
  */
-async function removeLockIf(lockPath: string, expected: string): Promise<boolean> {
+async function removeLockIf(fs: LockFs, lockPath: string, expected: string): Promise<boolean> {
   const aside = `${lockPath}.${randomBytes(6).toString("hex")}`;
   try {
-    await rename(lockPath, aside);
+    await fs.rename(lockPath, aside);
   } catch (e) {
     if (errorCode(e) === "ENOENT") return false;
     throw e;
   }
-  const moved = await readFile(aside, "utf8").catch(() => undefined);
+  // Never judged from a failed read: on WSL's `/mnt` drives that made a writer give back its own
+  // lock, then report it taken over.
+  const moved = await readSettled(fs, aside);
   if (moved !== expected) {
     // Not the lock meant: give it back. If a third writer has taken the free name in the meantime
     // this fails, and the displaced holder finds its lock gone at its own check before it appends,
     // or when it releases, and its append refuses.
-    await link(aside, lockPath).catch(() => undefined);
+    await fs.link(aside, lockPath).catch(() => undefined);
   }
   // Only a name nothing reads remains if this fails.
-  await unlink(aside).catch(() => undefined);
+  await fs.unlink(aside).catch(() => undefined);
+  if (moved === undefined) {
+    throw new Error(`could not read ${lockPath} back after moving it aside, so it was put back`);
+  }
   return moved === expected;
 }
 
 /** Create the lock, holding `token`. False when another writer holds it. */
-async function tryCreateLock(lockPath: string, token: string): Promise<boolean> {
-  let handle: FileHandle;
+async function tryCreateLock(fs: LockFs, lockPath: string, token: string): Promise<boolean> {
+  let handle: LockHandle;
   try {
     // `wx` is O_CREAT | O_EXCL (CREATE_NEW on Windows): of all the writers racing here, exactly one
     // creates the file, on all three platforms.
-    handle = await open(lockPath, "wx");
+    handle = await fs.open(lockPath, "wx");
   } catch (e) {
     if (errorCode(e) === "EEXIST") return false;
     throw e;
@@ -267,7 +378,7 @@ async function tryCreateLock(lockPath: string, token: string): Promise<boolean> 
   } finally {
     await handle.close();
     // A lock holding no token can only be judged by its age; do not leave one behind.
-    if (!written) await unlink(lockPath).catch(() => undefined);
+    if (!written) await fs.unlink(lockPath).catch(() => undefined);
   }
   return true;
 }
@@ -285,27 +396,28 @@ async function tryCreateLock(lockPath: string, token: string): Promise<boolean> 
  * Resolves to whether the lock is gone. A takeover holds its lock for a moment, so one older than
  * `staleMs` was left by a writer that died during it, and is removed for the next attempt.
  */
-async function takeOver(lockPath: string, opts: AuditLockOptions): Promise<boolean> {
+async function takeOver(fs: LockFs, lockPath: string, opts: AuditLockOptions): Promise<boolean> {
   const takeoverPath = `${lockPath}.takeover`;
   const token = randomBytes(16).toString("hex");
-  if (!(await tryCreateLock(takeoverPath, token))) {
-    const stuck = await inspectLock(takeoverPath);
+  if (!(await tryCreateLock(fs, takeoverPath, token))) {
+    const stuck = await inspectLock(fs, takeoverPath);
     if (stuck !== undefined && stuck.ageMs > opts.staleMs) {
-      await removeLockIf(takeoverPath, stuck.content);
+      await removeLockIf(fs, takeoverPath, stuck.content);
     }
     return false;
   }
   try {
-    const held = await inspectLock(lockPath);
+    const held = await inspectLock(fs, lockPath);
     if (held === undefined) return true;
-    return isAbandoned(held, opts.staleMs) && (await removeLockIf(lockPath, held.content));
+    return isAbandoned(held, opts.staleMs) && (await removeLockIf(fs, lockPath, held.content));
   } finally {
-    await removeLockIf(takeoverPath, token);
+    await removeLockIf(fs, takeoverPath, token);
   }
 }
 
 /**
- * An error that, on Windows, means the lock is changing hands rather than that it cannot be read.
+ * Whether an error creating or reading the lock means it is changing hands, rather than that it
+ * cannot be had.
  *
  * Windows answers an open of a file that is being deleted with EPERM, not ENOENT, for the moment
  * until the deleting handle closes. Measured: a lock path that another process created and unlinked
@@ -314,8 +426,21 @@ async function takeOver(lockPath: string, opts: AuditLockOptions): Promise<boole
  * done by rename produced none — but an operator clearing a stuck lock by hand can, and EBUSY is
  * another process holding the file open without sharing. Elsewhere both are a real permission
  * problem, and fail at once.
+ *
+ * A lock that has gone since it was opened, or that is renamed while it is being created, is
+ * changing hands too. Most filesystems go on serving a file renamed while it is open, but WSL's
+ * `/mnt` drives answer ENOENT, and NFS can answer ESTALE. Measured on WSL, with other processes
+ * taking and releasing the lock in a loop: a fifth to a half of the reads of an opened lock failed
+ * that way, and 5 to 17 percent of the creates racing a Windows process. A lock whose directory is
+ * missing gives ENOENT too, and that one fails at once.
  */
-function lockInTransition(e: unknown): boolean {
+async function lockInTransition(fs: LockFs, e: unknown, lockPath: string): Promise<boolean> {
+  if (isGone(e)) {
+    return fs.stat(dirname(lockPath)).then(
+      (s) => s.isDirectory(),
+      () => false,
+    );
+  }
   const code = errorCode(e);
   return process.platform === "win32" && (code === "EPERM" || code === "EBUSY");
 }
@@ -327,6 +452,7 @@ function backoffMs(attempt: number): number {
 }
 
 async function acquireLock(
+  fs: LockFs,
   path: string,
   lockPath: string,
   opts: AuditLockOptions,
@@ -334,6 +460,7 @@ async function acquireLock(
   const token = JSON.stringify({
     pid: process.pid,
     host: hostname(),
+    pidSpace: localPidSpace(),
     nonce: randomBytes(16).toString("hex"),
     since: new Date().toISOString(),
   });
@@ -343,16 +470,17 @@ async function acquireLock(
     let held: HeldLock | undefined;
     let freed = false;
     try {
-      if (await tryCreateLock(lockPath, token)) return token;
-      held = await inspectLock(lockPath);
+      if (await tryCreateLock(fs, lockPath, token)) return token;
+      held = await inspectLock(fs, lockPath);
       // Released already, or abandoned and now removed: try again at once. A takeover that fails —
       // another writer's is under way, or a rename was refused while another process had the file
       // open — is not skipped but retried, after the wait, against a fresh look at the lock.
       freed =
         held === undefined ||
-        (isAbandoned(held, opts.staleMs) && (await takeOver(lockPath, opts).catch(() => false)));
+        (isAbandoned(held, opts.staleMs) &&
+          (await takeOver(fs, lockPath, opts).catch(() => false)));
     } catch (e) {
-      if (!lockInTransition(e)) throw e;
+      if (!(await lockInTransition(fs, e, lockPath))) throw e;
       transient = e;
     }
     if (Date.now() >= deadline) throw lockTimeout(path, lockPath, opts.timeoutMs, held, transient);
@@ -381,9 +509,9 @@ function lockTimeout(
  * Release a lock this append holds. False means it was no longer ours: another writer judged it
  * abandoned and took it over while the entry was being written.
  */
-async function releaseLock(lockPath: string, token: string): Promise<boolean> {
+async function releaseLock(fs: LockFs, lockPath: string, token: string): Promise<boolean> {
   try {
-    return await removeLockIf(lockPath, token);
+    return await removeLockIf(fs, lockPath, token);
   } catch (e) {
     // The entry is written and chained, so the append stands. The lock file stays behind and the
     // next writer takes it over once it is `staleMs` old. Say so on stderr: stdout is a stdio MCP
@@ -427,16 +555,29 @@ function tailHash(path: string, last: string, lineNo: number): string {
  *
  * Fails closed. An append that cannot take the lock within `timeoutMs`, cannot read the log, or
  * finds a last line it cannot link to writes nothing and rejects — and the consent kit does not
- * run a write whose entry did not land. Every writer must name the log by the same path: a second
- * name for the file through a file symlink or hard link has a lock of its own.
+ * run a write whose entry did not land.
+ *
+ * The lock sits beside the file the path resolves to through any symlink, so every writer that
+ * reaches the log through a symlink still takes the one lock. A hard link to the log, or a
+ * container mount of the log file alone rather than its directory, still gets a lock of its own.
  */
 export function appendAuditEntry(
   path: string,
   entry: AuditEntry,
   lock: AuditLockOptions = DEFAULT_AUDIT_LOCK,
 ): Promise<void> {
-  const log = resolve(path);
-  return inQueue(log, () => appendUnderLock(log, entry, lock));
+  const named = resolve(path);
+  return inQueue(named, async () => appendUnderLock(await logFile(named), entry, lock));
+}
+
+/**
+ * The file a log path names, every symlink resolved. The log is created first if it does not exist
+ * yet: a symlink to a log nobody has written to resolves to nothing, and its first append would
+ * lock beside the symlink while later ones lock beside the file.
+ */
+async function logFile(named: string): Promise<string> {
+  await (await open(named, "a")).close();
+  return realpath(named);
 }
 
 async function appendUnderLock(
@@ -444,8 +585,9 @@ async function appendUnderLock(
   entry: AuditEntry,
   opts: AuditLockOptions,
 ): Promise<void> {
+  const fs = opts.fs ?? NODE_FS;
   const lockPath = `${log}.lock`;
-  const token = await acquireLock(log, lockPath, opts);
+  const token = await acquireLock(fs, log, lockPath, opts);
   let outcome: "written" | "lost" | { readonly error: unknown };
   try {
     const lines = await readLines(log);
@@ -455,7 +597,14 @@ async function appendUnderLock(
     // A lock taken over while the log was being read may be guarding another writer's append right
     // now. Checked as late as it can be, so the only window left open is between this check and
     // the write.
-    if ((await readFile(lockPath, "utf8").catch(() => undefined)) === token) {
+    const holder = await readSettled(fs, lockPath);
+    if (holder === undefined) {
+      throw new Error(
+        `audit log ${log}: could not read its lock ${lockPath} back before writing, ` +
+          "so the entry was not written",
+      );
+    }
+    if (holder === token) {
       await appendFile(log, `${JSON.stringify(line)}\n`, "utf8");
       outcome = "written";
     } else {
@@ -472,7 +621,7 @@ async function appendUnderLock(
         "the entry was not written",
     );
   }
-  const stillOurs = await releaseLock(lockPath, token);
+  const stillOurs = await releaseLock(fs, lockPath, token);
   if (outcome !== "written") throw outcome.error;
   if (!stillOurs) {
     throw new Error(

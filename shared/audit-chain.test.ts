@@ -1,9 +1,31 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtempSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  unlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import { type AuditEntry, appendAuditEntry, verifyAuditChain } from "./audit-chain.ts";
+import {
+  type AuditEntry,
+  type AuditLockOptions,
+  appendAuditEntry,
+  type LockFs,
+  verifyAuditChain,
+} from "./audit-chain.ts";
 
 const tempDirs: string[] = [];
 
@@ -27,18 +49,21 @@ function oneTo(n: number): number[] {
 }
 
 /**
- * A writer PROCESS: it says it has started, then appends `count` entries to `log`, one after
- * another, as connector `who`.
+ * A writer PROCESS: it says it has started, and on Linux in which PID namespace, then appends
+ * `count` entries to `log`, one after another, as connector `who`.
  *
  * Built by concatenation and run from a temp directory: a fixture under `shared/` would ship in
  * the package.
  */
 const WRITER_SOURCE = [
-  'import { writeFileSync } from "node:fs";',
+  'import { readlinkSync, renameSync, writeFileSync } from "node:fs";',
   'import { join } from "node:path";',
   `import { appendAuditEntry } from ${JSON.stringify(new URL("./audit-chain.ts", import.meta.url).href)};`,
   "const [log, who, count, dir] = process.argv.slice(2);",
-  'writeFileSync(join(dir, "started-" + who), "");',
+  'const ns = process.platform === "linux" ? readlinkSync("/proc/self/ns/pid") : "";',
+  // Renamed into place, so a `started-` file is never seen before its content is in it.
+  'writeFileSync(join(dir, "starting-" + who), ns);',
+  'renameSync(join(dir, "starting-" + who), join(dir, "started-" + who));',
   "for (let i = 0; i < Number(count); i += 1) {",
   "  await appendAuditEntry(log, {",
   '    ts: "2026-10-05T00:00:00.000Z", connector: who, tool: "t" + i, outcome: "executed", detail: {},',
@@ -50,7 +75,8 @@ const WRITER_SOURCE = [
  * Run `n` writer processes on one log, `count` entries each, as `w0`…`w<n-1>`, all queued behind a
  * lock this test holds: one naming this live process, and fresh, so it is waited for and never
  * taken over. Once every writer has begun its first append, `then` is handed the lock to release
- * or age; the writers are then awaited, and every one must exit cleanly.
+ * or age; the writers are then awaited, and every one must exit cleanly. `launch(k)` is put in
+ * front of writer `k`'s command. Resolves to the PID namespace each writer reported, on Linux.
  *
  * Holding the lock is what makes the writers overlap by construction: each began before `then`,
  * and none can finish an append until after it. Without it one writer could finish before the next
@@ -61,14 +87,15 @@ async function writeConcurrently(
   n: number,
   count: number,
   then: (lockPath: string) => Promise<void>,
-): Promise<void> {
-  const lockPath = await plantLock(log, lockBody(process.pid));
+  launch: (k: number) => readonly string[] = () => [],
+): Promise<string[]> {
+  const lockPath = await plantLock(log, await lockBody(process.pid));
   const dir = await mkdtemp(join(tmpdir(), "nimbus-audit-writers-"));
   tempDirs.push(dir);
   const script = join(dir, "writer.ts");
   await writeFile(script, WRITER_SOURCE);
   const procs = Array.from({ length: n }, (_, k) =>
-    Bun.spawn([process.execPath, script, log, `w${k}`, String(count), dir], {
+    Bun.spawn([...launch(k), process.execPath, script, log, `w${k}`, String(count), dir], {
       stdout: "pipe",
       stderr: "pipe",
       windowsHide: true,
@@ -80,6 +107,9 @@ async function writeConcurrently(
       if (Date.now() > deadline) throw new Error("the writer processes never started");
       await Bun.sleep(5);
     }
+    const namespaces = await Promise.all(
+      Array.from({ length: n }, (_, k) => readFile(join(dir, `started-w${k}`), "utf8")),
+    );
     await then(lockPath);
     const codes = await Promise.all(procs.map((p) => p.exited));
     const stderr = await Promise.all(procs.map((p) => new Response(p.stderr).text()));
@@ -87,6 +117,7 @@ async function writeConcurrently(
       codes: Array.from({ length: n }, () => 0),
       stderr: Array.from({ length: n }, () => ""),
     });
+    return namespaces;
   } finally {
     for (const p of procs) p.kill();
   }
@@ -103,8 +134,39 @@ async function plantLock(log: string, body: string, ageMs = 0): Promise<string> 
   return lockPath;
 }
 
-function lockBody(pid: number, host = hostname()): string {
-  return JSON.stringify({ pid, host, nonce: "planted", since: "2026-10-05T00:00:00.000Z" });
+/** The module's own lock timings. */
+const DEFAULTS: AuditLockOptions = { staleMs: 10_000, timeoutMs: 30_000 };
+
+/** The real file operations, for a test to wrap. */
+const REAL_FS: LockFs = { open, readFile, rename, link, unlink, stat };
+
+let ownLockFields: Record<string, unknown> | undefined;
+
+/**
+ * The fields this process writes into a lock, read back from a real append's own lock at its check
+ * before writing: a lock planted from them is one this process could have left, on this host and
+ * in its pid space.
+ */
+async function ownLock(): Promise<Record<string, unknown>> {
+  if (ownLockFields !== undefined) return ownLockFields;
+  let body: string | undefined;
+  const fs: LockFs = {
+    ...REAL_FS,
+    readFile: async (path, encoding) => {
+      const text = await readFile(path, encoding);
+      if (path.endsWith(".lock")) body = text;
+      return text;
+    },
+  };
+  await appendAuditEntry(await tempLog(), entry("probe", "executed"), { ...DEFAULTS, fs });
+  if (body === undefined) throw new Error("the append never read its own lock back");
+  ownLockFields = JSON.parse(body) as Record<string, unknown>;
+  return ownLockFields;
+}
+
+/** A lock body naming `pid`, and otherwise this process's own, with `fields` overriding either. */
+async function lockBody(pid: number, fields: Record<string, unknown> = {}): Promise<string> {
+  return JSON.stringify({ ...(await ownLock()), pid, nonce: "planted", ...fields });
 }
 
 /**
@@ -160,6 +222,81 @@ const HOUR_MS = 3_600_000;
 
 /** A lock that is never taken over by age, and a wait short enough to time out in a test. */
 const QUICK_TIMEOUT = { staleMs: HOUR_MS, timeoutMs: 250 };
+
+/** A lock that a release or a takeover has renamed aside: `<log>.lock.` and 12 hex digits. */
+const ASIDE = /\.lock\.[0-9a-f]{12}$/;
+
+/** An error as `node:fs` raises it, with the code a test chooses. */
+function fsError(code: string, path: string): Error {
+  return Object.assign(new Error(`${code}: injected, '${path}'`), { code, path });
+}
+
+/** Says yes the first `n` times it is asked; `fired` counts those. */
+function firstTimes(n: number): { readonly next: () => boolean; readonly fired: () => number } {
+  let fired = 0;
+  return {
+    next: () => {
+      if (fired >= n) return false;
+      fired += 1;
+      return true;
+    },
+    fired: () => fired,
+  };
+}
+
+/** Run `body`, collecting what is written to stderr meanwhile instead of printing it. */
+async function capturingStderr(body: () => Promise<void>): Promise<string> {
+  const writes: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    writes.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await body();
+  } finally {
+    process.stderr.write = original;
+  }
+  return writes.join("");
+}
+
+/** Whether this process may create a symlink: on Windows that takes developer mode or an admin. */
+const CAN_SYMLINK = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "nimbus-audit-symlink-"));
+  try {
+    symlinkSync(join(dir, "target"), join(dir, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+/** Run a command in a PID namespace of its own, as a container runs, or WSL beside Windows. */
+const OWN_PID_NAMESPACE = [
+  "unshare",
+  "--user",
+  "--map-root-user",
+  "--pid",
+  "--fork",
+  "--kill-child",
+  "--mount-proc",
+];
+
+/** Whether this process may do that: Linux, with unprivileged user namespaces allowed. */
+const CAN_UNSHARE_PID = (() => {
+  if (process.platform !== "linux") return false;
+  try {
+    const run = Bun.spawnSync([...OWN_PID_NAMESPACE, "true"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    return run.exitCode === 0;
+  } catch {
+    return false;
+  }
+})();
 
 afterAll(async () => {
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
@@ -366,7 +503,7 @@ describe("a lock left behind", () => {
     // Its pid is provably dead, so the lock is taken over without waiting for it to age: the wait
     // allowed here is far shorter than the age that would otherwise be needed.
     const p = await tempLog();
-    await plantLock(p, lockBody(exitedPid()));
+    await plantLock(p, await lockBody(exitedPid()));
     await appendAuditEntry(p, entry("after-crash", "executed"), {
       staleMs: HOUR_MS,
       timeoutMs: 10_000,
@@ -377,20 +514,25 @@ describe("a lock left behind", () => {
 
   test("by a live holder is waited for, and the append then fails closed", async () => {
     const p = await tempLog();
-    const lockPath = await plantLock(p, lockBody(process.pid));
-    await expect(appendAuditEntry(p, entry("blocked", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
-      `gave up after 250 ms waiting for its lock ${lockPath}, held by process ${process.pid}; the entry was not written`,
+    const body = await lockBody(process.pid);
+    const lockPath = await plantLock(p, body);
+    const pending = appendAuditEntry(p, entry("blocked", "executed"), QUICK_TIMEOUT);
+    await expect(pending).rejects.toThrow("gave up after 250 ms waiting for its lock ");
+    // The lock is named by the log's own path, every symlink resolved: on macOS the temp directory
+    // is one.
+    await expect(pending).rejects.toThrow(
+      `${await realpath(p)}.lock, held by process ${process.pid}; the entry was not written`,
     );
     // Nothing written, and the live holder's lock untouched.
     expect(await leftovers(p)).toEqual([basename(lockPath)]);
-    expect(await readFile(lockPath, "utf8")).toBe(lockBody(process.pid));
+    expect(await readFile(lockPath, "utf8")).toBe(body);
     expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
   });
 
   test("older than staleMs is taken over even though its holder still runs", async () => {
     // A pid can be reused by an unrelated process, so a live pid alone cannot hold a log forever.
     const p = await tempLog();
-    await plantLock(p, lockBody(process.pid), HOUR_MS);
+    await plantLock(p, await lockBody(process.pid), HOUR_MS);
     await appendAuditEntry(p, entry("after-stale", "executed"));
     expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
     expect(await leftovers(p)).toEqual([]);
@@ -410,9 +552,8 @@ describe("a lock left behind", () => {
     expect(await leftovers(old)).toEqual([]);
   });
 
-  test("from another host is judged by age alone, never by a pid this host cannot see", async () => {
-    // The pid is dead HERE, which says nothing about a process on the machine that wrote it.
-    const body = lockBody(exitedPid(), `${hostname()}-elsewhere`);
+  /** A lock in `body`, fresh, is waited for until the append gives up; aged, it is taken over. */
+  async function judgedByAgeAlone(body: string): Promise<void> {
     const fresh = await tempLog();
     await plantLock(fresh, body);
     await expect(appendAuditEntry(fresh, entry("x", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
@@ -423,6 +564,39 @@ describe("a lock left behind", () => {
     await plantLock(old, body, HOUR_MS);
     await appendAuditEntry(old, entry("x", "executed"));
     expect(await verifyAuditChain(old)).toEqual({ ok: true, count: 1 });
+  }
+
+  test("from another host is judged by age alone, never by a pid this host cannot see", async () => {
+    // The pid is dead HERE, which says nothing about a process on the machine that wrote it.
+    await judgedByAgeAlone(await lockBody(exitedPid(), { host: `${hostname()}-elsewhere` }));
+  });
+
+  test("from another pid space under this hostname is judged by age alone", async () => {
+    // A process in another PID namespace is invisible to this one's probe, so its pid reads as
+    // exited while it runs. WSL beside Windows, both under one hostname, took over each other's live
+    // locks at once that way, and broke the chain; so can a container that keeps its host's name.
+    const { pidSpace } = await ownLock();
+    expect(pidSpace).toBeString();
+    await judgedByAgeAlone(await lockBody(exitedPid(), { pidSpace: `${pidSpace} elsewhere` }));
+  });
+
+  test("naming no pid space is judged by age alone", async () => {
+    // What a writer leaves when it cannot read its own pid space, and so cannot vouch for its pid.
+    const body = JSON.parse(await lockBody(exitedPid())) as Record<string, unknown>;
+    await judgedByAgeAlone(
+      JSON.stringify(Object.fromEntries(Object.entries(body).filter(([k]) => k !== "pidSpace"))),
+    );
+  });
+
+  test("names the pid space its holder's pid belongs to", async () => {
+    // On Linux, the PID namespace the pid was taken in; elsewhere, the platform, so that a pid from
+    // WSL is never looked up among Windows processes.
+    const { pidSpace } = await ownLock();
+    if (process.platform === "linux") {
+      expect(pidSpace).toContain(readlinkSync("/proc/self/ns/pid"));
+    } else {
+      expect(pidSpace).toBe(process.platform);
+    }
   });
 
   test("that another process keeps deleting by hand is waited out, never an error", async () => {
@@ -465,7 +639,7 @@ describe("a lock left behind", () => {
     // The lock's holder is dead, but another writer is in the middle of taking it over. Acting on
     // the same judgement could remove the fresh lock that writer is about to take.
     const p = await tempLog();
-    const lockPath = await plantLock(p, lockBody(exitedPid()));
+    const lockPath = await plantLock(p, await lockBody(exitedPid()));
     await writeFile(`${lockPath}.takeover`, "another-writer");
     await expect(appendAuditEntry(p, entry("x", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
       /gave up after 250 ms/,
@@ -480,7 +654,7 @@ describe("a lock left behind", () => {
     // A takeover lock is held for a moment, so an old one is abandoned too. Left in place it would
     // block every takeover, and with them every write, until someone deleted it by hand.
     const p = await tempLog();
-    const lockPath = await plantLock(p, lockBody(exitedPid()));
+    const lockPath = await plantLock(p, await lockBody(exitedPid()));
     await writeFile(`${lockPath}.takeover`, "dead-writer");
     const then = new Date(Date.now() - HOUR_MS);
     await utimes(`${lockPath}.takeover`, then, then);
@@ -503,6 +677,216 @@ describe("a lock left behind", () => {
     expect(await verifyAuditChain(p)).toEqual({ ok: true, count: writers * 5 });
     expect(await leftovers(p)).toEqual([]);
   }, 60_000);
+
+  test.skipIf(!CAN_UNSHARE_PID)(
+    "held by a process in another PID namespace under this hostname is not taken over while it runs",
+    async () => {
+      // Half the writers run in a PID namespace of their own, the way WSL runs beside Windows or a
+      // container beside its host, and all under this host's name. Each side sees the other's pids
+      // as exited, so before locks named their pid space, writers took over live locks at once.
+      const p = await tempLog();
+      const writers = 6;
+      const each = 40;
+      const namespaces = await writeConcurrently(
+        p,
+        writers,
+        each,
+        (lockPath) => rm(lockPath),
+        (k) => (k % 2 === 0 ? OWN_PID_NAMESPACE : []),
+      );
+      // The premise: half the writers really did run in another PID namespace.
+      const here = readlinkSync("/proc/self/ns/pid");
+      expect(namespaces.filter((ns) => ns !== here)).toHaveLength(writers / 2);
+      expect(await verifyAuditChain(p)).toEqual({ ok: true, count: writers * each });
+      expect(await leftovers(p)).toEqual([]);
+    },
+    60_000,
+  );
+
+  test.skipIf(!CAN_SYMLINK)(
+    "is the one beside the file a symlinked log path points to",
+    async () => {
+      // A lock beside the symlink would be a second lock for one file: two writers naming the log two
+      // ways would race as if there were none. The symlink is made before the log exists, the way a
+      // dotfiles manager would.
+      const p = await tempLog();
+      const alias = join(dirname(p), "alias.jsonl");
+      await symlink(p, alias);
+      await plantLock(p, await lockBody(process.pid));
+      await expect(appendAuditEntry(alias, entry("x", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
+        /gave up after 250 ms/,
+      );
+
+      await rm(`${p}.lock`);
+      await appendAuditEntry(alias, entry("x", "executed"));
+      await appendAuditEntry(p, entry("y", "executed"));
+      expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 2 });
+      expect(await leftovers(p)).toEqual(["alias.jsonl"]);
+    },
+  );
+});
+
+describe("a lock the filesystem loses sight of for a moment", () => {
+  // WSL's /mnt drives report a lock that another process is renaming, or that was renamed a moment
+  // ago, as missing — even to the process that renamed it — and NFS answers ESTALE for a file
+  // removed while it was open. Each case puts one such answer into the lock's file operations.
+
+  test("is still known for this append's own when it reads back as missing after release", async () => {
+    // The release moves the lock aside before checking whose it is. Read once, a missing lock was
+    // taken for another writer's, given back, and the written entry reported as taken over.
+    const p = await tempLog();
+    const fault = firstTimes(1);
+    const fs: LockFs = {
+      ...REAL_FS,
+      readFile: (path, encoding) =>
+        ASIDE.test(path) && fault.next()
+          ? Promise.reject(fsError("ENOENT", path))
+          : readFile(path, encoding),
+    };
+    await appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs });
+    expect(fault.fired()).toBe(1);
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("is not taken for another writer's on an empty read, which is tried again", async () => {
+    // A lock is empty only from its creation until its token is written, so an empty read is not
+    // yet an answer about whose it is.
+    const p = await tempLog();
+    const fault = firstTimes(1);
+    const fs: LockFs = {
+      ...REAL_FS,
+      readFile: (path, encoding) =>
+        ASIDE.test(path) && fault.next() ? Promise.resolve("") : readFile(path, encoding),
+    };
+    await appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs });
+    expect(fault.fired()).toBe(1);
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("that cannot be read back after release at all is put back, and the entry stands", async () => {
+    // Whose lock was moved aside is then unknown, so it is not removed. Left in place, it is taken
+    // over like any lock left behind.
+    const p = await tempLog();
+    const fs: LockFs = {
+      ...REAL_FS,
+      readFile: (path, encoding) =>
+        ASIDE.test(path) ? Promise.reject(fsError("EIO", path)) : readFile(path, encoding),
+    };
+    const stderr = await capturingStderr(() =>
+      appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs }),
+    );
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(stderr).toContain("could not remove the audit-log lock");
+    const left = JSON.parse(await readFile(`${await realpath(p)}.lock`, "utf8")) as { pid: number };
+    expect(left.pid).toBe(process.pid);
+  });
+
+  test("is read again before the entry is written, rather than the entry given up", async () => {
+    const p = await tempLog();
+    const fault = firstTimes(1);
+    const fs: LockFs = {
+      ...REAL_FS,
+      readFile: (path, encoding) =>
+        path.endsWith(".lock") && fault.next()
+          ? Promise.reject(fsError("ENOENT", path))
+          : readFile(path, encoding),
+    };
+    await appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs });
+    expect(fault.fired()).toBe(1);
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+  });
+
+  test("that cannot be read before the entry is written writes nothing, and is released", async () => {
+    const p = await tempLog();
+    const fs: LockFs = {
+      ...REAL_FS,
+      readFile: (path, encoding) =>
+        path.endsWith(".lock") ? Promise.reject(fsError("EIO", path)) : readFile(path, encoding),
+    };
+    await expect(appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs })).rejects.toThrow(
+      "back before writing, so the entry was not written",
+    );
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("answered with ENOENT while it is created, its directory there, is waited out", async () => {
+    const p = await tempLog();
+    const fault = firstTimes(3);
+    const fs: LockFs = {
+      ...REAL_FS,
+      open: (path, flags) =>
+        flags === "wx" && path.endsWith(".lock") && fault.next()
+          ? Promise.reject(fsError("ENOENT", path))
+          : open(path, flags),
+    };
+    await appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs });
+    expect(fault.fired()).toBe(3);
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+  });
+
+  test("answered with ENOENT, then ESTALE, after it was opened is waited out", async () => {
+    // An aged lock, so it is taken over once it can be inspected; the first two inspections find
+    // it gone after opening it.
+    const p = await tempLog();
+    await plantLock(p, await lockBody(process.pid), HOUR_MS);
+    const codes = ["ENOENT", "ESTALE"];
+    const fs: LockFs = {
+      ...REAL_FS,
+      open: async (path, flags) => {
+        const handle = await open(path, flags);
+        const code = flags === "r" ? codes.shift() : undefined;
+        if (code === undefined) return handle;
+        return {
+          readFile: handle.readFile.bind(handle),
+          writeFile: handle.writeFile.bind(handle),
+          close: handle.close.bind(handle),
+          stat: (): Promise<never> => Promise.reject(fsError(code, path)),
+        };
+      },
+    };
+    await appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs });
+    expect(codes).toEqual([]);
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("answered with ENOENT because its directory is missing fails at once", async () => {
+    const p = await tempLog();
+    const fs: LockFs = {
+      ...REAL_FS,
+      open: (path, flags) =>
+        flags === "wx" ? Promise.reject(fsError("ENOENT", path)) : open(path, flags),
+      stat: (path) => Promise.reject(fsError("ENOENT", path)),
+    };
+    // Not waited out as a lock changing hands, which would end in "gave up after 250 ms".
+    await expect(
+      appendAuditEntry(p, entry("a", "executed"), { ...QUICK_TIMEOUT, fs }),
+    ).rejects.toThrow("ENOENT: injected");
+  });
+
+  test("taken over while the entry is written leaves the entry, and the append says so", async () => {
+    // Only a writer stalled past staleMs can lose its lock between its last check and its write.
+    // Here another writer's lock is put in its place just as the release moves it aside.
+    const p = await tempLog();
+    const fault = firstTimes(1);
+    const fs: LockFs = {
+      ...REAL_FS,
+      rename: async (from, to) => {
+        if (from.endsWith(".lock") && fault.next()) await writeFile(from, "another-writer");
+        return rename(from, to);
+      },
+    };
+    await expect(appendAuditEntry(p, entry("a", "executed"), { ...DEFAULTS, fs })).rejects.toThrow(
+      "the entry was written, but another writer took over its lock while it was being written",
+    );
+    expect(fault.fired()).toBe(1);
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    // Given back, for the writer that holds it to release.
+    expect(await readFile(`${await realpath(p)}.lock`, "utf8")).toBe("another-writer");
+  });
 });
 
 describe("an append fails closed", () => {
