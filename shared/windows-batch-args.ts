@@ -78,11 +78,24 @@ export function cmdMetacharacterIn(value: string): string | undefined {
 }
 
 /**
+ * `name` without the dots and spaces at its end. A loop rather than `/[. ]+$/`, whose engine
+ * retries the run from every start position and so takes quadratic time on a long run of dots
+ * and spaces that something else follows.
+ */
+function withoutTrailingDotsAndSpaces(name: string): string {
+  let end = name.length;
+  while (end > 0 && (name[end - 1] === "." || name[end - 1] === " ")) {
+    end -= 1;
+  }
+  return name.slice(0, end);
+}
+
+/**
  * Whether Windows runs a file of this name through cmd.exe: a `.cmd` or a `.bat`, in any case,
  * after the trailing dots and spaces Windows drops from a file name — `az.cmd.` opens `az.cmd`.
  */
 export function isBatchFileName(name: string): boolean {
-  const trimmed = name.replace(/[. ]+$/, "").toLowerCase();
+  const trimmed = withoutTrailingDotsAndSpaces(name).toLowerCase();
   return BATCH_EXTENSIONS.some((ext) => trimmed.endsWith(ext));
 }
 
