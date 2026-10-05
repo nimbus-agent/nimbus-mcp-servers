@@ -19,7 +19,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,7 +131,20 @@ async function expectedSurface(id: string): Promise<string[]> {
   return captureTools(register as ConnectorRegistrar).names();
 }
 
-/** Connect to a booted entry point and assert it is the named server serving its whole surface. */
+/** Whether a connector's manifest declares a write or a delete: the connectors with write tools. */
+function declaresWrite(id: string): boolean {
+  const manifest = JSON.parse(
+    readFileSync(join(CONNECTORS, id, "nimbus.extension.json"), "utf8"),
+  ) as { hitlRequired?: unknown };
+  const hitl = manifest.hitlRequired;
+  return Array.isArray(hitl) && hitl.some((h) => h === "write" || h === "delete");
+}
+
+/**
+ * Connect to a booted entry point and assert it is the named server serving its whole surface,
+ * and, for a connector with write tools, that it declares the MCP `logging` capability: without
+ * it the SDK drops every notification the consent kit sends about a gated write.
+ */
 async function expectServesItsSurface(id: string, stdio: StubbedStdio): Promise<void> {
   const client = await connectOverStubbedStdio(stdio);
   try {
@@ -139,6 +152,9 @@ async function expectServesItsSurface(id: string, stdio: StubbedStdio): Promise<
     const served = (await client.listTools()).tools.map((t) => t.name).sort(byToolName);
     expect(served.length).toBeGreaterThan(0);
     expect(served).toEqual(await expectedSurface(id));
+    if (declaresWrite(id)) {
+      expect({ id, logging: client.getServerCapabilities()?.logging }).toEqual({ id, logging: {} });
+    }
   } finally {
     await client.close();
   }
@@ -159,6 +175,8 @@ describe("every connector entry point, booted as the gateway boots it", () => {
     expect(ids.length).toBeGreaterThan(90);
     expect(ids).toContain("apple");
     expect([...OWN_TEST].every((id) => ids.includes(id))).toBe(true);
+    // And one that found no write connector would leave the logging check above unexercised.
+    expect(ids.filter(declaresWrite).length).toBeGreaterThan(30);
   });
 
   test.each(ids.filter((id) => !OWN_TEST.has(id)))(

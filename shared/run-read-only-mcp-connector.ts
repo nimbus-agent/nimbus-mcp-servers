@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CONSENT_SERVER_CAPABILITIES } from "./consent-kit.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -41,7 +42,12 @@ export function buildReadOnlyMcpConnector(
   register: (reg: ZodToolRegistrar, server: unknown) => void,
   options?: BuildReadOnlyMcpConnectorOptions,
 ): unknown {
-  const make = options?.createServer ?? ((info) => new McpServer(info));
+  // Every server built here declares the MCP `logging` capability, since the consent kit's
+  // notifications reach a client only through it. A truly read-only connector sends no log
+  // message, so declaring it costs that connector nothing.
+  const make =
+    options?.createServer ??
+    ((info) => new McpServer(info, { capabilities: CONSENT_SERVER_CAPABILITIES }));
   const mcp = make({ name: serverName, version: "0.1.0" });
   const reg = createZodToolRegistrar(createRegisterSimpleTool(mcp));
   register(reg, mcp);

@@ -59,6 +59,19 @@ export type ConsentServer = {
   sendLoggingMessage(params: { level: "info" | "warning"; data: unknown }): Promise<void>;
 };
 
+/**
+ * What a connector with write tools constructs its `McpServer` with:
+ * `new McpServer(info, { capabilities: CONSENT_SERVER_CAPABILITIES })`.
+ *
+ * The kit tells the client about every gated outcome with `notifications/message`, and the SDK
+ * sends that only for a server that declared the MCP `logging` capability. No connector did, so
+ * each notification was dropped without a word. It must be declared at construction: that is the
+ * only moment the SDK installs its `logging/setLevel` handler, and a server that declared the
+ * capability later would refuse a client setting the level. `scripts/connector-boot.test.ts`
+ * fails a connector whose manifest declares a write and whose booted server does not declare it.
+ */
+export const CONSENT_SERVER_CAPABILITIES = { logging: {} };
+
 export type WriteToolConfig<T> = {
   /** Action type this tool performs, e.g. "repo.branch.delete". Machine-readable, not prose. */
   readonly mutates: string;
@@ -185,23 +198,32 @@ export function createWriteToolRegistrar(
     outcome: AuditOutcome,
     detail: Record<string, unknown>,
   ): Promise<void> {
-    // Meant as a client-visible channel, but it reaches no client today: the SDK sends
-    // `notifications/message` only for a server that declared the MCP `logging` capability, and
-    // no connector declares it. The durable log below is the only record.
-    await server.sendLoggingMessage({
-      level: outcome === "executed" ? "info" : "warning",
-      data: { connector: cfg.connector, tool, outcome },
-    });
-    // Durable channel: only when the operator configured a path. An append that fails rejects, and
-    // every record before the mutation is awaited, so a write whose entry did not land never runs.
-    if (auditLog !== undefined && auditLog !== "") {
-      await appendAuditEntry(auditLog, {
-        ts: new Date().toISOString(),
-        connector: cfg.connector,
-        tool,
-        outcome,
-        detail,
-      });
+    try {
+      // Durable channel first: only when the operator configured a path. An append that fails
+      // rejects, and every record before the mutation is awaited, so a write whose entry did not
+      // land never runs.
+      if (auditLog !== undefined && auditLog !== "") {
+        await appendAuditEntry(auditLog, {
+          ts: new Date().toISOString(),
+          connector: cfg.connector,
+          tool,
+          outcome,
+          detail,
+        });
+      }
+    } finally {
+      // Then the client-visible channel, told of every record attempted, one whose append failed
+      // included. It reaches the client because the connector declared the MCP `logging`
+      // capability (CONSENT_SERVER_CAPABILITIES), and a client may filter it by level. Best
+      // effort, and after the durable log: a client that has gone away mid-write must not keep the
+      // `executed` or `failed` record of a write that ran out of the log, and since the capability
+      // made this channel live, a dead pipe is where a send now fails.
+      await server
+        .sendLoggingMessage({
+          level: outcome === "executed" ? "info" : "warning",
+          data: { connector: cfg.connector, tool, outcome },
+        })
+        .catch(() => undefined);
     }
   }
 
