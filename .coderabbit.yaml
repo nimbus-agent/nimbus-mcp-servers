@@ -32,9 +32,9 @@ reviews:
     - path: "shared/**/*.ts"
       instructions: >-
         Shared kits every connector imports by relative path. consent-kit.ts,
-        write-scope.ts and audit-chain.ts are the enforcement layer for every
-        mutating tool in the package — treat a change to them as
-        security-relevant. connector-mode.ts is the ONLY permitted caller of
+        write-scope.ts, write-budget.ts and audit-chain.ts are the enforcement
+        layer for every mutating tool in the package — treat a change to them
+        as security-relevant. connector-mode.ts is the ONLY permitted caller of
         setConnectorMode.
     - path: "package.json"
       instructions: >-

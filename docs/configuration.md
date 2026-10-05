@@ -26,17 +26,18 @@ TypeScript, and its `nimbus-connector` bin runs under Bun.
 }
 ```
 
-The write-scope variable is only consulted by a client that can show a consent prompt. On a client
-without `elicitation` it is unused, because the write tools never register — see
-[Client support](./client-support.md). It is still parsed at startup, though, so a term the
-connector cannot parse stops it there too, reads included.
+The write-scope and write-budget variables only take effect on a client that can show a consent
+prompt: on a client without `elicitation` the write tools never register, so a valid value changes
+nothing there — see [Client support](./client-support.md). Both are still read when a connector
+that has write tools starts, though, so a malformed value stops that connector on every client,
+its read tools included.
 
 ## Environment variables
 
 | Variable | Meaning |
 | --- | --- |
 | `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. **Unset authorises nothing** — it never means unrestricted. A term matches one target exactly: `repo:acme/api` does not cover `acme/api-secrets`. The kinds a connector accepts are named in the warning it prints when the variable is unset, and a term of any other kind stops it at startup with the same list. |
-| `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Defaults to `10`. Caps a runaway agent loop. |
+| `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Caps a runaway agent loop, including one that sends its writes in parallel: a write whose prompt you approve after the budget has run out is still refused. Unset means the default, `10`. A value you set must be a whole number in plain digits, from `0`, which refuses every write, to `9007199254740991`; whitespace around it is ignored. Any other value stops a connector that has write tools at startup, with an error naming the variable: an empty or whitespace-only value, a sign as in `-1` or `+5`, a decimal point as in `2.5` or `10.0`, `1e3`, `0x10`, `ten`, `Infinity`, or a number above `9007199254740991`. It is never replaced by the default, which could be more than you meant. |
 | `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables it, and it is the only record the connector keeps of its write calls: no MCP log messages are sent to the client. |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
 
