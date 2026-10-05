@@ -41,7 +41,7 @@ its read tools included.
 | `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables the durable log; the client-visible log messages are always sent. |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
 
-## Two behaviours that look like bugs and are not
+## Three behaviours that look like bugs and are not
 
 **No write tools appear.** Your client does not advertise the MCP `elicitation` capability, so there
 is no way to obtain consent and the tools are not offered at all. Reads work normally. **On Claude
@@ -50,6 +50,15 @@ same connector version gains its write tools.
 
 **Every write refuses with "out of scope".** `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` is unset. An empty
 scope authorises nothing. The server prints a warning to stderr at startup saying exactly this.
+
+**On Windows, an `azure` or `gcp` call answers "refused to run … it may start a Windows batch
+file".** `az` and `gcloud` are batch files on Windows, and `cmd.exe` parses a batch file's arguments
+a second time, so an argument holding `% ! " & | < > ^ ( )` or a line break could run a command or
+expand an environment variable into it. The connector refuses such an argument instead, before
+anything runs. Resource names do not hold these characters: an Azure resource group may hold
+parentheses, but `az.cmd` could never take one, since a resource group has no space and so is never
+quoted. An Azure subscription given by a display name that holds one is refused — pass its id. The
+same applies to any CLI installed as a `.cmd` or `.bat`, such as a pip-installed `aws` v1.
 
 ## Optional dependencies
 

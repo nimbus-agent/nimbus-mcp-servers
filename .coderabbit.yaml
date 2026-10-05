@@ -26,16 +26,21 @@ reviews:
         budget); any call to `setConnectorMode`, which must have exactly one
         caller; any credential read from anywhere but `process.env`, or a
         credential that could reach a tool result, log line or error message;
-        a tool argument shelled out without `shared/safe-cli-arg.ts`; and any
-        NEW runtime dependency, which must be pure JavaScript — a native module
-        breaks the compiled binary silently.
+        a tool argument passed to a CLI without an argument schema from
+        shared/cli-json-kit.ts (`awsCliArg` for aws, `azCliArg` for az, `cliArg`
+        for any other CLI), or a process started anywhere but through
+        shared/nimbus-spawn.ts; and any NEW runtime dependency, which must be
+        pure JavaScript — a native module breaks the compiled binary silently.
     - path: "shared/**/*.ts"
       instructions: >-
         Shared kits every connector imports by relative path. consent-kit.ts,
         write-scope.ts, write-budget.ts and audit-chain.ts are the enforcement
         layer for every mutating tool in the package — treat a change to them
-        as security-relevant. connector-mode.ts is the ONLY permitted caller of
-        setConnectorMode.
+        as security-relevant. So are safe-cli-arg.ts, cli-json-kit.ts's
+        argument schemas, windows-batch-args.ts and nimbus-spawn.ts, which
+        decide what reaches a spawned CLI; nimbus-spawn.ts is the only file
+        allowed to start a process. connector-mode.ts is the ONLY permitted
+        caller of setConnectorMode.
     - path: "package.json"
       instructions: >-
         The root manifest is the real dependency set; per-connector package.json

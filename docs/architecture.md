@@ -67,7 +67,7 @@ an import, so the gateway's bundled registry and the launcher start such a conne
 `startConnector()` — without it the import starts nothing and the process exits 0 in silence.
 Ten connectors do this and are covered the same way.
 
-Three layers sit under it:
+Four layers sit under it:
 
 **`shared/` — the kits.** Tool registration (`mcp-tool-kit.ts`, `rest-tool-kit.ts`,
 `mcp-search-tool.ts`, `cursor-list-tool.ts`, `collection-tool-kit.ts`), transport helpers
@@ -82,7 +82,7 @@ Four of these exist because the hand-rolled versions had multiplied:
 | --- | --- |
 | `env-json-api.ts` | The `apiToken()` / `authHeader()` / `<x>Get(path)` triple, written out identically in 31 connectors. |
 | `collection-tool-kit.ts` | The `<prefix>_list` / `_get` / `_search` triple over one collection. |
-| `cli-json-kit.ts` | The spawn-CLI-and-parse-JSON wrapper, plus the `cliArg` argv-injection guard, in the five CLI-backed connectors. |
+| `cli-json-kit.ts` | The spawn-CLI-and-parse-JSON wrapper, plus the `cliArg` argv-injection guard, in the five CLI-backed connectors. All eleven connectors that spawn a CLI now take their argument schemas from it. |
 | `imapflow-adapter.ts` | The imapflow client and nodemailer mailer, one copy each in `imap`, `protonmail` and `apple`. |
 
 A kit is worth adding when the copies have started to diverge, not merely when there are several of
@@ -100,6 +100,23 @@ Nimbus gateway hosts it (the gateway owns consent) than when it runs standalone 
 consent). The mode is set once, by the entry point. `setConnectorMode` may only be named by
 `shared/connector-mode.ts` itself — enforced by `scripts/check-connector-consent.ts`, because a
 second caller could re-gate a connector mid-process.
+
+**`shared/nimbus-spawn.ts` — the spawn path.** The only file in the package that starts a process,
+held to that by `scripts/spawn-chokepoint.test.ts`. The eleven connectors that drive a CLI reach it
+directly or through `run-cli-json.ts` and `cli-json-kit.ts`, and a tool argument is checked twice on
+the way:
+
+- **At the tool's schema.** Every caller-supplied value passes one of `cli-json-kit.ts`'s argument
+  schemas: `cliArg` refuses a value the CLI would read as a flag, a control character and anything
+  over 1024 characters; `awsCliArg` and `azCliArg` add the values `aws` and `az` would replace by a
+  file's contents (`file://`, `fileb://`, `http(s)://` and `@=`; a leading `@` and `=@`); and
+  `awsCliDocument` keeps the prefix rules for a CloudFormation template body, which is a document
+  and may span lines. `scripts/cli-argument-guards.test.ts` sweeps every tool of every connector
+  that spawns, learns which argument reaches which CLI, and fails one that does so unchecked.
+- **At the spawn.** On Windows `az` and `gcloud` are batch files, and `cmd.exe` parses a batch
+  file's command line a second time, so `windows-batch-args.ts` refuses an argument holding
+  `% ! " & | < > ^ ( )` or a control character whenever the program may be a `.cmd` or `.bat` —
+  decided from what is on `PATH`, never from the command's name, so `aws.exe` is unaffected.
 
 ## The gates
 

@@ -85,9 +85,10 @@ export function isSafeCliArg(value: unknown): value is string {
  * somewhere else. Matched here case-insensitively and after leading whitespace, though the CLI
  * matches them exactly: refusing a value the CLI would have taken as written costs nothing.
  *
- * `file://` and `fileb://` read a local file — for any parameter, not only the ones documented as
- * taking a document — and v1 of the CLI fetches an `http://` or `https://` value too, unless
- * `cli_follow_urlparam` is turned off. The CLI then sends what it read to AWS as the value, and an
+ * `file://` and `fileb://` read a local file — for nearly every parameter, not only the ones
+ * documented as taking a document; the CLI exempts a short list whose value is itself a URL — and
+ * v1 of the CLI fetches an `http://` or `https://` value too, unless `cli_follow_urlparam` is
+ * turned off. The CLI then sends what it read to AWS as the value, and an
  * error can quote it back — AWS's own validation errors name the value they reject — so a tool
  * argument of `file://<path>` could hand the model the contents of a file on the user's machine.
  */

@@ -73,8 +73,16 @@ Before writing the plumbing, check whether a kit already owns it:
 | --- | --- |
 | GETs JSON from one base URL with a token from the environment | `shared/env-json-api.ts` — `createJsonGetter` + `envAuthHeaders` |
 | exposes the plain `list` / `get` / `search` triple over one collection | `shared/collection-tool-kit.ts` — `registerCollectionTools` |
-| spawns a cloud CLI and parses its JSON | `shared/cli-json-kit.ts` — `createCliJsonRunner`, and `cliArg` for every value that reaches argv |
+| spawns a cloud CLI and parses its JSON | `shared/cli-json-kit.ts` — `createCliJsonRunner`, and an argument schema for every value that reaches argv |
 | speaks IMAP/SMTP | `shared/imapflow-adapter.ts` — `createImapFlowClient`, `createNodemailerMailer` |
+
+A connector that drives a CLI spawns it only through `shared/nimbus-spawn.ts` — `nimbusSpawn`,
+`run-cli-json.ts` or `createCliJsonRunner` — and gives every caller-supplied value that reaches
+the CLI one of `cli-json-kit.ts`'s schemas: `awsCliArg` for `aws`, `azCliArg` for `az`, `cliArg`
+for any other CLI, and `awsCliDocument` for a document handed to `aws` whole.
+`scripts/spawn-chokepoint.test.ts` fails a connector that spawns any other way, and
+`scripts/cli-argument-guards.test.ts` calls every tool of a connector that spawns and fails an
+argument that reaches argv unchecked, so a new CLI connector is held to both the day it lands.
 
 Export the registered names as `<CONNECTOR>_TOOL_NAMES`. `bun run audit:tool-names` fails if that
 export drifts from what the connector actually registers; `bun run sync:tool-names` rewrites it.

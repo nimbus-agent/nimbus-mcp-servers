@@ -16,7 +16,7 @@
  *    `q"&echo INJECTED&"` ran the `echo` too.
  *  - `%NAME%` is replaced by the value of an environment variable even inside quotes, and `!NAME!`
  *    is too in a batch file that turns on delayed expansion — so a credential in the connector's
- *    environment would be sent to the cloud API as the argument, and come back in its error.
+ *    environment would be sent to the cloud API as the argument, where an error could quote it.
  *  - `(` and `)` close a parenthesised block early. `az.cmd` runs the CLI inside one, and in a
  *    batch file of that shape an unquoted argument holding `)` is a syntax error — "... was
  *    unexpected at this time" — before the CLI starts.
