@@ -442,6 +442,33 @@ describe("a lock left behind", () => {
 });
 
 describe("an append fails closed", () => {
+  test("when its lock is taken over while it reads the log, and writes nothing", async () => {
+    // A live writer's lock is taken over only once it is older than staleMs: a writer stalled
+    // mid-append. An entry linked from that writer's stale read, after the new holder may have
+    // written, would break the chain, so the append checks that it still holds the lock just
+    // before it writes. A 32 MB log keeps the read slow enough for the test to act during it.
+    const p = await tempLog();
+    await appendAuditEntry(p, entry("a", "executed"));
+    const last = await readFile(p, "utf8");
+    await writeFile(p, `${`${"x".repeat(1023)}\n`.repeat(32 * 1024)}${last}`);
+    const before = await readFile(p);
+    const lockPath = `${p}.lock`;
+
+    const pending = appendAuditEntry(p, entry("b", "executed"));
+    // Wait for the append's own lock, then take it over the way another writer would.
+    while (!(await readFile(lockPath, "utf8").catch(() => "")).includes('"nonce"')) {
+      await new Promise((r) => setImmediate(r));
+    }
+    await writeFile(lockPath, "another-writer");
+
+    await expect(pending).rejects.toThrow(
+      "another writer took over this append's lock as abandoned; the entry was not written",
+    );
+    expect((await readFile(p)).equals(before)).toBe(true);
+    // The lock is the other writer's now, so it is left for that writer to release.
+    expect(await readFile(lockPath, "utf8")).toBe("another-writer");
+  });
+
   test("on a log that exists but cannot be read, which is not an empty one", async () => {
     // Read as empty, the next entry was linked to the genesis hash after whatever the log already
     // held, and verification passed on a log nobody could read.
