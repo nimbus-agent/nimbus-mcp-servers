@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.4](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.3...connectors-v0.2.4) (2026-10-05)
+
+
+### Bug Fixes
+
+* **connectors:** declare the MCP logging capability on every connector with write tools, so the consent kit's notifications reach the client, and append each audit entry before notifying ([e11b689](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e11b6897528ba2a1c721dc7a53de8def7e3c18eb))
+* **connectors:** deploy a CloudFormation template from a file with --template-file, which aws cloudformation deploy requires, read as UTF-8 by AWS CLI v1 and v2; every call failed before, and a template over 51,200 bytes is now refused before consent ([e11b689](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e11b6897528ba2a1c721dc7a53de8def7e3c18eb))
+* **connectors:** run iac_terraform_plan, apply and destroy with -chdir=DIR, which terraform requires; given -chdir DIR, every call failed ([e11b689](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e11b6897528ba2a1c721dc7a53de8def7e3c18eb))
+* **shared:** start a bare az or gcloud on Windows when the environment spells the search path Path, as a process started from PowerShell does, where both failed with ENOENT ([e11b689](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e11b6897528ba2a1c721dc7a53de8def7e3c18eb))
+
 ## [0.2.3](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.2...connectors-v0.2.3) (2026-10-05)
 
 
