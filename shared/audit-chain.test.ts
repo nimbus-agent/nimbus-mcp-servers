@@ -354,10 +354,15 @@ describe("audit chain", () => {
   });
 
   test("a JSON line without both links is reported at its own position, not thrown", async () => {
-    for (const torn of ["null", "7", "[]", "{}", '{"prev":1,"hash":2}', '{"hash":"x"}']) {
+    const source = await tempLog();
+    await appendAuditEntry(source, entry("a", "executed"));
+    const first = (await readFile(source, "utf8")).trimEnd();
+    const { hash } = JSON.parse(first) as { hash: string };
+    // The last links to the real first line, so only its own missing hash can break it.
+    const torn = ["null", "7", "[]", "{}", '{"prev":1,"hash":2}', '{"hash":"x"}'];
+    for (const line of [...torn, JSON.stringify({ prev: hash, hash: 5 })]) {
       const p = await tempLog();
-      await appendAuditEntry(p, entry("a", "executed"));
-      await writeFile(p, `${(await readFile(p, "utf8")).trimEnd()}\n${torn}\n`);
+      await writeFile(p, `${first}\n${line}\n`);
       expect(await verifyAuditChain(p)).toEqual({ ok: false, brokenAtLine: 2 });
     }
   });
@@ -536,6 +541,25 @@ describe("a lock left behind", () => {
     expect(await leftovers(p)).toEqual([basename(lockPath)]);
     expect(await readFile(lockPath, "utf8")).toBe(body);
     expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
+  });
+
+  test("by a live holder is tried again after a growing wait, not in a busy loop", async () => {
+    const p = await tempLog();
+    await plantLock(p, await lockBody(process.pid));
+    let creates = 0;
+    const fs: LockFs = {
+      ...REAL_FS,
+      open: (path, flags) => {
+        if (flags === "wx" && path.endsWith(".lock")) creates += 1;
+        return open(path, flags);
+      },
+    };
+    await expect(
+      appendAuditEntry(p, entry("blocked", "executed"), { ...QUICK_TIMEOUT, fs }),
+    ).rejects.toThrow("gave up after 250 ms waiting for its lock ");
+    // Waits of 2, 4, 8 … 64 ms fit about nine tries in 250 ms. With none it is hundreds.
+    expect(creates).toBeGreaterThan(1);
+    expect(creates).toBeLessThan(40);
   });
 
   test("older than staleMs is taken over even though its holder still runs", async () => {
@@ -874,6 +898,22 @@ describe("a lock the filesystem loses sight of for a moment", () => {
     await expect(
       appendAuditEntry(p, entry("a", "executed"), { ...QUICK_TIMEOUT, fs }),
     ).rejects.toThrow("ENOENT: injected");
+  });
+
+  test("answered with ENOENT on every try, its directory there, times out naming it", async () => {
+    const p = await tempLog();
+    const fs: LockFs = {
+      ...REAL_FS,
+      open: (path, flags) =>
+        flags === "wx" && path.endsWith(".lock")
+          ? Promise.reject(fsError("ENOENT", path))
+          : open(path, flags),
+    };
+    // Waited out as a lock changing hands, which may still be the real cause: the timeout says so.
+    const pending = appendAuditEntry(p, entry("a", "executed"), { ...QUICK_TIMEOUT, fs });
+    await expect(pending).rejects.toThrow("gave up after 250 ms waiting for its lock ");
+    await expect(pending).rejects.toThrow(".lock (last seen: ENOENT); the entry was not written");
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
   });
 
   test("taken over while the entry is written leaves the entry, and the append says so", async () => {
