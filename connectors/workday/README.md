@@ -30,12 +30,11 @@ Authorization is via **Workday OAuth2** (authorization-code grant).
 on consent, the token bundle is stored in the Vault and never logged. Required
 credentials:
 
-- Register an API client with Workday's **Register API Client** task, not
-  *Register API Client for Integrations*, which has no grant type or redirect URI.
-  Choose the *Authorization Code Grant* and the redirection URI
-  `http://127.0.0.1:<port>/oauth/callback`, with a port you pick: the Gateway
-  listens on that URI during the flow, and on a port of its own choosing unless
-  you pass the same one as `--port` below. Note the client ID and secret.
+- Register an API client in your Workday tenant for the *Authorization Code
+  Grant*, with the redirection URI `http://127.0.0.1:<port>/oauth/callback` and a
+  port you pick: the Gateway listens on that URI during the flow, and on a port
+  of its own choosing unless you pass the same one as `--port` below. Note the
+  client ID and secret.
 - Set the following environment variables for the Gateway. They are read from
   the environment only, never from the Vault, and the client secret is not
   stored there:
