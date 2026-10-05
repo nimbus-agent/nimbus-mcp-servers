@@ -78,9 +78,10 @@ Before writing the plumbing, check whether a kit already owns it:
 
 A connector that drives a CLI spawns it only through `shared/nimbus-spawn.ts` — `nimbusSpawn`,
 `run-cli-json.ts` or `createCliJsonRunner` — and gives every caller-supplied value that reaches
-the CLI one of `cli-json-kit.ts`'s schemas: `awsCliArg` for `aws`, `azCliArg` for `az`, `cliArg`
-for any other CLI, and `awsCliDocument` for a document handed to `aws` whole — in the tool's
-schema, not in its handler, so the refusal comes before a consent prompt.
+the CLI one of `cli-json-kit.ts`'s schemas: `awsCliArg` for `aws`, `azCliArg` for `az`, and
+`cliArg` for any other CLI — in the tool's schema, not in its handler, so the refusal comes before
+a consent prompt. A document, such as a CloudFormation template, goes to the CLI as a file and
+never as an argument: `iac`'s `withTemplateFile` writes one and removes it afterwards.
 `scripts/spawn-chokepoint.test.ts` fails a connector that spawns any other way — that imports
 `child_process`, `cluster`, `bun` or `bun:ffi` in any form, or touches the `Bun` global — and
 `scripts/cli-argument-guards.test.ts` calls every tool of every connector whose imports reach

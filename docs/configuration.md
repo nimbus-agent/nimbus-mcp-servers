@@ -80,7 +80,7 @@ What the lock does not cover:
 | --- | --- |
 | `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE` | Comma-separated `kind:value` terms, e.g. `repo:acme/api`. **Unset authorises nothing** — it never means unrestricted. A term matches one target exactly: `repo:acme/api` does not cover `acme/api-secrets`. The kinds a connector accepts are named in the warning it prints when the variable is unset, and a term of any other kind stops it at startup with the same list. |
 | `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Caps a runaway agent loop, including one that sends its writes in parallel: a write whose prompt you approve after the budget has run out is still refused. Unset means the default, `10`. A value you set must be a whole number in plain digits, from `0`, which refuses every write, to `9007199254740991`; whitespace around it is ignored. Any other value stops a connector that has write tools at startup, with an error naming the variable: an empty or whitespace-only value, a sign as in `-1` or `+5`, a decimal point as in `2.5` or `10.0`, `1e3`, `0x10`, `ten`, `Infinity`, or a number above `9007199254740991`. It is never replaced by the default, which could be more than you meant. |
-| `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables it, and it is the only record the connector keeps of its write calls: no MCP log messages are sent to the client. |
+| `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables it, and it is the only durable record the connector keeps of its write calls. Each step of a write is also sent to the client as an MCP log message (`notifications/message`, at `info` for `executed` and `warning` for the rest), naming the connector, the tool and the outcome but never the parameters. A client may filter those by level and need not keep them, and each is sent after the step's entry has been appended to this log, when one is set. |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
 
 `<SERVICE>` is the connector id you launch, upper-cased, with each `-` written as `_`: `github`
@@ -108,8 +108,9 @@ anything runs. Resource names do not hold these characters: an Azure resource gr
 parentheses, but `az.cmd` could never take one, since a resource group has no space and so is never
 quoted. An Azure subscription given by a display name that holds one is refused — pass its id. The
 same applies to any CLI whose first match on `PATH` is a `.cmd` or `.bat`, such as a pip-installed
-`aws` v1 ahead of the v2 installer's `aws.exe`, where it refuses a CloudFormation template body;
-with the `aws.exe` first, nothing is refused.
+`aws` v1 ahead of the v2 installer's `aws.exe`. A CloudFormation template is not an argument: it
+reaches `aws` as a file, so its quotes never meet `cmd.exe`. The file's path is an argument,
+though, so a temp directory whose path holds one of these characters is refused for such an `aws`.
 
 ## Optional dependencies
 
@@ -144,9 +145,8 @@ number, where 0 refuses every write.
 files there, so an `azure` or `gcp` call now refuses an argument holding a `cmd.exe` metacharacter
 before anything runs, as
 [Three behaviours that look like bugs and are not](#three-behaviours-that-look-like-bugs-and-are-not)
-describes. Give an Azure subscription by its id rather than by a display name holding one, and put
-the v2 installer's `aws.exe` ahead of a pip-installed `aws` v1 on `PATH` if you deploy CloudFormation
-templates. On every platform, every connector that drives a CLI now refuses a value starting with
+describes. Give an Azure subscription by its id rather than by a display name holding one. On
+every platform, every connector that drives a CLI now refuses a value starting with
 `-` (earlier releases skipped the `aws`, `azure` and `iac` arguments and some `gcp` and
 `kubernetes` positionals), and a value `aws` or `az` would replace by a file's contents is refused
 as well: [SECURITY.md](../SECURITY.md) lists the rules.
