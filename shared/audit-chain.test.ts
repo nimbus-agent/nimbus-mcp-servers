@@ -128,6 +128,34 @@ async function leftovers(log: string): Promise<string[]> {
   return (await readdir(dirname(log))).filter((f) => f !== basename(log));
 }
 
+/**
+ * A process that, for `ms`, creates the lock and deletes it again as fast as it can — the way a
+ * tool that deletes rather than renames would — then prints how many times it did. It says it has
+ * started through a file, since its tight loop never yields to flush stdout.
+ */
+const CHURNER_SOURCE = [
+  'import { closeSync, openSync, unlinkSync, writeFileSync, writeSync } from "node:fs";',
+  "const [lockPath, ms, startedPath] = process.argv.slice(2);",
+  "const end = Date.now() + Number(ms);",
+  'writeFileSync(startedPath, "");',
+  "let cycles = 0;",
+  "while (Date.now() < end) {",
+  "  let fd;",
+  "  try {",
+  '    fd = openSync(lockPath, "wx");',
+  "  } catch {",
+  "    continue;",
+  "  }",
+  '  writeSync(fd, "busy");',
+  "  closeSync(fd);",
+  "  try {",
+  "    unlinkSync(lockPath);",
+  "    cycles += 1;",
+  "  } catch {}",
+  "}",
+  "process.stdout.write(String(cycles));",
+].join("\n");
+
 const HOUR_MS = 3_600_000;
 
 /** A lock that is never taken over by age, and a wait short enough to time out in a test. */
@@ -396,6 +424,42 @@ describe("a lock left behind", () => {
     await appendAuditEntry(old, entry("x", "executed"));
     expect(await verifyAuditChain(old)).toEqual({ ok: true, count: 1 });
   });
+
+  test("that another process keeps deleting by hand is waited out, never an error", async () => {
+    // Windows answers an open of a file that is being deleted with EPERM, not ENOENT, until the
+    // deleting handle closes. A waiting writer took that for a failure to read the lock and refused
+    // its write: one run in sixty of the cross-process test above, which releases its lock by
+    // deleting it. Here the lock is deleted thousands of times while appends wait on it.
+    const p = await tempLog();
+    const dir = await mkdtemp(join(tmpdir(), "nimbus-audit-churn-"));
+    tempDirs.push(dir);
+    const script = join(dir, "churner.ts");
+    const started = join(dir, "started");
+    await writeFile(script, CHURNER_SOURCE);
+    const churner = Bun.spawn([process.execPath, script, `${p}.lock`, "2000", started], {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+    });
+    try {
+      while (!(await readdir(dir)).includes("started")) await Bun.sleep(5);
+      let appended = 0;
+      const until = Date.now() + 1000;
+      while (Date.now() < until) {
+        await appendAuditEntry(p, entry(`t${appended}`, "executed"), {
+          staleMs: HOUR_MS,
+          timeoutMs: 10_000,
+        });
+        appended += 1;
+      }
+      expect(await churner.exited).toBe(0);
+      // The premise: the lock really was being deleted all the while.
+      expect(Number(await new Response(churner.stdout).text())).toBeGreaterThan(100);
+      expect(await verifyAuditChain(p)).toEqual({ ok: true, count: appended });
+    } finally {
+      churner.kill();
+    }
+  }, 30_000);
 
   test("is taken over by one writer at a time: a takeover under way is waited for", async () => {
     // The lock's holder is dead, but another writer is in the middle of taking it over. Acting on

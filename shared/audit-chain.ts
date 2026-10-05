@@ -304,6 +304,22 @@ async function takeOver(lockPath: string, opts: AuditLockOptions): Promise<boole
   }
 }
 
+/**
+ * An error that, on Windows, means the lock is changing hands rather than that it cannot be read.
+ *
+ * Windows answers an open of a file that is being deleted with EPERM, not ENOENT, for the moment
+ * until the deleting handle closes. Measured: a lock path that another process created and unlinked
+ * in a loop made 221 to 720 of about 30,000 concurrent opens fail with EPERM within three seconds.
+ * This module never unlinks the lock path itself — a release renames it aside, and the same churn
+ * done by rename produced none — but an operator clearing a stuck lock by hand can, and EBUSY is
+ * another process holding the file open without sharing. Elsewhere both are a real permission
+ * problem, and fail at once.
+ */
+function lockInTransition(e: unknown): boolean {
+  const code = errorCode(e);
+  return process.platform === "win32" && (code === "EPERM" || code === "EBUSY");
+}
+
 /** 2, 4, 8 … 64 ms, plus up to half again at random, so waiters do not retry in lockstep. */
 function backoffMs(attempt: number): number {
   const base = Math.min(2 ** (attempt + 1), 64);
@@ -322,24 +338,43 @@ async function acquireLock(
     since: new Date().toISOString(),
   });
   const deadline = Date.now() + opts.timeoutMs;
+  let transient: unknown;
   for (let attempt = 0; ; attempt += 1) {
-    if (await tryCreateLock(lockPath, token)) return token;
-    const held = await inspectLock(lockPath);
-    // Released already, or abandoned and now removed: try again at once. A takeover that fails —
-    // another writer's is under way, or a rename was refused while another process had the file
-    // open — is not skipped but retried, after the wait, against a fresh look at the lock.
-    const freed =
-      held === undefined ||
-      (isAbandoned(held, opts.staleMs) && (await takeOver(lockPath, opts).catch(() => false)));
-    if (Date.now() >= deadline) {
-      const pid = held === undefined ? undefined : lockOwner(held.content)?.pid;
-      throw new Error(
-        `audit log ${path}: gave up after ${opts.timeoutMs} ms waiting for its lock ${lockPath}` +
-          `${pid === undefined ? "" : `, held by process ${pid}`}; the entry was not written`,
-      );
+    let held: HeldLock | undefined;
+    let freed = false;
+    try {
+      if (await tryCreateLock(lockPath, token)) return token;
+      held = await inspectLock(lockPath);
+      // Released already, or abandoned and now removed: try again at once. A takeover that fails —
+      // another writer's is under way, or a rename was refused while another process had the file
+      // open — is not skipped but retried, after the wait, against a fresh look at the lock.
+      freed =
+        held === undefined ||
+        (isAbandoned(held, opts.staleMs) && (await takeOver(lockPath, opts).catch(() => false)));
+    } catch (e) {
+      if (!lockInTransition(e)) throw e;
+      transient = e;
     }
+    if (Date.now() >= deadline) throw lockTimeout(path, lockPath, opts.timeoutMs, held, transient);
     if (!freed) await sleep(backoffMs(attempt));
   }
+}
+
+function lockTimeout(
+  path: string,
+  lockPath: string,
+  timeoutMs: number,
+  held: HeldLock | undefined,
+  transient: unknown,
+): Error {
+  const pid = held === undefined ? undefined : lockOwner(held.content)?.pid;
+  const holder = pid === undefined ? "" : `, held by process ${pid}`;
+  // Waited out as a lock changing hands, but it may be the real cause: name it.
+  const lastError = transient === undefined ? "" : ` (last seen: ${errorCode(transient)})`;
+  return new Error(
+    `audit log ${path}: gave up after ${timeoutMs} ms waiting for its lock ${lockPath}${holder}` +
+      `${lastError}; the entry was not written`,
+  );
 }
 
 /**
@@ -418,7 +453,8 @@ async function appendUnderLock(
     const prev = last === undefined ? GENESIS_HASH : tailHash(log, last, lines.length);
     const line: ChainedLine = { seq: lines.length + 1, prev, hash: linkHash(prev, entry), entry };
     // A lock taken over while the log was being read may be guarding another writer's append right
-    // now. Checked last, so the window left open is the one between this read and the write.
+    // now. Checked as late as it can be, so the only window left open is between this check and
+    // the write.
     if ((await readFile(lockPath, "utf8").catch(() => undefined)) === token) {
       await appendFile(log, `${JSON.stringify(line)}\n`, "utf8");
       outcome = "written";
