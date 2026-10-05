@@ -759,6 +759,55 @@ describe("standalone outcomes at the edges", () => {
     expect(mutated).toBe(0);
   });
 
+  test("each record is in the durable log before the client is told of it", async () => {
+    // The client channel is live now that write connectors declare MCP `logging`, and a send to a
+    // client that has gone away can be the last thing the process does. So the durable append
+    // comes first, and a notification never precedes the line it reports.
+    const log = await tempAuditPath();
+    const seen: { outcome: string; lastLogged: string | undefined }[] = [];
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    srv.sendLoggingMessage = async (p) => {
+      const lines = (await readFile(log, "utf8").catch(() => "")).trimEnd().split("\n");
+      const last = lines.at(-1);
+      seen.push({
+        outcome: (p.data as { outcome: string }).outcome,
+        lastLogged:
+          last === undefined || last === ""
+            ? undefined
+            : (JSON.parse(last) as { entry: { outcome: string } }).entry.outcome,
+      });
+    };
+    const call = registerAndGet(srv, async () => ok(), { auditLog: log });
+    await call({ branch: "acme/api" });
+    expect(seen).toEqual(
+      ["requested", "accepted", "executed"].map((o) => ({ outcome: o, lastLogged: o })),
+    );
+  });
+
+  test("a client that has gone away cannot keep a write's records out of the durable log", async () => {
+    // Every send rejects, as one does once the transport is closed. The write still runs, and its
+    // records all land: the client channel is best effort, the durable log is not.
+    const log = await tempAuditPath();
+    let mutated = 0;
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    srv.sendLoggingMessage = () => Promise.reject(new Error("Not connected"));
+    const call = registerAndGet(
+      srv,
+      async () => {
+        mutated += 1;
+        return ok();
+      },
+      { auditLog: log },
+    );
+    await call({ branch: "acme/api" });
+    expect(mutated).toBe(1);
+    const outcomes = (await readFile(log, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((l) => (JSON.parse(l) as { entry: { outcome: string } }).entry.outcome);
+    expect(outcomes).toEqual(["requested", "accepted", "executed"]);
+  });
+
   test("a write that ran is not recorded as failed when recording that it ran fails", async () => {
     // Recording `executed` shared the mutation's `catch`, so a failure to append it was recorded
     // as the mutation failing — of a write that had in fact run. Here the mutation itself leaves
@@ -784,8 +833,8 @@ describe("standalone outcomes at the edges", () => {
       "github_branch_delete ran, but recording that it ran failed: ",
     );
     expect(mutated).toBe(1);
-    // Every record goes to the logging channel before the durable log, so the channel shows each
-    // record attempted, the one whose append failed included: `executed`, and never `failed`.
+    // The logging channel is told of every record attempted, after the durable log has had its
+    // turn, the one whose append failed included: `executed`, and never `failed`.
     expect(outcomes).toEqual(["requested", "accepted", "executed"]);
     // Nothing was appended after the line the mutation left: in particular, no `failed`.
     const lines = (await readFile(log, "utf8")).trimEnd().split("\n");

@@ -125,9 +125,9 @@ the way:
   `cli-json-kit.ts`'s argument schemas: `cliArg` refuses a value the CLI would read as a flag, a
   control character and anything over 1024 characters; `awsCliArg` and `azCliArg` add the values
   `aws` and `az` would replace by a file's contents (`file://`, `fileb://`, `http(s)://` and `@=`;
-  a leading `@` and `=@`); and `awsCliDocument` keeps the prefix rules for a CloudFormation
-  template body, which is a document and may span lines. The refusal is the schema's, so it comes
-  before a consent prompt, a scope check or a spawn. `scripts/cli-argument-guards.test.ts` sweeps
+  a leading `@` and `=@`). A document is never an argument: a CloudFormation template reaches
+  `aws` as a file the tool writes and removes. The refusal is the schema's, so it comes before a
+  consent prompt, a scope check or a spawn. `scripts/cli-argument-guards.test.ts` sweeps
   every tool of every connector that spawns, learns which argument reaches which CLI, and fails
   one whose schema lets through a value that CLI would misread.
 - **At the spawn.** On Windows `az` and `gcloud` are batch files, and `cmd.exe` parses a batch
@@ -137,7 +137,10 @@ the way:
   so the file found first decides: an `aws.exe` found before any `aws.cmd` is unaffected. Where
   Bun could change without notice the lookup leans toward refusing — it reads `PATH` in every
   spelling, though Bun reads only `PATH`, and a batch file beside an `.exe` in the first directory
-  holding the name counts — and a Windows-only test holds it to what Bun's own lookup does.
+  holding the name counts — and a Windows-only test holds it to what Bun's own lookup does. The
+  spawn also respells the search path `PATH` on Windows, where a variable's name is
+  case-insensitive: under the `Path` a PowerShell-launched process has, Bun found no `az.cmd` and
+  the call failed with ENOENT.
 
 ## The gates
 

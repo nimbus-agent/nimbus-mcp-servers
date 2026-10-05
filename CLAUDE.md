@@ -115,7 +115,10 @@ on). The procedure, and the traps it has to avoid, are in
   `nimbus-spawn.ts` — the only file allowed to spawn — refuses `cmd.exe` metacharacters for a
   program that may be a batch file, judged by the file found first on `PATH`, looked up as Bun
   looks it up, not by its name. The first version of that check counted a batch file anywhere on
-  `PATH`, and refused a template body for an `aws.exe` that came first.
+  `PATH`, and refused a template body for an `aws.exe` that came first. A document is never an
+  argument: a CloudFormation template reaches `aws` as a file. And `nimbus-spawn.ts` spells the
+  search path `PATH` on Windows, since Bun resolves a bare name through no other spelling: under the
+  `Path` a PowerShell-launched process has, `az` and `gcloud` failed to start with ENOENT.
   `scripts/cli-argument-guards.test.ts` fails an argument whose schema lets a hostile value
   through, even when the handler refuses it later.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's

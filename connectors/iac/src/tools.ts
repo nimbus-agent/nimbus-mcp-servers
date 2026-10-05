@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
-import { awsCliArg, awsCliDocument, cliArg } from "../../../shared/cli-json-kit.ts";
+import { awsCliArg, cliArg } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -8,6 +11,49 @@ import {
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
 import { runCliOkThrowing } from "../../../shared/run-cli-json.ts";
+
+/**
+ * The most a template may be when it is deployed without an S3 bucket, which this tool does not
+ * take: `aws cloudformation deploy` refuses a larger one itself, and only after the prompt.
+ */
+const TEMPLATE_MAX_BYTES = 51_200;
+
+/**
+ * A CloudFormation template. It reaches the AWS CLI as a file, never as an argument (see
+ * {@link withTemplateFile}), so none of the argument rules apply to it: a YAML template may well
+ * start with `---`. Its size is refused here, in the schema, because no consent can lift it: a
+ * larger template would be put to the human, spend a unit of write budget, and then fail. The
+ * character bound is the one a client is shown; no string over it can be within the byte bound.
+ */
+const templateDocument = z
+  .string()
+  .min(1)
+  .max(TEMPLATE_MAX_BYTES)
+  .refine((t) => new TextEncoder().encode(t).length <= TEMPLATE_MAX_BYTES, {
+    message: `must be at most ${String(TEMPLATE_MAX_BYTES)} bytes as UTF-8, the most aws cloudformation deploy takes without an S3 bucket`,
+  });
+
+/**
+ * Run `body` with `template` written to a file of its own, removed afterwards however `body` ends.
+ *
+ * `aws cloudformation deploy` takes a template only as `--template-file`, and passing one as an
+ * argument would not work anyway: a template can run past the 32,767 characters a Windows command
+ * line holds, and an `aws` that is a batch file, as a pip-installed v1 is, has cmd.exe parse every
+ * quote in it.
+ */
+async function withTemplateFile<T>(
+  template: string,
+  body: (path: string) => Promise<T>,
+): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "nimbus-cfn-"));
+  try {
+    const path = join(dir, "template");
+    await writeFile(path, template, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return await body(path);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const IAC_TOOL_NAMES = [
@@ -42,9 +88,12 @@ export function registerIacTools(
     "Run terraform plan in a directory.",
     z.object({ workingDirectory: cliArg }),
     async (p) => {
-      await runCliOkThrowing(["terraform", "-chdir", p.workingDirectory, "plan", "-input=false"], {
-        ...processEnv,
-      });
+      await runCliOkThrowing(
+        ["terraform", `-chdir=${p.workingDirectory}`, "plan", "-input=false"],
+        {
+          ...processEnv,
+        },
+      );
       return jsonResult({ ok: true });
     },
   );
@@ -60,7 +109,7 @@ export function registerIacTools(
     z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(
-        ["terraform", "-chdir", p.workingDirectory, "apply", "-auto-approve", "-input=false"],
+        ["terraform", `-chdir=${p.workingDirectory}`, "apply", "-auto-approve", "-input=false"],
         { ...processEnv },
       );
       return jsonResult({ ok: true });
@@ -82,7 +131,7 @@ export function registerIacTools(
     z.object({ workingDirectory: cliArg }),
     async (p) => {
       await runCliOkThrowing(
-        ["terraform", "-chdir", p.workingDirectory, "destroy", "-auto-approve", "-input=false"],
+        ["terraform", `-chdir=${p.workingDirectory}`, "destroy", "-auto-approve", "-input=false"],
         { ...processEnv },
       );
       return jsonResult({ ok: true });
@@ -99,22 +148,30 @@ export function registerIacTools(
     "Deploy a CloudFormation stack via AWS CLI.",
     z.object({
       stackName: awsCliArg,
-      templateBody: awsCliDocument,
+      templateBody: templateDocument,
     }),
     async (p) => {
-      await runCliOkThrowing(
-        [
-          "aws",
-          "cloudformation",
-          "deploy",
-          "--stack-name",
-          p.stackName,
-          "--template-body",
-          p.templateBody,
-          "--capabilities",
-          "CAPABILITY_IAM",
-        ],
-        { ...processEnv },
+      await withTemplateFile(p.templateBody, (templateFile) =>
+        runCliOkThrowing(
+          [
+            "aws",
+            "cloudformation",
+            "deploy",
+            "--stack-name",
+            p.stackName,
+            "--template-file",
+            templateFile,
+            "--capabilities",
+            "CAPABILITY_IAM",
+            // A deploy of a template that changes nothing has done what was asked, not failed.
+            "--no-fail-on-empty-changeset",
+          ],
+          // The file is UTF-8. Left to itself the CLI reads it in the locale's encoding, and on a
+          // Windows machine using cp1252 a template holding "Á" fails to decode while one holding
+          // "é" deploys as "Ã©". AWS CLI v2 reads AWS_CLI_FILE_ENCODING and ignores PYTHONUTF8; v1,
+          // plain Python, reads PYTHONUTF8 and ignores the other. Both are set.
+          { ...processEnv, AWS_CLI_FILE_ENCODING: "UTF-8", PYTHONUTF8: "1" },
+        ),
       );
       return jsonResult({ ok: true });
     },

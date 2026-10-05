@@ -17,6 +17,36 @@ import { batchArgumentRefusal } from "./windows-batch-args.ts";
 export type SpawnResult = { code: number; stdout: string; stderr: string };
 
 /**
+ * The child's environment: `base` with `overrides` laid over it.
+ *
+ * On Windows a variable's name is case-insensitive, so an override replaces the base's variable
+ * whatever its spelling, instead of sitting beside it as a second one that the child may or may
+ * not see in its place. And the search path is spelled `PATH`, the only spelling Bun resolves a
+ * bare command through. A process started from PowerShell, cmd or Explorer has `Path`, and with it
+ * a bare `az` or `gcloud`, which are the batch files `az.cmd` and `gcloud.cmd` there, did not start
+ * at all: Bun 1.3.14 answered ENOENT, while an `.exe` such as `aws.exe` still started.
+ *
+ * Elsewhere names are case-sensitive, and the two are merged as written.
+ */
+export function childEnvironment(
+  base: Record<string, string | undefined>,
+  overrides: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string | undefined> {
+  if (platform !== "win32") {
+    return { ...base, ...overrides };
+  }
+  const byName = new Map<string, readonly [string, string | undefined]>();
+  for (const source of [base, overrides]) {
+    for (const [key, value] of Object.entries(source)) {
+      const name = key.toUpperCase();
+      byName.set(name, [name === "PATH" ? "PATH" : key, value]);
+    }
+  }
+  return Object.fromEntries(byName.values());
+}
+
+/**
  * The child's environment for `env`, and why `command` must not be spawned with it, if it must
  * not. Nothing is spawned for a refused command: it resolves as a failure whose stderr says so.
  */
@@ -24,7 +54,7 @@ function prepareSpawn(
   command: readonly string[],
   env: Record<string, string | undefined>,
 ): { childEnv: Record<string, string | undefined>; refusal: SpawnResult | undefined } {
-  const childEnv = { ...process.env, ...env };
+  const childEnv = childEnvironment(process.env, env);
   const refusal = batchArgumentRefusal(command, childEnv);
   return {
     childEnv,

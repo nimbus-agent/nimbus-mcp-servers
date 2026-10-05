@@ -29,12 +29,7 @@
 
 import { z } from "zod";
 import { optionalEnv } from "./env-json-api.ts";
-import {
-  awsCliArgProblem,
-  awsCliDocumentProblem,
-  azCliArgProblem,
-  cliArgProblem,
-} from "./safe-cli-arg.ts";
+import { awsCliArgProblem, azCliArgProblem, cliArgProblem } from "./safe-cli-arg.ts";
 
 /** Body-snippet length in the thrown error. The value every connector used. */
 export const DEFAULT_STDERR_SNIPPET = 400;
@@ -67,13 +62,6 @@ export const cliArg = cliArgSchema(cliArgProblem);
  * one carrying the shorthand file-load operator `@=`.
  */
 export const awsCliArg = cliArgSchema(awsCliArgProblem);
-
-/**
- * A DOCUMENT passed to the `aws` CLI as one argument — a CloudFormation template body. Unlike
- * {@link awsCliArg} it may span lines and run past 1024 characters; it still may not start with `-`
- * or with a prefix that makes the CLI read it from somewhere else.
- */
-export const awsCliDocument = cliArgSchema(awsCliDocumentProblem);
 
 /**
  * A value passed to the `az` CLI as an argument: {@link cliArg}, and not one `az` would replace by

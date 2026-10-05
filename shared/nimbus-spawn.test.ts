@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 
 import {
+  childEnvironment,
   detectBunSpawn,
   nimbusSpawn,
   selectSpawnImpl,
@@ -222,6 +223,69 @@ describe.skipIf(process.platform !== "win32")(
           },
         );
       }
+    }
+  },
+);
+
+describe("childEnvironment", () => {
+  test("off Windows, merges the two as written, since names are case-sensitive there", () => {
+    expect(childEnvironment({ Path: "a", HOME: "/h" }, { PATH: "b" }, "linux")).toEqual({
+      Path: "a",
+      HOME: "/h",
+      PATH: "b",
+    });
+  });
+
+  test("on Windows, spells the search path PATH, whatever spelling it arrived in", () => {
+    expect(childEnvironment({ Path: "a", Foo: "1" }, {}, "win32")).toEqual({ PATH: "a", Foo: "1" });
+    expect(childEnvironment({}, { path: "c" }, "win32")).toEqual({ PATH: "c" });
+  });
+
+  test("on Windows, an override replaces the base's variable whatever either spells it", () => {
+    expect(
+      childEnvironment(
+        { Path: "a", SystemRoot: "C:/Windows", TEMP: "t" },
+        { PATH: "b", SYSTEMROOT: "D:/W" },
+        "win32",
+      ),
+    ).toEqual({ PATH: "b", SYSTEMROOT: "D:/W", TEMP: "t" });
+  });
+});
+
+/**
+ * A bare batch-file name, found through a search path spelled `Path`, as a process started from
+ * PowerShell, cmd or Explorer spells it. Bun resolves a bare name only through `PATH`, so with
+ * `Path` alone `az` and `gcloud` did not start at all. The `PATH` case runs first, so the others
+ * cannot pass for a shim that no spelling would find.
+ */
+describe.skipIf(process.platform !== "win32")(
+  "a batch file found through Path (skipped off Windows: only there are variable names case-insensitive)",
+  () => {
+    const name = `nimbus-path-shim-${String(process.pid)}`;
+    let searchPath = "";
+    let dir = "";
+
+    beforeAll(() => {
+      dir = mkdtempSync(join(tmpdir(), "nimbus-path-shim-"));
+      writeFileSync(join(dir, `${name}.cmd`), ["@echo off", "echo SHIM-RAN:[%*]", ""].join("\r\n"));
+      searchPath = `${dir}${delimiter}${process.env["PATH"] ?? ""}`;
+    });
+
+    afterAll(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    for (const [label, impl] of IMPLS) {
+      test(`${label}: starts it whichever way the variable is spelled`, async () => {
+        for (const key of ["PATH", "Path", "path"]) {
+          const r = await impl([name, "ok"], { [key]: searchPath });
+          expect({ key, code: r.code, stdout: r.stdout.trim() }).toEqual({
+            key,
+            code: 0,
+            stdout: "SHIM-RAN:[ok]",
+          });
+        }
+      });
     }
   },
 );

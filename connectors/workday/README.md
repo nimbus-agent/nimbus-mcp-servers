@@ -20,27 +20,34 @@ Bundled with Nimbus — no separate install required.
 ## Quickstart
 
 ```bash
-nimbus connector auth workday
+nimbus connector auth workday --port <port>   # the port in the redirect URI you registered
 nimbus ask "Who is out of office this week?"
 nimbus ask "What engineering roles are open?"
 ```
 
-Authorization is via **Workday OAuth2** (client-credentials flow). The connector
-opens the Workday tenant's authorization endpoint; on consent, the access token is
-stored in the Vault and never logged. Required credentials:
+Authorization is via **Workday OAuth2** (authorization-code grant).
+`nimbus connector auth workday` opens the Workday tenant's authorization endpoint;
+on consent, the token bundle is stored in the Vault and never logged. Required
+credentials:
 
-- Obtain a Workday OAuth2 client ID and secret for your tenant (Workday Studio →
-  Integration System → OAuth 2.0 Clients)
-- Set the following environment variables (or use `nimbus vault set`):
+- Register an API client with Workday's **Register API Client** task, not
+  *Register API Client for Integrations*, which has no grant type or redirect URI.
+  Choose the *Authorization Code Grant* and the redirection URI
+  `http://127.0.0.1:<port>/oauth/callback`, with a port you pick: the Gateway
+  listens on that URI during the flow, and on a port of its own choosing unless
+  you pass the same one as `--port` below. Note the client ID and secret.
+- Set the following environment variables for the Gateway. They are read from
+  the environment only, never from the Vault, and the client secret is not
+  stored there:
 
 | Variable | Purpose |
 | --- | --- |
 | `NIMBUS_OAUTH_WORKDAY_CLIENT_ID` | OAuth2 client ID |
 | `NIMBUS_OAUTH_WORKDAY_CLIENT_SECRET` | OAuth2 client secret |
-| `NIMBUS_WORKDAY_TENANT_HOST` | Workday API host (e.g. `wd2-impl-services1.workday.com`) |
+| `NIMBUS_WORKDAY_TENANT_HOST` | Workday API host, with its scheme (e.g. `https://wd2-impl-services1.workday.com`) |
 | `NIMBUS_WORKDAY_TENANT` | Workday tenant name (e.g. `acme_dpt5`) |
 
-- Run `nimbus connector auth workday` to complete the OAuth flow.
+- Run `nimbus connector auth workday --port <port>` to complete the OAuth flow.
 
 The Gateway injects credentials into the connector process at spawn time; the
 connector itself never touches the Vault directly.
@@ -97,6 +104,31 @@ and leave reasons are never indexed.
 > return its raw response to the agent (envelope-wrapped), so they are bounded
 > by what the Workday API itself exposes for the authenticated client, not by
 > this index-side allowlist.
+
+## Standalone use
+
+Outside the Nimbus gateway there is no OAuth flow and none of the `NIMBUS_*`
+variables above is read. The connector reads three variables of its own, which
+the Gateway otherwise sets for it: `WORKDAY_TENANT_HOST`, the tenant's API host
+with its scheme; `WORKDAY_TENANT`, the tenant name; and `WORKDAY_ACCESS_TOKEN`,
+a current OAuth2 access token for the tenant. The connector never refreshes that
+token: once it expires, every tool call fails until you replace it.
+
+```json
+{
+  "mcpServers": {
+    "nimbus-workday": {
+      "command": "npx",
+      "args": ["-y", "@nimbus-dev/connectors", "workday"],
+      "env": {
+        "WORKDAY_TENANT_HOST": "https://wd2-impl-services1.workday.com",
+        "WORKDAY_TENANT": "acme_dpt5",
+        "WORKDAY_ACCESS_TOKEN": "<a current OAuth2 access token>"
+      }
+    }
+  }
+}
+```
 
 ## See also
 

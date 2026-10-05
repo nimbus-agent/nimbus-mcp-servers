@@ -12,6 +12,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CONSENT_SERVER_CAPABILITIES } from "../../../shared/consent-kit.ts";
 import { requireProcessEnv } from "../../../shared/mcp-tool-kit.ts";
 import {
   createAppleCalDavClient,
@@ -39,7 +40,10 @@ try {
   // non-fatal; listEvents/list tools will re-discover on demand
 }
 
-const server = new McpServer({ name: "nimbus-apple", version: "0.1.0" });
+const server = new McpServer(
+  { name: "nimbus-apple", version: "0.1.0" },
+  { capabilities: CONSENT_SERVER_CAPABILITIES },
+);
 
 registerAppleTools(server, {
   client: createAppleImapClient(email, appPw),
