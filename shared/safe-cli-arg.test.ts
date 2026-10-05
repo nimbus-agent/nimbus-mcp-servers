@@ -3,7 +3,6 @@ import {
   AWS_CLI_LOADING_PREFIXES,
   assertSafeCliArg,
   awsCliArgProblem,
-  awsCliDocumentProblem,
   azCliArgProblem,
   cliArgProblem,
   isSafeCliArg,
@@ -199,29 +198,6 @@ describe("awsCliArgProblem", () => {
     expect(awsCliArgProblem(`file://a${LF}b`)).toBe("must not contain control characters");
     expect(awsCliArgProblem(42)).toBe("must be a non-empty string");
     expect(awsCliArgProblem("")).toBe("must be a non-empty string");
-  });
-});
-
-describe("awsCliDocumentProblem — a template body, not a name", () => {
-  test("accepts a document that spans lines and runs past 1024 characters", () => {
-    const doc = `Resources:${LF}  Bucket:${LF}    Type: AWS::S3::Bucket${LF}# ${"x".repeat(2000)}`;
-    expect(awsCliDocumentProblem(doc)).toBeUndefined();
-    expect(awsCliDocumentProblem('{"Resources":{}}')).toBeUndefined();
-    // Shorthand syntax applies to structure parameters, and a template body is a string.
-    expect(awsCliDocumentProblem("Description: a@=b")).toBeUndefined();
-  });
-
-  test("refuses a leading dash and a loading prefix", () => {
-    expect(awsCliDocumentProblem("---")).toBe(cliArgProblem("-x"));
-    expect(awsCliDocumentProblem("file:///etc/passwd")).toBe(awsCliArgProblem("file:///x"));
-    expect(awsCliDocumentProblem(" https://example.invalid/t.yaml")).toBe(
-      awsCliArgProblem("https://x"),
-    );
-  });
-
-  test("refuses an empty or non-string value", () => {
-    expect(awsCliDocumentProblem("")).toBe("must be a non-empty string");
-    expect(awsCliDocumentProblem(undefined)).toBe("must be a non-empty string");
   });
 });
 

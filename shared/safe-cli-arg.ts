@@ -124,26 +124,6 @@ export function awsCliArgProblem(value: unknown): string | undefined {
   return cliArgProblem(value) ?? awsPrefixProblem(value) ?? awsShorthandProblem(value);
 }
 
-/**
- * Why `value` must not be passed to the AWS CLI as a DOCUMENT — a CloudFormation template body —
- * or `undefined` when it may.
- *
- * A document legitimately spans lines and runs past the 1024 characters an argument is held to,
- * so of the argument rules only the two about where the CLI looks remain: a leading `-`, which the
- * CLI would parse as an option, and a loading prefix, which would make it read the "document" from
- * a file. `@=` is not among them: shorthand syntax applies to structure parameters, and a template
- * body is a string.
- */
-export function awsCliDocumentProblem(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0) {
-    return "must be a non-empty string";
-  }
-  if (value.startsWith("-")) {
-    return 'must not start with "-" (argv flag smuggling is not allowed)';
-  }
-  return awsPrefixProblem(value);
-}
-
 // ---------------------------------------------------------------------------
 // az
 // ---------------------------------------------------------------------------

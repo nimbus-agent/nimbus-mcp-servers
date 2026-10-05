@@ -89,21 +89,16 @@ const HOSTILE: readonly { readonly kind: string; readonly cli: string; readonly 
 /**
  * Arguments allowed to reach argv despite a hostile class, each with the reason. Not a convenience
  * list: an entry must still describe an argument that reaches argv, or this sweep fails it as stale.
+ *
+ * Empty. Its one entry was a CloudFormation template body, which now reaches `aws` as a file: a
+ * document belongs in a file, not in argv.
  */
 const ALLOWED: readonly {
   readonly tool: string;
   readonly field: string;
   readonly kinds: readonly string[];
   readonly reason: string;
-}[] = [
-  {
-    tool: "iac_cloudformation_deploy",
-    field: "templateBody",
-    kinds: ["control", "length", "aws-shorthand"],
-    reason:
-      "a template body is a document: it spans lines and runs past 1024 characters, and as a string parameter it is not read as shorthand syntax, so only a leading dash and the aws loading prefixes are refused",
-  },
-];
+}[] = [];
 
 /** The one file that starts a process, held to that by `spawn-chokepoint.test.ts`. */
 const SPAWN_CHOKEPOINT = join(ROOT, "shared", "nimbus-spawn.ts");
