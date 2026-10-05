@@ -82,6 +82,11 @@ function refused(why: string): McpListResult {
   return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: why }) }] };
 }
 
+/** The message of whatever was thrown, which need not be an `Error`. */
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 /**
  * Ask the human, through the client, and report whether they said yes.
  *
@@ -187,7 +192,8 @@ export function createWriteToolRegistrar(
       level: outcome === "executed" ? "info" : "warning",
       data: { connector: cfg.connector, tool, outcome },
     });
-    // Durable channel: only when the operator configured a path.
+    // Durable channel: only when the operator configured a path. An append that fails rejects, and
+    // every record before the mutation is awaited, so a write whose entry did not land never runs.
     if (auditLog !== undefined && auditLog !== "") {
       await appendAuditEntry(auditLog, {
         ts: new Date().toISOString(),
@@ -330,23 +336,39 @@ export function createWriteToolRegistrar(
         try {
           preState = await toolCfg.capturePreState(args);
         } catch (e) {
-          preState = { captureFailed: e instanceof Error ? e.message : String(e) };
+          preState = { captureFailed: messageOf(e) };
         }
       }
 
       // 6. MUTATE.
+      let result: McpListResult;
       try {
-        const result = await handler(args);
-        await record(name, "executed", { target, preState });
-        return result;
+        result = await handler(args);
       } catch (e) {
-        await record(name, "failed", {
-          target,
-          preState,
-          error: e instanceof Error ? e.message : String(e),
-        });
+        // A tool that threw may still have changed something first. If recording the failure fails
+        // too, the tool's own error still leads what the call reports: an audit error alone reads
+        // as a write that never started, and so as one that is safe to try again.
+        try {
+          await record(name, "failed", { target, preState, error: messageOf(e) });
+        } catch (error_) {
+          throw new Error(
+            `${name} failed: ${messageOf(e)}. Recording that failure also failed: ${messageOf(error_)}`,
+            { cause: e },
+          );
+        }
         throw e;
       }
+      // Outside the `try`: the mutation has happened, so a failure to RECORD it must not be
+      // recorded as the mutation failing, which it was when both shared one `catch`. The call still
+      // rejects, saying the write ran, so it is not taken for one that is safe to try again.
+      try {
+        await record(name, "executed", { target, preState });
+      } catch (e) {
+        throw new Error(`${name} ran, but recording that it ran failed: ${messageOf(e)}`, {
+          cause: e,
+        });
+      }
+      return result;
     };
 
     pending.push(() => {

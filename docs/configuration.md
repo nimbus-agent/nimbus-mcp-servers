@@ -32,6 +32,48 @@ nothing there — see [Client support](./client-support.md). Both are still read
 that has write tools starts, though, so a malformed value stops that connector on every client,
 its read tools included.
 
+## The audit log
+
+With `NIMBUS_MCP_AUDIT_LOG` set, each step of a write — `requested`, `accepted`, `declined`,
+`refused`, `executed`, `failed` — is appended to that file as one line, linked by hash to the line
+before it. One path can serve every connector you run, and the separate copies of a connector that
+each client session starts: appends are serialised within a process, and across processes by a lock
+file beside the log, `<path>.lock`. A path that is a symlink is followed first, so the lock sits
+beside the file it points to. The directory holding the log must be writable, not only the file.
+
+The log fails closed. A write runs only once its `requested` and `accepted` lines have been
+appended, and one that cannot be recorded is refused: when the log's directory is missing, the log
+cannot be read, its last line is not a complete entry, or its lock cannot be taken within 30
+seconds. If recording fails after the tool has run, whether it succeeded or failed, the call
+reports what the tool did as well, so it is not taken for a write that never started.
+
+A lock left behind by a connector killed mid-append is taken over automatically: at once when its
+process has exited and this connector can tell, otherwise once the lock is 10 seconds old. A
+connector can tell only for a process on the same machine and, on Linux, in the same PID namespace.
+A lock from a container or Flatpak sandbox with a PID namespace of its own, or from the other side
+of WSL, waits out its 10 seconds, since a pid from there means nothing here. One writer at a time
+takes a lock over, under a second lock, `<path>.lock.takeover`, that exists only while it does.
+
+What the lock does not cover:
+
+- **A writer stalled for more than 10 seconds** partway through an append has its lock taken over
+  as abandoned. It checks that it still holds the lock just before it writes, so this can break the
+  chain only when the takeover lands between that check and the write.
+- **A second name for the log that is not a symlink** — a hard link, or a container mount of the
+  log file alone rather than its directory — gives the writers using it a lock of their own. Mount
+  the directory instead.
+- **Several machines sharing one log** over a network share need distinct hostnames — on Windows
+  and macOS the hostname is all that tells two machines apart — and clocks within 10 seconds of the
+  file server's. Network filesystems are untested.
+- **Windows and WSL processes writing one log on WSL's `/mnt` drives.** Those drives lose sight of
+  a file for a moment while another process renames it. Measured with 4 Windows and 4 WSL writers,
+  over 16,000 appends in 20 runs: every chain stayed intact, but 8 appends were reported as failed
+  although their entry had been written, and in 5 runs a lock was left in place until it aged out,
+  holding appends up for about 10 seconds. WSL writers alone ran cleanly there, 4,000 appends with
+  none failed or held up. Give each side its own log.
+- **Verifying the chain reads the log without the lock**, so a log that a connector is writing to
+  can show a break at a line still being written. Verify a log nothing is writing to.
+
 ## Environment variables
 
 | Variable | Meaning |
@@ -83,6 +125,31 @@ module-not-found error. The rest are unaffected.
 
 Each entry is something a standalone setup has to change when it moves to that release. Changes
 that need nothing from you are only in the [changelog](../CHANGELOG.md).
+
+### To 0.2.3
+
+**The audit log's directory must be writable.** Releases up to 0.2.2 needed only the log file to
+be writable. If yours sits in a directory the connector cannot write to, every write tool now
+refuses until you move the log or make its directory writable. Upgrade every client's connectors
+together, too: a connector from 0.2.2 or earlier appends without the lock, and can still break the
+chain for the others.
+
+**`NIMBUS_MCP_WRITE_BUDGET` accepts only plain digits.** Anything else now stops a connector that
+has write tools from starting, read tools included: an empty value, a sign (`-1`, `+5`), a
+fraction (`10.0`), an exponent (`1e3`), a hex value (`0x10`) or a word. Earlier releases read
+those as a number, or a word as no limit at all. Unset it for the default of 10, or set a whole
+number, where 0 refuses every write.
+
+**On Windows, an argument a batch file would misread is refused.** `az` and `gcloud` are batch
+files there, so an `azure` or `gcp` call now refuses an argument holding a `cmd.exe` metacharacter
+before anything runs, as
+[Three behaviours that look like bugs and are not](#three-behaviours-that-look-like-bugs-and-are-not)
+describes. Give an Azure subscription by its id rather than by a display name holding one, and put
+the v2 installer's `aws.exe` ahead of a pip-installed `aws` v1 on `PATH` if you deploy CloudFormation
+templates. On every platform, every connector that drives a CLI now refuses a value starting with
+`-` (earlier releases skipped the `aws`, `azure` and `iac` arguments and some `gcp` and
+`kubernetes` positionals), and a value `aws` or `az` would replace by a file's contents is refused
+as well: [SECURITY.md](../SECURITY.md) lists the rules.
 
 ### To 0.2.2
 

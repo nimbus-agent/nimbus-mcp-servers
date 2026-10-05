@@ -26,6 +26,12 @@ The properties this package claims, and therefore the ones a report can be filed
   included, stops a connector that has write tools at startup rather than running it under some
   other cap. A mutation past the budget, or any mutation while the variable holds a value outside
   that rule, is a vulnerability.
+- **The audit log.** When `NIMBUS_MCP_AUDIT_LOG` is set, each step of every write is appended to a
+  hash-chained log that any number of connector processes may share: appends are serialised within
+  a process and, through a lock file beside the log, across processes. A write runs only once its
+  `requested` and `accepted` lines are in the log. A line that links to anything but the line
+  written before it, or a write that runs without those two lines, is a vulnerability, unless one
+  of the lock's bounds listed below accounts for it.
 - **Credential handling.** Credentials come from the environment and must never appear in a tool
   result, a log line, or an error message.
 - **Argument handling.** A connector that drives a CLI spawns it with an argv array and no shell,
@@ -58,6 +64,23 @@ Stated plainly, because the difference is the whole point of [`NOTICE`](./NOTICE
   Nimbus gateway and no published package can supply them.
 - **A client that does not implement MCP `elicitation`** is served read tools only. That is the
   designed behaviour — a tool the model cannot see is one it cannot call without a human.
+- **The audit log's chain shows its lines are consistent and in order, not that they are the
+  originals or all of them.** The chain is unkeyed, so anyone who can write the file can change an
+  entry and recompute every hash after it, cut lines off its end, or rewrite it from scratch, and
+  still have a chain that verifies. It catches an edit made without recomputing the chain.
+- **The audit log's lock has bounds**, listed in full in
+  [Configuration](./docs/configuration.md#the-audit-log):
+  - A writer stalled for more than 10 seconds partway through an append has its lock taken over.
+    If the takeover lands between that writer's last check and its write, two lines can link to
+    one predecessor.
+  - A hard link to the log, or a container mount of the log file alone, gets a lock of its own.
+  - Machines sharing a log over a network share need distinct hostnames and clocks within 10
+    seconds of the file server's. Network filesystems are untested.
+  - With Windows and WSL processes writing one log on WSL's `/mnt` drives, an append can be
+    reported as failed although its entry was written.
+  - A connector from 0.2.2 or earlier appends without the lock.
+  - Verifying the chain reads the log without the lock, so a line still being written reads as a
+    break.
 
 If a report depends on one of the above, it is a documentation question rather than a
 vulnerability, and an issue is the right place for it.
