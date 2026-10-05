@@ -54,12 +54,6 @@ A lock from a container or Flatpak sandbox with a PID namespace of its own, or f
 of WSL, waits out its 10 seconds, since a pid from there means nothing here. One writer at a time
 takes a lock over, under a second lock, `<path>.lock.takeover`, that exists only while it does.
 
-**Upgrading from 0.2.2 or earlier.** Those releases needed only the log file to be writable. If
-yours sits in a directory the connector cannot write to, every write tool now refuses until you move
-the log or make its directory writable. Upgrade every client's connectors together, too: a
-connector from 0.2.2 or earlier appends without the lock, and can still break the chain for the
-others.
-
 What the lock does not cover:
 
 - **A writer stalled for more than 10 seconds** partway through an append has its lock taken over
@@ -120,6 +114,20 @@ module-not-found error. The rest are unaffected.
 
 Each entry is something a standalone setup has to change when it moves to that release. Changes
 that need nothing from you are only in the [changelog](../CHANGELOG.md).
+
+### To 0.2.3
+
+**The audit log's directory must be writable.** Releases up to 0.2.2 needed only the log file to
+be writable. If yours sits in a directory the connector cannot write to, every write tool now
+refuses until you move the log or make its directory writable. Upgrade every client's connectors
+together, too: a connector from 0.2.2 or earlier appends without the lock, and can still break the
+chain for the others.
+
+**`NIMBUS_MCP_WRITE_BUDGET` accepts only plain digits.** Anything else now stops a connector that
+has write tools from starting, read tools included: an empty value, a sign (`-1`, `+5`), a
+fraction (`10.0`), an exponent (`1e3`), a hex value (`0x10`) or a word. Earlier releases read
+those as a number, or a word as no limit at all. Unset it for the default of 10, or set a whole
+number, where 0 refuses every write.
 
 ### To 0.2.2
 
