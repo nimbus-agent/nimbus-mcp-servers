@@ -99,9 +99,14 @@ The audit chain links each entry to the line before it, so it is only as good as
 ordered, and appends do arrive together: the SDK runs tool calls concurrently, and every connector a
 client starts may share one `NIMBUS_MCP_AUDIT_LOG`. `audit-chain.ts` therefore serialises them
 twice — per log within a process, and across processes through an `O_EXCL` lock file beside the
-log — and fails closed: an append that cannot take the lock, read the log or link to its last line
-writes nothing, and the registrar runs no write whose `requested` and `accepted` entries did not
-land. [Configuration](./configuration.md#the-audit-log) has the operator's side.
+log, its symlinks resolved — and fails closed: an append that cannot take the lock, read the log or
+link to its last line writes nothing, and the registrar runs no write whose `requested` and
+`accepted` entries did not land. A lock records its holder's pid and the pid space it belongs to —
+on Linux the kernel's boot id and the PID namespace, elsewhere the platform — and a holder is
+judged gone from its pid only within that pid space; any other lock is judged by its age. The
+lock's file operations can be injected through its options, which is how the tests reproduce the
+failures WSL's `/mnt` drives produce. [Configuration](./configuration.md#the-audit-log) has the
+operator's side, and the lock's bounds.
 
 **`shared/connector-mode.ts` — gateway versus standalone.** A connector behaves differently when the
 Nimbus gateway hosts it (the gateway owns consent) than when it runs standalone (the client owns

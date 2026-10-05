@@ -22,7 +22,8 @@ Run standalone, a connector gives you:
 - **A write-scope allow-list**, enforced by the server and unreachable by the model.
 - **A mutation budget** per session, which caps a runaway agent loop.
 - **A local, hash-chained, append-only audit log**, when `NIMBUS_MCP_AUDIT_LOG` is set — one file
-  can serve every connector you run.
+  can serve every connector you run, within the bounds
+  [Configuration](./docs/configuration.md#the-audit-log) lists.
 
 It does **not** give you the process sandbox, OS-keychain credential storage, the egress ledger, or
 owner-controlled consent. Those are properties of the Nimbus gateway and no published package can
