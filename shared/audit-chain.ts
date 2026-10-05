@@ -142,7 +142,7 @@ export type AuditLockOptions = {
   readonly timeoutMs: number;
 };
 
-export const DEFAULT_AUDIT_LOCK: AuditLockOptions = { staleMs: 10_000, timeoutMs: 30_000 };
+const DEFAULT_AUDIT_LOCK: AuditLockOptions = { staleMs: 10_000, timeoutMs: 30_000 };
 
 /** The appends queued in THIS process, per log; each starts when the one before it has settled. */
 const appendQueues = new Map<string, Promise<void>>();
@@ -272,6 +272,38 @@ async function tryCreateLock(lockPath: string, token: string): Promise<boolean> 
   return true;
 }
 
+/**
+ * Remove an abandoned lock — one writer at a time.
+ *
+ * Writers waiting on one lock find it abandoned together, each judging it from what it read before
+ * the others acted. Removing it on that judgement let a slower writer move aside the fresh lock a
+ * faster one had just taken in its place; it was handed back, but the faster writer's check before
+ * it appends had already found its lock gone, and it refused its own entry. So a takeover first
+ * takes a second lock, `<log>.lock.takeover`, and judges the lock again only while holding it: the
+ * slower writer then finds the faster one's fresh lock, or none, and removes nothing.
+ *
+ * Resolves to whether the lock is gone. A takeover holds its lock for a moment, so one older than
+ * `staleMs` was left by a writer that died during it, and is removed for the next attempt.
+ */
+async function takeOver(lockPath: string, opts: AuditLockOptions): Promise<boolean> {
+  const takeoverPath = `${lockPath}.takeover`;
+  const token = randomBytes(16).toString("hex");
+  if (!(await tryCreateLock(takeoverPath, token))) {
+    const stuck = await inspectLock(takeoverPath);
+    if (stuck !== undefined && stuck.ageMs > opts.staleMs) {
+      await removeLockIf(takeoverPath, stuck.content);
+    }
+    return false;
+  }
+  try {
+    const held = await inspectLock(lockPath);
+    if (held === undefined) return true;
+    return isAbandoned(held, opts.staleMs) && (await removeLockIf(lockPath, held.content));
+  } finally {
+    await removeLockIf(takeoverPath, token);
+  }
+}
+
 /** 2, 4, 8 … 64 ms, plus up to half again at random, so waiters do not retry in lockstep. */
 function backoffMs(attempt: number): number {
   const base = Math.min(2 ** (attempt + 1), 64);
@@ -294,12 +326,11 @@ async function acquireLock(
     if (await tryCreateLock(lockPath, token)) return token;
     const held = await inspectLock(lockPath);
     // Released already, or abandoned and now removed: try again at once. A takeover that fails —
-    // a rename refused while another process has the file open — is not skipped but retried, after
-    // the wait, against a fresh look at the lock.
+    // another writer's is under way, or a rename was refused while another process had the file
+    // open — is not skipped but retried, after the wait, against a fresh look at the lock.
     const freed =
       held === undefined ||
-      (isAbandoned(held, opts.staleMs) &&
-        (await removeLockIf(lockPath, held.content).catch(() => false)));
+      (isAbandoned(held, opts.staleMs) && (await takeOver(lockPath, opts).catch(() => false)));
     if (Date.now() >= deadline) {
       const pid = held === undefined ? undefined : lockOwner(held.content)?.pid;
       throw new Error(
@@ -357,7 +388,7 @@ function tailHash(path: string, last: string, lineNo: number): string {
  * sharing one `NIMBUS_MCP_AUDIT_LOG`. Appends are therefore serialised twice over. Within a
  * process they queue per log, so entries land in the order they were recorded. Across processes
  * the read and the write happen under a lock file beside the log, `<log>.lock`, created with
- * `O_EXCL`; a lock whose holder has died is taken over, as described at `isAbandoned`.
+ * `O_EXCL`; a lock whose holder has died is taken over, as `isAbandoned` and `takeOver` describe.
  *
  * Fails closed. An append that cannot take the lock within `timeoutMs`, cannot read the log, or
  * finds a last line it cannot link to writes nothing and rejects — and the consent kit does not

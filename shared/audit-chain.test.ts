@@ -397,16 +397,46 @@ describe("a lock left behind", () => {
     expect(await verifyAuditChain(old)).toEqual({ ok: true, count: 1 });
   });
 
+  test("is taken over by one writer at a time: a takeover under way is waited for", async () => {
+    // The lock's holder is dead, but another writer is in the middle of taking it over. Acting on
+    // the same judgement could remove the fresh lock that writer is about to take.
+    const p = await tempLog();
+    const lockPath = await plantLock(p, lockBody(exitedPid()));
+    await writeFile(`${lockPath}.takeover`, "another-writer");
+    await expect(appendAuditEntry(p, entry("x", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
+      /gave up after 250 ms/,
+    );
+    expect((await leftovers(p)).sort()).toEqual([
+      basename(lockPath),
+      `${basename(lockPath)}.takeover`,
+    ]);
+  });
+
+  test("is still taken over when a writer died in the middle of taking it over", async () => {
+    // A takeover lock is held for a moment, so an old one is abandoned too. Left in place it would
+    // block every takeover, and with them every write, until someone deleted it by hand.
+    const p = await tempLog();
+    const lockPath = await plantLock(p, lockBody(exitedPid()));
+    await writeFile(`${lockPath}.takeover`, "dead-writer");
+    const then = new Date(Date.now() - HOUR_MS);
+    await utimes(`${lockPath}.takeover`, then, then);
+    await appendAuditEntry(p, entry("x", "executed"), { staleMs: 10_000, timeoutMs: 5_000 });
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
   test("found by several processes at once is taken over once, and every entry still chains", async () => {
     // Every writer is already waiting on the lock when it ages past staleMs, so all of them judge
-    // it abandoned together and race to take it over. One rename claims it; a writer that renamed
-    // aside the winner's fresh lock instead must hand it back, or two writers would hold it.
+    // it abandoned together and race to take it over. Before takeovers took a lock of their own, a
+    // slower writer could move aside the fresh lock a faster one had just taken, and the faster one
+    // then refused its own entry: one run in thirty with four writers, and in the full suite.
     const p = await tempLog();
-    await writeConcurrently(p, 4, 10, async (lockPath) => {
+    const writers = 8;
+    await writeConcurrently(p, writers, 5, async (lockPath) => {
       const then = new Date(Date.now() - HOUR_MS);
       await utimes(lockPath, then, then);
     });
-    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 40 });
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: writers * 5 });
     expect(await leftovers(p)).toEqual([]);
   }, 60_000);
 });
