@@ -115,8 +115,12 @@ the way:
   that spawns, learns which argument reaches which CLI, and fails one that does so unchecked.
 - **At the spawn.** On Windows `az` and `gcloud` are batch files, and `cmd.exe` parses a batch
   file's command line a second time, so `windows-batch-args.ts` refuses an argument holding
-  `% ! " & | < > ^ ( )` or a control character whenever the program may be a `.cmd` or `.bat` —
-  decided from what is on `PATH`, never from the command's name, so `aws.exe` is unaffected.
+  `% ! " & | < > ^ ( )` or a control character whenever the program may be a `.cmd` or `.bat`.
+  That is decided by looking the name up on `PATH` the way Bun does, never from the name alone,
+  so the file found first decides: an `aws.exe` found before any `aws.cmd` is unaffected. Where
+  Bun could change without notice the lookup leans toward refusing — it reads `PATH` in every
+  spelling, though Bun reads only `PATH`, and a batch file beside an `.exe` in the first directory
+  holding the name counts — and a Windows-only test holds it to what Bun's own lookup does.
 
 ## The gates
 

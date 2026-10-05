@@ -29,7 +29,11 @@
  * resource group may hold `(` and `)`, but never a space, so the runtime never quotes it and
  * `az.cmd` already failed on it as above. What did work and is now refused: an Azure subscription
  * passed by a display name holding one of these characters and a space — its id still works — and
- * a CloudFormation template body, whenever `aws` is itself a batch file, as a pip-installed v1 is.
+ * a CloudFormation template body, whenever the `aws` that runs is a batch file: a pip-installed v1
+ * found on `PATH` before any `aws.exe`.
+ *
+ * Which file runs is decided the way the runtime decides it — see {@link mayRunAsBatchFile} — so
+ * an `aws.exe` found first is never refused, whatever batch file of that name comes later.
  *
  * Node itself never gets this far: it resolves a bare name only to `.com` or `.exe`, and it has
  * refused to spawn a `.cmd` or `.bat` without a shell since 18.20.2 / 20.12.2 (CVE-2024-27980).
@@ -37,7 +41,7 @@
  * have refused anyway.
  */
 
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { win32 } from "node:path";
 
 /** The characters cmd.exe acts on when it parses a command line again, line breaks aside. */
@@ -56,6 +60,9 @@ const CMD_METACHARACTERS: ReadonlySet<string> = new Set([
 
 /** The extensions CreateProcess hands to cmd.exe. */
 const BATCH_EXTENSIONS = [".cmd", ".bat"] as const;
+
+/** The extensions Bun tries, in this order, on a name it looks up on Windows. */
+const LOOKUP_EXTENSIONS = [".exe", ".cmd", ".bat"] as const;
 
 /**
  * The first character of `value` that cmd.exe would act on — one of `% ! " & | < > ^ ( )`, or a
@@ -79,55 +86,108 @@ export function isBatchFileName(name: string): boolean {
   return BATCH_EXTENSIONS.some((ext) => trimmed.endsWith(ext));
 }
 
-/** Whether `name` names a program file explicitly, so no resolver appends an extension to it. */
-function isProgramFileName(name: string): boolean {
-  const trimmed = name.replace(/[. ]+$/, "").toLowerCase();
-  return trimmed.endsWith(".exe") || trimmed.endsWith(".com");
+/**
+ * Whether Bun looks `name` up exactly as written instead of trying extensions on it: when it ends
+ * in `.exe`, `.cmd` or `.bat`, in any case. `.com` is not among them, so `x.com` is looked up as
+ * `x.com.exe`, `x.com.cmd` and `x.com.bat`.
+ */
+function endsWithLookupExtension(name: string): boolean {
+  return /\.(?:exe|cmd|bat)$/i.test(name);
 }
 
 /** The filesystem a batch-file check looks at. Production leaves both to their defaults. */
 export interface BatchFileProbe {
-  /** Whether a path exists. Defaults to `existsSync`. */
+  /**
+   * Whether a FILE exists at a path. A directory does not count, as it does not for Bun's lookup.
+   * Defaults to a `statSync` check, which follows a link to what it points at.
+   */
   readonly exists?: (path: string) => boolean;
-  /** The directory a relative command or `PATH` entry is resolved against. Defaults to `process.cwd()`. */
+  /**
+   * The directory a relative name or `PATH` entry is resolved against. Defaults to
+   * `process.cwd()`: nothing here spawns with a `cwd` of its own.
+   */
   readonly cwd?: string;
 }
 
-/**
- * Every directory a `PATH` variable of `env` lists, in any spelling of its name — Windows spells it
- * `Path`, and a copy of the environment keeps that spelling while an MCP client usually writes
- * `PATH`. Each entry is offered both as written and without surrounding whitespace and quotes,
- * since the resolvers involved do not agree on whether to strip them.
- */
-function pathDirectories(env: Record<string, string | undefined>): string[] {
-  const dirs = new Set<string>();
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() !== "path" || value === undefined) {
-      continue;
-    }
-    for (const entry of value.split(win32.delimiter)) {
-      const cleaned = entry.trim().replace(/^"(.*)"$/, "$1");
-      for (const dir of [entry, cleaned]) {
-        if (dir !== "") {
-          dirs.add(dir);
-        }
-      }
-    }
+/** Whether a file — not a directory — exists at `path`. */
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
   }
-  return [...dirs];
 }
 
 /**
- * Whether spawning `bin` may start a batch file, given the environment the child is spawned with.
+ * The value of each PATH variable of `env` that is set and not empty, in every spelling of its
+ * name: `PATH`, the one Bun reads, and `Path`, which is how Windows spells it and which a copy of
+ * a Windows-launched process's environment keeps.
+ */
+function pathValues(env: Record<string, string | undefined>): string[] {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === "path" && value !== undefined && value !== "") {
+      values.push(value);
+    }
+  }
+  return values;
+}
+
+/**
+ * The orders in which a PATH value's directories are searched: its entries as written, which is
+ * how Bun reads them, and — when that differs — with whitespace and surrounding quotes removed
+ * from each, as cmd.exe reads them. An empty entry is skipped, as Bun skips it.
+ */
+function searchOrders(value: string): string[][] {
+  const written = value.split(win32.delimiter).filter((entry) => entry !== "");
+  const cleaned = written
+    .map((entry) => entry.trim().replace(/^"(.*)"$/, "$1"))
+    .filter((entry) => entry !== "");
+  const same =
+    cleaned.length === written.length && cleaned.every((entry, i) => entry === written[i]);
+  return same ? [written] : [written, cleaned];
+}
+
+/**
+ * Whether the first of `bases` that a file `<base>.exe`, `<base>.cmd` or `<base>.bat` exists for
+ * has a `.cmd` or `.bat` one: the lookup stops at the first such place, and that place decides.
+ */
+function firstHolderIsBatch(bases: readonly string[], exists: (path: string) => boolean): boolean {
+  for (const base of bases) {
+    const found = LOOKUP_EXTENSIONS.filter((ext) => exists(base + ext));
+    if (found.length > 0) {
+      return found.some((ext) => ext !== ".exe");
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether spawning `bin` with `env` may start a batch file — whether the file that runs would be a
+ * `.cmd` or a `.bat`.
  *
- * A SUPERSET of what any one resolver does, on purpose. Bun looks up a bare name in the
- * environment's `PATH` trying `.exe`, `.cmd` and `.bat` in each directory; libuv, behind Node and
- * behind Bun when the environment spells the variable `Path`, tries only `.com` and `.exe`; cmd.exe
- * starts with the current directory. Predicting which of several same-named files one of them
- * would pick is exactly the reasoning that goes wrong across runtime versions, so this does not
- * try: a batch file by that name in the current directory or in any directory of any `PATH`
- * variable of `env` or of this process makes the answer yes. A name that is itself a `.cmd` or
- * `.bat` is always yes; one that is itself an `.exe` or `.com` is always no.
+ * That depends on how the runtime turns a name into a file, and this answers it the way Bun does
+ * on Windows: read from its source, unchanged from 1.2.0 to 1.3.14, and held to what the real
+ * lookup does by `windows-batch-args.test.ts` on Windows.
+ *
+ *  - A name ending in `.cmd` or `.bat`, after the trailing dots and spaces Windows drops from a
+ *    file name, is one: every runtime that starts it hands it to cmd.exe.
+ *  - A name ending in `.exe` is looked up as written, and an `.exe` never is one.
+ *  - Bun looks any other name up only when the spawn environment has a non-empty variable spelled
+ *    exactly `PATH`. A bare name is looked for in each of that variable's entries in turn, and a
+ *    name written with a `\` in its own directory alone, each time as `<name>.exe`, `<name>.cmd`
+ *    and `<name>.bat`, and the first file found is what runs. So an `aws.exe` found before any
+ *    `aws.cmd` is not a batch file, whatever comes after it. The current directory is not searched
+ *    for a bare name.
+ *  - Otherwise — and for any name written with a `/` — Bun hands the name to libuv, as Node does,
+ *    and libuv starts only a `.com` or an `.exe`: never a batch file.
+ *
+ * It says yes where Bun could change without notice, and nowhere else: a PATH variable counts in
+ * any spelling, not only `PATH` — today Bun reads no other, and a bare `az` with only `Path` set
+ * does not start at all — and each is searched both as written and with whitespace and quotes
+ * stripped from its entries; a name written with a `/` is looked up in its directory as one with
+ * a `\` is; and the first place holding the name answers yes if it holds a `.cmd` or `.bat` by
+ * that name, even beside an `.exe` Bun would try first.
  */
 export function mayRunAsBatchFile(
   bin: string,
@@ -137,18 +197,25 @@ export function mayRunAsBatchFile(
   if (isBatchFileName(bin)) {
     return true;
   }
-  if (isProgramFileName(bin)) {
+  if (bin === "" || endsWithLookupExtension(bin)) {
     return false;
   }
-  const exists = probe.exists ?? existsSync;
+  const paths = pathValues(env);
+  if (paths.length === 0) {
+    return false;
+  }
+  const exists = probe.exists ?? isFile;
   const cwd = probe.cwd ?? process.cwd();
-  // A name with a separator is a path, and no resolver searches PATH for it.
-  const hasSeparator = bin.includes("/") || bin.includes("\\");
-  const dirs = hasSeparator
-    ? [cwd]
-    : [cwd, ...pathDirectories(env), ...pathDirectories(process.env)];
-  return dirs.some((dir) =>
-    BATCH_EXTENSIONS.some((ext) => exists(win32.resolve(cwd, dir, bin + ext))),
+  if (bin.includes("/") || bin.includes("\\")) {
+    return firstHolderIsBatch([win32.resolve(cwd, bin)], exists);
+  }
+  return paths.some((value) =>
+    searchOrders(value).some((dirs) =>
+      firstHolderIsBatch(
+        dirs.map((dir) => win32.resolve(cwd, dir, bin)),
+        exists,
+      ),
+    ),
   );
 }
 

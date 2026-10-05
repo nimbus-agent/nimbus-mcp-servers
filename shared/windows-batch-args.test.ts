@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { win32 } from "node:path";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import {
   batchArgumentRefusal,
   cmdMetacharacterIn,
@@ -9,8 +12,10 @@ import {
 
 /**
  * These run on every OS: the filesystem and the platform are injected, so the Windows rule is
- * verified on the Linux leg that measures coverage too. The real thing — a `.cmd` on PATH, spawned
- * through `nimbusSpawn` — is `nimbus-spawn.test.ts`'s Windows-only block.
+ * verified on the Linux leg that measures coverage too. Two things only Windows can show: whether
+ * the lookup modelled here is the one Bun really does — the Windows-only block at the end — and
+ * the refusal end to end, a `.cmd` on PATH spawned through `nimbusSpawn`, which is
+ * `nimbus-spawn.test.ts`'s.
  */
 
 const LF = String.fromCharCode(0x0a);
@@ -98,112 +103,118 @@ describe("isBatchFileName", () => {
 });
 
 describe("mayRunAsBatchFile", () => {
+  /** `mayRunAsBatchFile` against a filesystem holding exactly `exists`, in {@link CWD}. */
+  function may(
+    bin: string,
+    env: Record<string, string | undefined>,
+    exists: (path: string) => boolean,
+  ): boolean {
+    return mayRunAsBatchFile(bin, env, { exists, cwd: CWD });
+  }
+
   test("a name that is itself a batch file is one, without looking at the filesystem", () => {
-    expect(mayRunAsBatchFile("C:\\tools\\az.cmd", {}, { exists: untouchedFs, cwd: CWD })).toBe(
-      true,
-    );
-    expect(mayRunAsBatchFile("az.bat", {}, { exists: untouchedFs, cwd: CWD })).toBe(true);
+    expect(may("C:\\tools\\az.cmd", {}, untouchedFs)).toBe(true);
+    expect(may("az.bat", {}, untouchedFs)).toBe(true);
   });
 
-  test("a name that is itself an .exe or .com is not, without looking at the filesystem", () => {
-    expect(mayRunAsBatchFile("aws.exe", {}, { exists: untouchedFs, cwd: CWD })).toBe(false);
-    expect(mayRunAsBatchFile("C:\\x\\kubectl.EXE", {}, { exists: untouchedFs, cwd: CWD })).toBe(
-      false,
-    );
-    expect(mayRunAsBatchFile("tool.com", {}, { exists: untouchedFs, cwd: CWD })).toBe(false);
+  test("a name ending in .exe is not one, without looking at the filesystem", () => {
+    // Bun looks such a name up as written, and no runtime hands an .exe to cmd.exe.
+    expect(may("aws.exe", { PATH: "C:\\bin" }, untouchedFs)).toBe(false);
+    expect(may("C:\\x\\kubectl.EXE", { PATH: "C:\\bin" }, untouchedFs)).toBe(false);
   });
 
-  test("a bare name is one when a .cmd or .bat of that name is on the environment's PATH", () => {
-    const env = { PATH: "C:\\Windows;C:\\Azure\\wbin" };
-    expect(
-      mayRunAsBatchFile("az", env, { exists: fsWith("C:\\Azure\\wbin\\az.cmd"), cwd: CWD }),
-    ).toBe(true);
-    expect(
-      mayRunAsBatchFile("az", env, { exists: fsWith("C:\\Azure\\wbin\\az.bat"), cwd: CWD }),
-    ).toBe(true);
+  test("a name ending in .com is looked up like any other, so a .com.cmd counts", () => {
+    // Bun appends .exe, .cmd and .bat to every name that does not already end in one of them.
+    expect(may("tool.com", { PATH: "C:\\bin" }, fsWith("C:\\bin\\tool.com.cmd"))).toBe(true);
+    expect(may("tool.com", { PATH: "C:\\bin" }, fsWith("C:\\bin\\tool.com"))).toBe(false);
   });
 
-  test("the variable counts in any spelling, because Windows writes it Path", () => {
-    for (const key of ["PATH", "Path", "path"]) {
-      expect(
-        mayRunAsBatchFile(
-          "gcloud",
-          { [key]: "C:\\sdk\\bin" },
-          { exists: fsWith("C:\\sdk\\bin\\gcloud.cmd"), cwd: CWD },
-        ),
-      ).toBe(true);
-    }
-  });
-
-  test("a batch file earlier or later than an .exe of the same name still counts", () => {
-    // Which of the two a resolver would pick depends on the resolver; this does not guess.
+  test("the first directory on PATH that holds the name decides", () => {
     const env = { PATH: "C:\\first;C:\\second" };
-    const exists = fsWith("C:\\first\\aws.exe", "C:\\second\\aws.cmd");
-    expect(mayRunAsBatchFile("aws", env, { exists, cwd: CWD })).toBe(true);
+    // The AWS CLI v2 installer's aws.exe ahead of a leftover pip-installed v1's aws.cmd: Bun runs
+    // the .exe, and nothing after it on PATH matters.
+    expect(may("aws", env, fsWith("C:\\first\\aws.exe", "C:\\second\\aws.cmd"))).toBe(false);
+    expect(may("aws", env, fsWith("C:\\first\\aws.cmd", "C:\\second\\aws.exe"))).toBe(true);
+    expect(may("aws", env, fsWith("C:\\second\\aws.bat"))).toBe(true);
+    expect(may("aws", env, fsWith("C:\\second\\aws.exe"))).toBe(false);
   });
 
-  test("a batch file in the current directory counts — cmd.exe looks there first", () => {
-    expect(mayRunAsBatchFile("az", {}, { exists: fsWith("C:\\work\\az.cmd"), cwd: CWD })).toBe(
-      true,
-    );
-  });
-
-  test("a PATH entry is tried as written and without surrounding quotes and whitespace", () => {
-    const env = { PATH: `C:\\a; "C:\\Program Files\\Azure" ;C:\\b` };
-    expect(
-      mayRunAsBatchFile("az", env, {
-        exists: fsWith("C:\\Program Files\\Azure\\az.cmd"),
-        cwd: CWD,
-      }),
-    ).toBe(true);
-  });
-
-  test("a relative PATH entry is resolved against the current directory", () => {
-    expect(
-      mayRunAsBatchFile(
-        "az",
-        { PATH: "tools" },
-        { exists: fsWith("C:\\work\\tools\\az.cmd"), cwd: CWD },
-      ),
-    ).toBe(true);
-  });
-
-  test("a name with a directory is a path: resolved against the current directory, never PATH", () => {
-    const env = { PATH: "C:\\bin" };
-    expect(
-      mayRunAsBatchFile("tools\\az", env, { exists: fsWith("C:\\work\\tools\\az.cmd"), cwd: CWD }),
-    ).toBe(true);
-    expect(
-      mayRunAsBatchFile("tools\\az", env, { exists: fsWith("C:\\bin\\tools\\az.cmd"), cwd: CWD }),
-    ).toBe(false);
-    expect(
-      mayRunAsBatchFile("C:/sdk/bin/gcloud", env, {
-        exists: fsWith("C:\\sdk\\bin\\gcloud.cmd"),
-        cwd: CWD,
-      }),
-    ).toBe(true);
+  test("a .cmd or .bat beside an .exe in that first directory still counts", () => {
+    // Bun tries .exe first and would run it; this does not lean on that order.
+    const env = { PATH: "C:\\first" };
+    expect(may("aws", env, fsWith("C:\\first\\aws.exe", "C:\\first\\aws.cmd"))).toBe(true);
+    expect(may("aws", env, fsWith("C:\\first\\aws.exe", "C:\\first\\aws.bat"))).toBe(true);
   });
 
   test("a name found nowhere is not one", () => {
-    expect(
-      mayRunAsBatchFile("az", { PATH: "C:\\a;;C:\\b" }, { exists: () => false, cwd: CWD }),
-    ).toBe(false);
+    expect(may("az", { PATH: "C:\\a;C:\\b" }, () => false)).toBe(false);
   });
 
-  test("this process's own PATH is searched too, whatever the spawn environment says", () => {
-    // The spawn environment may override PATH, or leave it out; a runtime that falls back to the
-    // process's own would then find what this process can see. Split as the check splits, on the
-    // Windows delimiter, so the expectation holds on the Linux and macOS legs too.
-    const firstOwnDir = (process.env["PATH"] ?? "")
-      .split(win32.delimiter)
-      .find((d) => d.trim() !== "");
-    if (firstOwnDir === undefined) {
-      throw new Error("this process has no PATH to test against");
+  test("without a PATH variable that is set and not empty nothing is looked up, and it is not one", () => {
+    // Bun hands such a name to libuv, which starts only a .com or an .exe.
+    for (const env of [{}, { PATH: "" }, { Path: "" }, { PATH: undefined }, { HOME: "C:\\x" }]) {
+      expect({ env, batch: may("az", env, untouchedFs) }).toEqual({ env, batch: false });
+      expect({ env, batch: may("C:\\sdk\\bin\\gcloud", env, untouchedFs) }).toEqual({
+        env,
+        batch: false,
+      });
     }
+  });
+
+  test("the variable counts in every spelling, though Bun reads only PATH", () => {
+    for (const key of ["PATH", "Path", "path"]) {
+      expect(may("gcloud", { [key]: "C:\\sdk\\bin" }, fsWith("C:\\sdk\\bin\\gcloud.cmd"))).toBe(
+        true,
+      );
+    }
+  });
+
+  test("each spelling is searched on its own, and a batch file found first on any one counts", () => {
+    const exists = fsWith("C:\\exe\\az.exe", "C:\\cmd\\az.cmd");
+    expect(may("az", { PATH: "C:\\exe", Path: "C:\\cmd" }, exists)).toBe(true);
+    expect(may("az", { PATH: "C:\\cmd", Path: "C:\\exe" }, exists)).toBe(true);
+    expect(may("az", { PATH: "C:\\exe", Path: "C:\\exe;C:\\cmd" }, exists)).toBe(false);
+  });
+
+  test("entries are searched as written and, separately, without quotes and whitespace", () => {
+    // Bun reads an entry as written, so it never finds anything behind quotes; cmd.exe strips them.
+    const env = { PATH: `C:\\a; "C:\\Program Files\\Azure" ;C:\\b` };
+    expect(may("az", env, fsWith("C:\\Program Files\\Azure\\az.cmd"))).toBe(true);
+    // Stripped, the quoted entry holds an .exe ahead of C:\b's batch file; as written, it is
+    // passed over, and C:\b's batch file is found first.
+    expect(may("az", env, fsWith("C:\\Program Files\\Azure\\az.exe", "C:\\b\\az.cmd"))).toBe(true);
+    expect(may("az", env, fsWith("C:\\a\\az.exe", "C:\\b\\az.cmd"))).toBe(false);
+  });
+
+  test("an empty entry is skipped", () => {
+    expect(may("az", { PATH: ";;C:\\a;" }, fsWith("C:\\a\\az.cmd"))).toBe(true);
+  });
+
+  test("a relative PATH entry is resolved against the current directory", () => {
+    expect(may("az", { PATH: "tools" }, fsWith("C:\\work\\tools\\az.cmd"))).toBe(true);
+  });
+
+  test("the current directory itself is not searched for a bare name", () => {
+    // Bun never looks there: a batch file in it is not found, and nothing runs.
+    expect(may("az", { PATH: "C:\\bin" }, fsWith("C:\\work\\az.cmd"))).toBe(false);
+  });
+
+  test("a name with a directory is looked up in that directory alone, never on PATH", () => {
+    const env = { PATH: "C:\\bin" };
+    expect(may("tools\\az", env, fsWith("C:\\work\\tools\\az.cmd"))).toBe(true);
+    expect(may("tools\\az", env, fsWith("C:\\bin\\tools\\az.cmd", "C:\\bin\\az.cmd"))).toBe(false);
+    expect(may("C:\\sdk\\bin\\gcloud", env, fsWith("C:\\sdk\\bin\\gcloud.cmd"))).toBe(true);
+    expect(may("C:\\sdk\\bin\\gcloud", env, fsWith("C:\\sdk\\bin\\gcloud.exe"))).toBe(false);
+    // Bun hands a name written with / to libuv instead, which starts no batch file; it is looked
+    // up here all the same.
+    expect(may("C:/sdk/bin/gcloud", env, fsWith("C:\\sdk\\bin\\gcloud.cmd"))).toBe(true);
+  });
+
+  test("only the spawn environment's PATH is searched, in Bun's order, and never this process's", () => {
     const looked: string[] = [];
     mayRunAsBatchFile(
       "nimbus-batch-probe",
-      { PATH: "C:\\elsewhere" },
+      { PATH: "C:\\elsewhere;C:\\later" },
       {
         exists: (path) => {
           looked.push(path);
@@ -212,8 +223,14 @@ describe("mayRunAsBatchFile", () => {
         cwd: CWD,
       },
     );
-    expect(looked).toContain(win32.resolve(CWD, firstOwnDir, "nimbus-batch-probe.cmd"));
-    expect(looked).toContain(win32.resolve(CWD, "C:\\elsewhere", "nimbus-batch-probe.cmd"));
+    expect(looked).toEqual([
+      "C:\\elsewhere\\nimbus-batch-probe.exe",
+      "C:\\elsewhere\\nimbus-batch-probe.cmd",
+      "C:\\elsewhere\\nimbus-batch-probe.bat",
+      "C:\\later\\nimbus-batch-probe.exe",
+      "C:\\later\\nimbus-batch-probe.cmd",
+      "C:\\later\\nimbus-batch-probe.bat",
+    ]);
   });
 });
 
@@ -276,6 +293,28 @@ describe("batchArgumentRefusal", () => {
     ).toBeUndefined();
   });
 
+  test("judges the file that runs: an .exe found before a batch file of its name is let through", () => {
+    // The AWS CLI v2 installer's aws.exe ahead of a leftover pip-installed v1's aws.cmd: Bun runs
+    // the .exe, so a template body full of quotes reaches it untouched. Swap the two directories,
+    // and the batch file is what would run.
+    const exists = fsWith("C:\\v2\\aws.exe", "C:\\py\\Scripts\\aws.cmd");
+    const command = ["aws", "cloudformation", "deploy", "--template-body", '{"a":1}'];
+    expect(
+      batchArgumentRefusal(
+        command,
+        { PATH: "C:\\v2;C:\\py\\Scripts" },
+        { platform: "win32", exists, cwd: CWD },
+      ),
+    ).toBeUndefined();
+    expect(
+      batchArgumentRefusal(
+        command,
+        { PATH: "C:\\py\\Scripts;C:\\v2" },
+        { platform: "win32", exists, cwd: CWD },
+      ),
+    ).toContain('argument 4 holds "\\""');
+  });
+
   test("lets any argument through to a program that is not a batch file", () => {
     // aws.exe receives a CloudFormation template body full of quotes; no shell parses it again.
     expect(
@@ -335,3 +374,270 @@ describe("batchArgumentRefusal", () => {
     expect(refusal === undefined).toBe(process.platform !== "win32");
   });
 });
+
+/**
+ * The lookup modelled above, against the real one. Each layout puts harmless stand-ins in a fresh
+ * temp dir — a copy of hostname.exe, and batch files that echo their own name — and starts the
+ * program through `Bun.spawn` and through `node:child_process`, which Bun builds on it, with one
+ * argument: `x&echo,CMD-PARSED`. Only cmd.exe parsing the command line runs that `echo`, and that
+ * parse is exactly what `mayRunAsBatchFile` predicts. So each layout pins what Bun does — a change
+ * in a later Bun fails here rather than going unnoticed — and what the model says of it.
+ *
+ * The model may say yes where Bun starts no batch file: those are its deliberate margins, each
+ * named below. It must never say no where one ran. And the layouts in which a batch file runs are
+ * what keep this from passing vacuously: were batch files never started here, they would fail.
+ */
+describe.skipIf(process.platform !== "win32")(
+  "mayRunAsBatchFile against Bun's own lookup (skipped off Windows: only there does a spawn start a batch file through cmd.exe)",
+  () => {
+    const HOSTNAME = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "hostname.exe");
+    const MARK = "CMD-PARSED";
+    const ARGUMENT = `x&echo,${MARK}`;
+
+    interface Layout {
+      readonly name: string;
+      /** Files under the layout's directory: an `.exe` is a copy of hostname.exe, the rest echo. */
+      readonly files: readonly string[];
+      /** Directories to create, some named like the program. */
+      readonly dirs?: readonly string[];
+      /** The program, given the layout's directory: a bare name, or a path in it. */
+      readonly program: (dir: string) => string;
+      readonly env: (dir: string) => Record<string, string>;
+      /** The spawn's working directory, under the layout's directory. */
+      readonly cwd?: string;
+      /** Whether Bun starts a batch file: measured, and pinned. */
+      readonly bunStartsBatch: boolean;
+      /** What `mayRunAsBatchFile` says. */
+      readonly predicted: boolean;
+    }
+
+    const at = (dir: string, ...parts: string[]): string => join(dir, ...parts);
+    const bare = (): string => "ordx";
+
+    const LAYOUTS: readonly Layout[] = [
+      {
+        name: "an .exe found first on PATH, a .cmd after it: the .exe runs",
+        files: ["first/ordx.exe", "second/ordx.cmd"],
+        program: bare,
+        env: (d) => ({ PATH: `${at(d, "first")};${at(d, "second")}` }),
+        bunStartsBatch: false,
+        predicted: false,
+      },
+      {
+        name: "a .cmd found first on PATH, an .exe after it: the .cmd runs",
+        files: ["first/ordx.cmd", "second/ordx.exe"],
+        program: bare,
+        env: (d) => ({ PATH: `${at(d, "first")};${at(d, "second")}` }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "a .bat alone",
+        files: ["first/ordx.bat"],
+        program: bare,
+        env: (d) => ({ PATH: at(d, "first") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "a .cmd beside a .bat",
+        files: ["first/ordx.cmd", "first/ordx.bat"],
+        program: bare,
+        env: (d) => ({ PATH: at(d, "first") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "a .cmd only in the current directory: nothing runs",
+        files: ["work/ordx.cmd"],
+        dirs: ["empty"],
+        program: bare,
+        env: (d) => ({ PATH: at(d, "empty") }),
+        cwd: "work",
+        bunStartsBatch: false,
+        predicted: false,
+      },
+      {
+        name: "a name ending in .com, looked up like any other",
+        files: ["first/ordx.com.cmd"],
+        program: () => "ordx.com",
+        env: (d) => ({ PATH: at(d, "first") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "a directory named like the program is passed over",
+        files: ["second/ordx.cmd"],
+        dirs: ["first/ordx.exe"],
+        program: bare,
+        env: (d) => ({ PATH: `${at(d, "first")};${at(d, "second")}` }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "a path written with a backslash and no extension",
+        files: ["first/ordx.cmd"],
+        dirs: ["empty"],
+        program: (d) => at(d, "first", "ordx"),
+        env: (d) => ({ PATH: at(d, "empty") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "an explicit .cmd path, with no variable spelled PATH",
+        files: ["first/ordx.cmd"],
+        program: (d) => at(d, "first", "ordx.cmd"),
+        env: (d) => ({ Path: at(d, "first") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "an explicit .cmd path with a trailing dot, which Windows drops",
+        files: ["first/ordx.cmd"],
+        program: (d) => `${at(d, "first", "ordx.cmd")}.`,
+        env: (d) => ({ Path: at(d, "first") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "PATH and Path disagree, PATH holding the .cmd: Bun reads PATH",
+        files: ["first/ordx.cmd", "second/ordx.exe"],
+        program: bare,
+        env: (d) => ({ PATH: at(d, "first"), Path: at(d, "second") }),
+        bunStartsBatch: true,
+        predicted: true,
+      },
+      {
+        name: "margin: an .exe beside a .cmd in one directory — Bun runs the .exe",
+        files: ["first/ordx.exe", "first/ordx.cmd"],
+        program: bare,
+        env: (d) => ({ PATH: at(d, "first") }),
+        bunStartsBatch: false,
+        predicted: true,
+      },
+      {
+        name: "margin: only Path is set — Bun starts nothing",
+        files: ["first/ordx.cmd"],
+        program: bare,
+        env: (d) => ({ Path: at(d, "first") }),
+        bunStartsBatch: false,
+        predicted: true,
+      },
+      {
+        name: "margin: PATH and Path disagree, Path holding the .cmd — Bun reads PATH",
+        files: ["first/ordx.exe", "second/ordx.cmd"],
+        program: bare,
+        env: (d) => ({ PATH: at(d, "first"), Path: at(d, "second") }),
+        bunStartsBatch: false,
+        predicted: true,
+      },
+      {
+        name: "margin: a quoted PATH entry — Bun passes it over",
+        files: ["first/ordx.cmd"],
+        program: bare,
+        env: (d) => ({ PATH: `"${at(d, "first")}"` }),
+        bunStartsBatch: false,
+        predicted: true,
+      },
+      {
+        name: "margin: a path written with a slash — Bun hands it to libuv, which starts no .cmd",
+        files: ["first/ordx.cmd"],
+        dirs: ["empty"],
+        program: (d) => at(d, "first", "ordx").replaceAll("\\", "/"),
+        env: (d) => ({ PATH: at(d, "empty") }),
+        bunStartsBatch: false,
+        predicted: true,
+      },
+    ];
+
+    let root = "";
+
+    beforeAll(() => {
+      root = mkdtempSync(join(tmpdir(), "nimbus-batch-lookup-"));
+    });
+
+    afterAll(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    function stage(dir: string, layout: Layout): void {
+      for (const sub of layout.dirs ?? []) {
+        mkdirSync(join(dir, sub), { recursive: true });
+      }
+      for (const file of layout.files) {
+        const path = join(dir, file);
+        mkdirSync(dirname(path), { recursive: true });
+        if (file.endsWith(".exe")) {
+          copyFileSync(HOSTNAME, path);
+        } else {
+          writeFileSync(path, `@echo off\r\necho BATCH-RAN:${basename(file)}\r\n`);
+        }
+      }
+    }
+
+    /** Whether cmd.exe parsed the argument when `Bun.spawn` started `program`. */
+    async function parsedViaBunSpawn(
+      program: string,
+      env: Record<string, string>,
+      cwd: string | undefined,
+    ): Promise<boolean> {
+      try {
+        const proc = Bun.spawn([program, ARGUMENT], {
+          env,
+          ...(cwd === undefined ? {} : { cwd }),
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        await proc.exited;
+        return (await new Response(proc.stdout).text()).includes(MARK);
+      } catch {
+        return false; // nothing to start: Bun found no file
+      }
+    }
+
+    /** Whether cmd.exe parsed the argument when `node:child_process` started `program`. */
+    function parsedViaChildProcess(
+      program: string,
+      env: Record<string, string>,
+      cwd: string | undefined,
+    ): Promise<boolean> {
+      return new Promise((resolve) => {
+        let out = "";
+        try {
+          const child = spawn(program, [ARGUMENT], { env, cwd });
+          child.stdout.on("data", (chunk: Buffer) => {
+            out += chunk.toString();
+          });
+          child.on("error", () => resolve(false));
+          child.on("close", () => resolve(out.includes(MARK)));
+        } catch {
+          resolve(false);
+        }
+      });
+    }
+
+    for (const [index, layout] of LAYOUTS.entries()) {
+      test(layout.name, async () => {
+        const dir = join(root, String(index));
+        mkdirSync(dir);
+        stage(dir, layout);
+        const program = layout.program(dir);
+        const env = { SystemRoot: process.env["SystemRoot"] ?? "C:\\Windows", ...layout.env(dir) };
+        const cwd = layout.cwd === undefined ? undefined : join(dir, layout.cwd);
+        const viaBunSpawn = await parsedViaBunSpawn(program, env, cwd);
+        const viaChildProcess = await parsedViaChildProcess(program, env, cwd);
+        const predicted = mayRunAsBatchFile(program, env, cwd === undefined ? {} : { cwd });
+        // Never no where a batch file ran: that would be an argument cmd.exe parsed unchecked.
+        expect({ ran: viaBunSpawn || viaChildProcess, predicted }).not.toEqual({
+          ran: true,
+          predicted: false,
+        });
+        expect({ viaBunSpawn, viaChildProcess, predicted }).toEqual({
+          viaBunSpawn: layout.bunStartsBatch,
+          viaChildProcess: layout.bunStartsBatch,
+          predicted: layout.predicted,
+        });
+      });
+    }
+  },
+);

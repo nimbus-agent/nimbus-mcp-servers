@@ -58,7 +58,9 @@ expand an environment variable into it. The connector refuses such an argument i
 anything runs. Resource names do not hold these characters: an Azure resource group may hold
 parentheses, but `az.cmd` could never take one, since a resource group has no space and so is never
 quoted. An Azure subscription given by a display name that holds one is refused — pass its id. The
-same applies to any CLI installed as a `.cmd` or `.bat`, such as a pip-installed `aws` v1.
+same applies to any CLI whose first match on `PATH` is a `.cmd` or `.bat`, such as a pip-installed
+`aws` v1 ahead of the v2 installer's `aws.exe`, where it refuses a CloudFormation template body;
+with the `aws.exe` first, nothing is refused.
 
 ## Optional dependencies
 
