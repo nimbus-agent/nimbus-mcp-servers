@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.3](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.2...connectors-v0.2.3) (2026-10-05)
+
+
+### Bug Fixes
+
+* **connectors:** check every argument kubernetes, gcp, azure, aws and iac pass to a CLI, so a pod, deployment, service or cluster name can no longer reach kubectl or gcloud as a flag such as --kubeconfig ([849f0c0](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/849f0c04bbee1f811319b7e792bb2ec356b9062b))
+* **connectors:** refuse aws argument values starting with file://, fileb://, http:// or https:// or holding @=, and az values starting with @ or holding =@, which the CLI would replace by a local file's contents ([849f0c0](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/849f0c04bbee1f811319b7e792bb2ec356b9062b))
+* **shared:** on Windows, refuse an argument holding a cmd.exe metacharacter when the CLI found first on PATH is a batch file such as az.cmd or gcloud.cmd, whose arguments cmd.exe parses a second time and could run a second command from ([849f0c0](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/849f0c04bbee1f811319b7e792bb2ec356b9062b))
+* **shared:** refuse a write budget that is not plain digits instead of running uncapped ([cf7f0ed](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/cf7f0ed0bd73db19f7dd67cc0690e99c82bf6795))
+* **shared:** report an audit-log line that parses as JSON but has no string prev or hash link as the place the chain breaks, where verification used to throw a TypeError ([f1ce53a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/f1ce53a213abadf4cae8208351b51cc78329ab8b))
+* **shared:** serialise audit-log appends within a connector and, through a lock file beside the log, across connector processes sharing one NIMBUS_MCP_AUDIT_LOG, so parallel writes no longer break the hash chain ([f1ce53a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/f1ce53a213abadf4cae8208351b51cc78329ab8b))
+* **shared:** stop a connector with write tools at startup on an empty write budget, or one with a sign, decimal point, exponent or hex prefix such as -1, +5, 10.0 or 1e3, all of which used to be read as some number ([cf7f0ed](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/cf7f0ed0bd73db19f7dd67cc0690e99c82bf6795))
+* **shared:** stop parallel write calls from overrunning the budget ([cf7f0ed](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/cf7f0ed0bd73db19f7dd67cc0690e99c82bf6795))
+* **shared:** when a write tool ran but recording it failed, say the tool ran instead of recording the write as failed, and when both the tool and its failure record fail, report the tool's own error first ([f1ce53a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/f1ce53a213abadf4cae8208351b51cc78329ab8b))
+
 ## [0.2.2](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.1...connectors-v0.2.2) (2026-10-04)
 
 
