@@ -7,11 +7,13 @@
  * CLI's argv — so a refusal below is measured against an argument known to arrive, and cannot pass
  * because the argument was never used. Then, one argument at a time:
  *
- *  - an argument that reached argv must be REFUSED with nothing spawned, for a value starting with
- *    `-` (read as a flag: `--kubeconfig=<path>` as a pod name runs that kubeconfig's exec plugin),
- *    one with a control character, one over 1024 characters, and — for the CLI it reached — a value
- *    `aws` would replace by a file or URL (`file://`, `fileb://`, `http(s)://`, shorthand `@=`) or one `az`
- *    would replace by a file (`@<path>`, `=@`);
+ *  - an argument that reached argv must be REFUSED by the tool's own schema, with nothing spawned,
+ *    for a value starting with `-` (read as a flag: `--kubeconfig=<path>` as a pod name runs that
+ *    kubeconfig's exec plugin), one with a control character, one over 1024 characters, and — for
+ *    the CLI it reached — a value `aws` would replace by a file or URL (`file://`, `fileb://`,
+ *    `http(s)://`, shorthand `@=`) or one `az` would replace by a file (`@<path>`, `=@`). The
+ *    schema, because that refusal comes before anything else a call does, a consent prompt
+ *    included: a check in the handler would let the owner be asked to approve a call bound to fail;
  *  - an argument that did not reach argv may be anything, and must still not reach argv.
  *
  * Found unchecked by this sweep and fixed with it: kubectl positionals in kubernetes and gcp, the
@@ -238,10 +240,10 @@ async function run(
  * What is wrong with how tool `name` treats a hostile value in `field`, given the CLIs an ordinary
  * value of it reached (`clis`, empty when it reached none).
  *
- * An argument that reached a CLI must be refused, before anything spawns, for each value hostile
- * to that CLI; a value hostile only to ANOTHER CLI is not tried, since `file://x` as a gcloud
- * project is read as written and refused by gcloud. An argument that reached no CLI is tried with
- * every hostile value, and must not let any of them reach argv either.
+ * An argument that reached a CLI must be refused by the tool's schema, before anything spawns, for
+ * each value hostile to that CLI; a value hostile only to ANOTHER CLI is not tried, since `file://x`
+ * as a gcloud project is read as written and refused by gcloud. An argument that reached no CLI is
+ * tried with every hostile value, and must not let any of them reach argv either.
  */
 async function fieldViolations(
   tools: CapturedTools,
@@ -252,6 +254,7 @@ async function fieldViolations(
   allowedUsed: Set<(typeof ALLOWED)[number]>,
 ): Promise<string[]> {
   const found: string[] = [];
+  const schema = tools.get(name).schema as ParsableSchema;
   for (const hostile of HOSTILE) {
     const hostileHere = clis.length > 0 && (hostile.cli === "*" || clis.includes(hostile.cli));
     if (clis.length > 0 && !hostileHere) {
@@ -264,12 +267,17 @@ async function fieldViolations(
       allowedUsed.add(allowed);
       continue;
     }
-    const attempt = await run(tools, name, { ...args, [field]: hostile.value });
+    const hostileArgs = { ...args, [field]: hostile.value };
+    const attempt = await run(tools, name, hostileArgs);
     const leaked = clisCarrying(attempt.argv, hostile.value);
     if (leaked.length > 0) {
       found.push(`${name}.${field}: a ${hostile.kind} value reached ${leaked.join(", ")}`);
     } else if (hostileHere && (!attempt.refused || attempt.argv.length > 0)) {
       found.push(`${name}.${field}: a ${hostile.kind} value was not refused before every spawn`);
+    } else if (hostileHere && schema.safeParse(hostileArgs).success) {
+      found.push(
+        `${name}.${field}: a ${hostile.kind} value was refused after its schema accepted it`,
+      );
     }
   }
   return found;

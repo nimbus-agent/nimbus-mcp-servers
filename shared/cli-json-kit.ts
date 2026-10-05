@@ -15,10 +15,12 @@
  * The argument guard is the reason this is worth sharing rather than tolerating:
  * it is a security control, and a security control that exists in five
  * hand-written copies is one that can be strengthened in four of them. Every
- * connector that spawns a CLI now takes its argument schemas from here — the
- * eleven of them, including the ones that spawn through `run-cli-json.ts`
- * rather than {@link createCliJsonRunner} — and `scripts/cli-argument-guards.test.ts`
- * fails a tool whose caller-supplied value reaches argv unchecked.
+ * caller-supplied value that reaches a CLI's argv, in all eleven connectors
+ * that spawn one, now passes one of the argument schemas here — including in
+ * the connectors that spawn through `run-cli-json.ts` rather than
+ * {@link createCliJsonRunner}; bigquery's values never reach argv at all. And
+ * `scripts/cli-argument-guards.test.ts` fails a tool whose schema lets a value
+ * the CLI would misread through, whether or not something later refuses it.
  *
  * The `gcloud` connectors (bigquery, cloud-logging, gcp, vertex-ai) also share
  * how they hand gcloud its project and credentials: see {@link gcloudEnv} and

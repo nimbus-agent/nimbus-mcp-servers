@@ -111,12 +111,13 @@ on). The procedure, and the traps it has to avoid, are in
   value from disk and `az` an `@` one, so a read tool could send a local file to the cloud API,
   where an error could quote it back. And on Windows `az` and `gcloud` are `.cmd` files, which
   `cmd.exe` parses a second time: `x&echo` ran `echo`, `%VAR%` expanded even inside quotes. Every
-  caller value now goes through a schema from `cli-json-kit.ts`, and `nimbus-spawn.ts` — the only
-  file allowed to spawn — refuses `cmd.exe` metacharacters for a program that may be a batch file,
-  judged by the file found first on `PATH`, looked up as Bun looks it up, not by its name. The
-  first version of that check counted a batch file anywhere on `PATH`, and refused a template body
-  for an `aws.exe` that came first. `scripts/cli-argument-guards.test.ts` fails an argument that
-  reaches argv unchecked.
+  caller value that reaches a CLI now goes through a schema from `cli-json-kit.ts`, and
+  `nimbus-spawn.ts` — the only file allowed to spawn — refuses `cmd.exe` metacharacters for a
+  program that may be a batch file, judged by the file found first on `PATH`, looked up as Bun
+  looks it up, not by its name. The first version of that check counted a batch file anywhere on
+  `PATH`, and refused a template body for an `aws.exe` that came first.
+  `scripts/cli-argument-guards.test.ts` fails an argument whose schema lets a hostile value
+  through, even when the handler refuses it later.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's
   write-registration check is an exact string match, and a CRLF checkout left a trailing carriage
   return that made it report two correctly-hardened connectors as declaring ungated writes.

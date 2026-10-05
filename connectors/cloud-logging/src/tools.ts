@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  cliArg,
   createCliJsonRunner,
   gcloudProjectArgs,
   isRecord,
@@ -8,7 +9,6 @@ import {
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
-import { assertSafeCliArg } from "../../../shared/safe-cli-arg.ts";
 
 /**
  * GCP Cloud Logging (Tier-3, no-row-data) MCP tool surface. ALL tools index log
@@ -75,15 +75,12 @@ export function registerCloudLoggingTools(reg: ZodToolRegistrar): void {
     "cloud_logging_get",
     "Fetch one Cloud Logging routing sink's configuration METADATA (`gcloud logging sinks describe <sink>`). Returns the sink's `name`, `destination`, `filter`, `description`, `disabled` flag, and create/update timestamps. No log-entry contents are returned — metadata only.",
     z.object({
-      sinkName: z.string().min(1),
+      // A bare positional to `gcloud logging sinks describe`, so it is refused here, at the
+      // schema, if gcloud would misread it: a value starting with "-" would be parsed as a flag.
+      sinkName: cliArg,
     }),
     async (p) => {
-      // `sinkName` is a bare positional to `gcloud logging sinks describe`; guard
-      // against argv flag smuggling (a value beginning with "-" would be parsed as
-      // a gcloud flag).
-      return jsonResult(
-        await gcloudLogging(["sinks", "describe", assertSafeCliArg(p.sinkName, "sinkName")]),
-      );
+      return jsonResult(await gcloudLogging(["sinks", "describe", p.sinkName]));
     },
   );
 

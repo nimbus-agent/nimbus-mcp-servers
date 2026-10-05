@@ -43,7 +43,8 @@ The properties this package claims, and therefore the ones a report can be filed
     variable into the argument.
 
   The first two are the argument schemas in `shared/cli-json-kit.ts`, from the rules in
-  `shared/safe-cli-arg.ts`; the third is `shared/windows-batch-args.ts`, applied by
+  `shared/safe-cli-arg.ts`, and every caller-supplied value that reaches a CLI passes one of them;
+  the third is `shared/windows-batch-args.ts`, applied by
   `shared/nimbus-spawn.ts`, the only file that starts a process. A tool argument that reaches a CLI
   past them, or a process started anywhere else, is a vulnerability.
 
