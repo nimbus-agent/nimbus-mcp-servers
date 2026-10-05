@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { McpListResult } from "@nimbus-dev/sdk/connector-kit";
 import { z } from "zod";
 
@@ -496,8 +496,28 @@ describe("client-independent controls", () => {
       ["refused", "budget exhausted after approval"],
       ["refused", "budget exhausted"],
     ]);
-    // Every entry here was appended after the one before it had finished, so the chain verifies.
     expect(await verifyAuditChain(log)).toMatchObject({ ok: true });
+  });
+
+  test("approved calls in flight together leave one intact chain in the audit log", async () => {
+    // The calls' records interleave — every call is approved before any executes — and each one
+    // links to the record actually written before it. They used to read the same tail and link to
+    // the same predecessor, so the chain broke at the second record.
+    const calls = 5;
+    const log = await tempAuditPath();
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    const call = registerAndGet(srv, async () => ok(), { scope: "repo:acme/api", auditLog: log });
+
+    await Promise.all(Array.from({ length: calls }, () => call({ branch: "acme/api" })));
+
+    expect(await verifyAuditChain(log)).toEqual({ ok: true, count: calls * 3 });
+    const outcomes = (await readFile(log, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((l) => (JSON.parse(l) as { entry: { outcome: string } }).entry.outcome);
+    for (const outcome of ["requested", "accepted", "executed"]) {
+      expect(outcomes.filter((o) => o === outcome)).toHaveLength(calls);
+    }
   });
 
   test("capturePreState runs before the mutation and reaches the audit log", async () => {
@@ -715,6 +735,65 @@ describe("standalone outcomes at the edges", () => {
       preState: { sha: "abc" },
       error: "remote said no",
     });
+  });
+
+  test("a write whose audit entry cannot be written is never put to the human, and never runs", async () => {
+    // The durable log is the operator's record of every write. If its first entry cannot land —
+    // here the log's directory does not exist — the write must not go ahead unrecorded.
+    let prompted = 0;
+    let mutated = 0;
+    const srv = serverWith(() => {
+      prompted += 1;
+      return Promise.resolve({ action: "accept", content: { confirm: true } });
+    });
+    const call = registerAndGet(
+      srv,
+      async () => {
+        mutated += 1;
+        return ok();
+      },
+      { auditLog: join(dirname(await tempAuditPath()), "missing", "audit.jsonl") },
+    );
+    await expect(call({ branch: "acme/api" })).rejects.toThrow(/ENOENT/);
+    expect(prompted).toBe(0);
+    expect(mutated).toBe(0);
+  });
+
+  test("a write that ran is not recorded as failed when recording that it ran fails", async () => {
+    // Recording `executed` shared the mutation's `catch`, so a failure to append it was recorded
+    // as the mutation failing — of a write that had in fact run. Here the mutation itself leaves
+    // the log with a last line nothing can be linked after, so that one append fails.
+    const log = await tempAuditPath();
+    const outcomes: string[] = [];
+    let mutated = 0;
+    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
+    srv.sendLoggingMessage = (p) => {
+      outcomes.push((p.data as { outcome: string }).outcome);
+      return Promise.resolve();
+    };
+    const call = registerAndGet(
+      srv,
+      async () => {
+        mutated += 1;
+        await appendFile(log, "torn\n");
+        return ok();
+      },
+      { auditLog: log },
+    );
+    await expect(call({ branch: "acme/api" })).rejects.toThrow(
+      "github_branch_delete ran, but recording that it ran failed: ",
+    );
+    expect(mutated).toBe(1);
+    // The client was told it executed, and never that it failed.
+    expect(outcomes).toEqual(["requested", "accepted", "executed"]);
+    // Nothing was appended after the line the mutation left: in particular, no `failed`.
+    const lines = (await readFile(log, "utf8")).trimEnd().split("\n");
+    expect(lines.at(-1)).toBe("torn");
+    expect(
+      lines
+        .slice(0, -1)
+        .map((l) => (JSON.parse(l) as { entry: { outcome: string } }).entry.outcome),
+    ).toEqual(["requested", "accepted"]);
   });
 
   test("a handshake with nothing queued tells the client nothing changed", () => {

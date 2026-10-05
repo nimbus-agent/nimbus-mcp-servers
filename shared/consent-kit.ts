@@ -185,7 +185,8 @@ export function createWriteToolRegistrar(
       level: outcome === "executed" ? "info" : "warning",
       data: { connector: cfg.connector, tool, outcome },
     });
-    // Durable channel: only when the operator configured a path.
+    // Durable channel: only when the operator configured a path. An append that fails rejects, and
+    // every record before the mutation is awaited, so a write whose entry did not land never runs.
     if (auditLog !== undefined && auditLog !== "") {
       await appendAuditEntry(auditLog, {
         ts: new Date().toISOString(),
@@ -333,10 +334,9 @@ export function createWriteToolRegistrar(
       }
 
       // 6. MUTATE.
+      let result: McpListResult;
       try {
-        const result = await handler(args);
-        await record(name, "executed", { target, preState });
-        return result;
+        result = await handler(args);
       } catch (e) {
         await record(name, "failed", {
           target,
@@ -345,6 +345,19 @@ export function createWriteToolRegistrar(
         });
         throw e;
       }
+      // Outside the `try`: the mutation has happened, so a failure to RECORD it must not be
+      // recorded as the mutation failing, which it was when both shared one `catch`. The call still
+      // rejects, saying the write ran, so it is not taken for one that is safe to try again.
+      try {
+        await record(name, "executed", { target, preState });
+      } catch (e) {
+        throw new Error(
+          `${name} ran, but recording that it ran failed: ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+          { cause: e },
+        );
+      }
+      return result;
     };
 
     pending.push(() => {

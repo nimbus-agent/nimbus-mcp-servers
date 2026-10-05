@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 
 import { type AuditEntry, appendAuditEntry, verifyAuditChain } from "./audit-chain.ts";
 
@@ -12,6 +12,126 @@ async function tempLog(): Promise<string> {
   tempDirs.push(dir);
   return join(dir, "audit.jsonl");
 }
+
+/** The parsed lines of a log, in file order. */
+async function chainedLines(p: string): Promise<{ seq: number; entry: AuditEntry }[]> {
+  return (await readFile(p, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map((l) => JSON.parse(l) as { seq: number; entry: AuditEntry });
+}
+
+/** 1..n */
+function oneTo(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => i + 1);
+}
+
+/**
+ * A writer PROCESS: it says it has started, then appends `count` entries to `log`, one after
+ * another, as connector `who`.
+ *
+ * Built by concatenation and run from a temp directory: a fixture under `shared/` would ship in
+ * the package.
+ */
+const WRITER_SOURCE = [
+  'import { writeFileSync } from "node:fs";',
+  'import { join } from "node:path";',
+  `import { appendAuditEntry } from ${JSON.stringify(new URL("./audit-chain.ts", import.meta.url).href)};`,
+  "const [log, who, count, dir] = process.argv.slice(2);",
+  'writeFileSync(join(dir, "started-" + who), "");',
+  "for (let i = 0; i < Number(count); i += 1) {",
+  "  await appendAuditEntry(log, {",
+  '    ts: "2026-10-05T00:00:00.000Z", connector: who, tool: "t" + i, outcome: "executed", detail: {},',
+  "  });",
+  "}",
+].join("\n");
+
+/**
+ * Run `n` writer processes on one log, `count` entries each, as `w0`…`w<n-1>`, all queued behind a
+ * lock this test holds: one naming this live process, and fresh, so it is waited for and never
+ * taken over. Once every writer has begun its first append, `then` is handed the lock to release
+ * or age; the writers are then awaited, and every one must exit cleanly.
+ *
+ * Holding the lock is what makes the writers overlap by construction: each began before `then`,
+ * and none can finish an append until after it. Without it one writer could finish before the next
+ * had started, and a test of the lock would pass with no lock at all.
+ */
+async function writeConcurrently(
+  log: string,
+  n: number,
+  count: number,
+  then: (lockPath: string) => Promise<void>,
+): Promise<void> {
+  const lockPath = await plantLock(log, lockBody(process.pid));
+  const dir = await mkdtemp(join(tmpdir(), "nimbus-audit-writers-"));
+  tempDirs.push(dir);
+  const script = join(dir, "writer.ts");
+  await writeFile(script, WRITER_SOURCE);
+  const procs = Array.from({ length: n }, (_, k) =>
+    Bun.spawn([process.execPath, script, log, `w${k}`, String(count), dir], {
+      stdout: "pipe",
+      stderr: "pipe",
+      windowsHide: true,
+    }),
+  );
+  try {
+    const deadline = Date.now() + 60_000;
+    while ((await readdir(dir)).filter((f) => f.startsWith("started-")).length < n) {
+      if (Date.now() > deadline) throw new Error("the writer processes never started");
+      await Bun.sleep(5);
+    }
+    await then(lockPath);
+    const codes = await Promise.all(procs.map((p) => p.exited));
+    const stderr = await Promise.all(procs.map((p) => new Response(p.stderr).text()));
+    expect({ codes, stderr }).toEqual({
+      codes: Array.from({ length: n }, () => 0),
+      stderr: Array.from({ length: n }, () => ""),
+    });
+  } finally {
+    for (const p of procs) p.kill();
+  }
+}
+
+/** Write a lock file as a writer would leave it behind, optionally backdated by `ageMs`. */
+async function plantLock(log: string, body: string, ageMs = 0): Promise<string> {
+  const lockPath = `${log}.lock`;
+  await writeFile(lockPath, body);
+  if (ageMs > 0) {
+    const then = new Date(Date.now() - ageMs);
+    await utimes(lockPath, then, then);
+  }
+  return lockPath;
+}
+
+function lockBody(pid: number, host = hostname()): string {
+  return JSON.stringify({ pid, host, nonce: "planted", since: "2026-10-05T00:00:00.000Z" });
+}
+
+/**
+ * The pid of a process that has exited, checked to be gone: pids are reused, and quickly on
+ * Windows, so a dead process's pid is only known dead once signal 0 says so.
+ */
+function exitedPid(): number {
+  for (let i = 0; i < 20; i += 1) {
+    const { pid } = Bun.spawnSync([process.execPath, "-e", ""], { windowsHide: true });
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") return pid;
+    }
+  }
+  throw new Error("every exited pid tried had already been reused");
+}
+
+/** The files beside a log other than the log itself: a lock left behind, or a renamed one. */
+async function leftovers(log: string): Promise<string[]> {
+  return (await readdir(dirname(log))).filter((f) => f !== basename(log));
+}
+
+const HOUR_MS = 3_600_000;
+
+/** A lock that is never taken over by age, and a wait short enough to time out in a test. */
+const QUICK_TIMEOUT = { staleMs: HOUR_MS, timeoutMs: 250 };
 
 afterAll(async () => {
   await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
@@ -155,5 +275,164 @@ describe("audit chain", () => {
     const p = await tempLog();
     await writeFile(p, "\n  \n");
     expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
+  });
+});
+
+describe("concurrent appends", () => {
+  test("parallel appends in one process all chain, in the order they were made", async () => {
+    // The consent kit records from every tool call in flight, and the SDK runs those calls
+    // concurrently. Each append read the tail, then wrote after it, so all of these used to read
+    // the same empty log: fifty lines, every one `seq: 1` linked to the genesis hash, and the chain
+    // broken at line 2.
+    const p = await tempLog();
+    const n = 100;
+    await Promise.all(oneTo(n).map((i) => appendAuditEntry(p, entry(`t${i}`, "executed"))));
+
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: n });
+    const lines = await chainedLines(p);
+    expect(lines.map((l) => l.seq)).toEqual(oneTo(n));
+    // In CALL order, not merely in some order: within a process appends queue, so the log tells
+    // the order in which things were recorded.
+    expect(lines.map((l) => l.entry.tool)).toEqual(oneTo(n).map((i) => `t${i}`));
+    expect(await leftovers(p)).toEqual([]);
+  }, 30_000);
+
+  test("appends from several processes at once all chain", async () => {
+    // Every MCP client session starts its own copy of each configured connector, and the
+    // documented config names one log for all of them, so separate processes append to one file.
+    // Measured before the fix: four processes of 25 appends each broke the chain on every run.
+    const p = await tempLog();
+    const writers = 4;
+    const each = 25;
+    await writeConcurrently(p, writers, each, (lockPath) => rm(lockPath));
+
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: writers * each });
+    const lines = await chainedLines(p);
+    expect(lines.map((l) => l.seq)).toEqual(oneTo(writers * each));
+    for (let k = 0; k < writers; k += 1) {
+      const mine = lines.filter((l) => l.entry.connector === `w${k}`).map((l) => l.entry.tool);
+      expect(mine).toEqual(oneTo(each).map((i) => `t${i - 1}`));
+    }
+    expect(await leftovers(p)).toEqual([]);
+  }, 60_000);
+
+  test("a failed append releases the lock and does not stall the appends queued behind it", async () => {
+    const p = await tempLog();
+    // A BigInt cannot be serialised, so this append fails while it holds the lock.
+    const unwritable: AuditEntry = { ...entry("bad", "executed"), detail: { n: 1n } };
+    const [bad, good] = await Promise.allSettled([
+      appendAuditEntry(p, unwritable),
+      appendAuditEntry(p, entry("good", "executed")),
+    ]);
+    expect(bad.status).toBe("rejected");
+    expect(good.status).toBe("fulfilled");
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect((await chainedLines(p)).map((l) => l.entry.tool)).toEqual(["good"]);
+    expect(await leftovers(p)).toEqual([]);
+  });
+});
+
+describe("a lock left behind", () => {
+  test("by a process that has exited is taken over at once", async () => {
+    // A connector killed mid-append — a client closing its stdio servers — leaves its lock behind.
+    // Its pid is provably dead, so the lock is taken over without waiting for it to age: the wait
+    // allowed here is far shorter than the age that would otherwise be needed.
+    const p = await tempLog();
+    await plantLock(p, lockBody(exitedPid()));
+    await appendAuditEntry(p, entry("after-crash", "executed"), {
+      staleMs: HOUR_MS,
+      timeoutMs: 10_000,
+    });
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("by a live holder is waited for, and the append then fails closed", async () => {
+    const p = await tempLog();
+    const lockPath = await plantLock(p, lockBody(process.pid));
+    await expect(appendAuditEntry(p, entry("blocked", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
+      `gave up after 250 ms waiting for its lock ${lockPath}, held by process ${process.pid}; the entry was not written`,
+    );
+    // Nothing written, and the live holder's lock untouched.
+    expect(await leftovers(p)).toEqual([basename(lockPath)]);
+    expect(await readFile(lockPath, "utf8")).toBe(lockBody(process.pid));
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 0 });
+  });
+
+  test("older than staleMs is taken over even though its holder still runs", async () => {
+    // A pid can be reused by an unrelated process, so a live pid alone cannot hold a log forever.
+    const p = await tempLog();
+    await plantLock(p, lockBody(process.pid), HOUR_MS);
+    await appendAuditEntry(p, entry("after-stale", "executed"));
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("with no body — its holder died between creating and writing it — is judged by age", async () => {
+    const fresh = await tempLog();
+    await plantLock(fresh, "");
+    await expect(appendAuditEntry(fresh, entry("x", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
+      /gave up after 250 ms/,
+    );
+
+    const old = await tempLog();
+    await plantLock(old, "", HOUR_MS);
+    await appendAuditEntry(old, entry("x", "executed"));
+    expect(await verifyAuditChain(old)).toEqual({ ok: true, count: 1 });
+    expect(await leftovers(old)).toEqual([]);
+  });
+
+  test("from another host is judged by age alone, never by a pid this host cannot see", async () => {
+    // The pid is dead HERE, which says nothing about a process on the machine that wrote it.
+    const body = lockBody(exitedPid(), `${hostname()}-elsewhere`);
+    const fresh = await tempLog();
+    await plantLock(fresh, body);
+    await expect(appendAuditEntry(fresh, entry("x", "executed"), QUICK_TIMEOUT)).rejects.toThrow(
+      /gave up after 250 ms/,
+    );
+
+    const old = await tempLog();
+    await plantLock(old, body, HOUR_MS);
+    await appendAuditEntry(old, entry("x", "executed"));
+    expect(await verifyAuditChain(old)).toEqual({ ok: true, count: 1 });
+  });
+
+  test("found by several processes at once is taken over once, and every entry still chains", async () => {
+    // Every writer is already waiting on the lock when it ages past staleMs, so all of them judge
+    // it abandoned together and race to take it over. One rename claims it; a writer that renamed
+    // aside the winner's fresh lock instead must hand it back, or two writers would hold it.
+    const p = await tempLog();
+    await writeConcurrently(p, 4, 10, async (lockPath) => {
+      const then = new Date(Date.now() - HOUR_MS);
+      await utimes(lockPath, then, then);
+    });
+    expect(await verifyAuditChain(p)).toEqual({ ok: true, count: 40 });
+    expect(await leftovers(p)).toEqual([]);
+  }, 60_000);
+});
+
+describe("an append fails closed", () => {
+  test("on a log that exists but cannot be read, which is not an empty one", async () => {
+    // Read as empty, the next entry was linked to the genesis hash after whatever the log already
+    // held, and verification passed on a log nobody could read.
+    const p = await tempLog();
+    await mkdir(p);
+    await expect(verifyAuditChain(p)).rejects.toThrow();
+    await expect(appendAuditEntry(p, entry("x", "executed"))).rejects.toThrow();
+    expect(await leftovers(p)).toEqual([]);
+  });
+
+  test("after a last line that is not a chained entry, and writes nothing", async () => {
+    for (const torn of ["not-json", "{}", '{"hash":7}']) {
+      const p = await tempLog();
+      await appendAuditEntry(p, entry("a", "executed"));
+      await writeFile(p, `${(await readFile(p, "utf8")).trimEnd()}\n${torn}\n`);
+      const before = await readFile(p, "utf8");
+      await expect(appendAuditEntry(p, entry("b", "executed"))).rejects.toThrow(
+        "line 2 is not a chained entry, so no entry can be linked after it",
+      );
+      expect(await readFile(p, "utf8")).toBe(before);
+      expect(await leftovers(p)).toEqual([]);
+    }
   });
 });
