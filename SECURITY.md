@@ -38,15 +38,15 @@ The properties this package claims, and therefore the ones a report can be filed
     since what it read would be sent to the cloud API, and an error could quote it back;
   - on Windows, where `az` and `gcloud` are batch files that `cmd.exe` parses a second time, the
     spawn itself refuses an argument holding `% ! " & | < > ^ ( )` or a control character whenever
-    the program may be a `.cmd` or `.bat` — the file its name is found as first on `PATH`, looked up
-    as the runtime looks it up — since those would run a second command or expand an environment
-    variable into the argument.
+    the program may be a `.cmd` or `.bat` — judged by the file its name resolves to first on
+    `PATH`, looked up as the runtime looks it up — since those would run a second command or
+    expand an environment variable into the argument.
 
   The first two are the argument schemas in `shared/cli-json-kit.ts`, from the rules in
   `shared/safe-cli-arg.ts`, and every caller-supplied value that reaches a CLI passes one of them;
-  the third is `shared/windows-batch-args.ts`, applied by
-  `shared/nimbus-spawn.ts`, the only file that starts a process. A tool argument that reaches a CLI
-  past them, or a process started anywhere else, is a vulnerability.
+  the third is `shared/windows-batch-args.ts`, applied by `shared/nimbus-spawn.ts`, the only file
+  that starts a process. A tool argument that reaches a CLI past them, or a process started
+  anywhere else, is a vulnerability.
 
 ## What is NOT in scope
 
