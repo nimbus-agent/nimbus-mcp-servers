@@ -118,6 +118,20 @@ export class CapturedTools {
 }
 
 /**
+ * A pattern matching `text` as it appears in the error {@link CapturedTools.call} throws when a
+ * tool's schema refuses its arguments.
+ *
+ * That error's message is Zod's list of issues as JSON, so a `"` inside an issue's message arrives
+ * escaped as `\"`, and a pattern written against the refusal as a person reads it — `must not
+ * start with "-"` — never matches. Written through this, it does, and nothing else does: the text
+ * is matched literally, not as a pattern.
+ */
+export function refusalSaying(text: string): RegExp {
+  const asInJson = JSON.stringify(text).slice(1, -1);
+  return new RegExp(asInJson.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+}
+
+/**
  * Every shape a connector's `register…Tools` takes.
  *
  * The third member is not redundant: a connector with consent-gated writes

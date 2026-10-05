@@ -58,7 +58,8 @@ guarded one, whose `startConnector()` builds a fresh server on every call.
 
 Before hand-rolling plumbing, check the kits — `env-json-api.ts` (env-token JSON GET),
 `collection-tool-kit.ts` (the list/get/search triple), `cli-json-kit.ts` (spawn a CLI, parse JSON,
-`cliArg`-guard every argv value), `imapflow-adapter.ts` (IMAP/SMTP). The full set is listed in
+and guard every argv value with `cliArg`, or `awsCliArg` / `azCliArg` for the two CLIs that read a
+value from a file), `imapflow-adapter.ts` (IMAP/SMTP). The full set is listed in
 [`docs/architecture.md`](./docs/architecture.md#how-a-connector-is-built).
 
 ## Commands
@@ -103,6 +104,20 @@ on). The procedure, and the traps it has to avoid, are in
   until October 2026: a read tool, so no consent prompt, that would have sent the username and app
   password to any host the model named. The Graph connectors (`outlook`, `onedrive`, `teams`)
   already resolved their `nextLink` that way.
+- **A CLI argument is also the model's choice, and "no shell" did not make it inert.** Until
+  October 2026 a leading `-` was the only thing refused, and only where `cliArg` was used: azure,
+  aws and iac checked nothing, and kubectl and gcloud took pod, deployment, service and cluster
+  names as unchecked positionals, where `--kubeconfig=<path>` is a flag. `aws` reads a `file://`
+  value from disk and `az` an `@` one, so a read tool could send a local file to the cloud API,
+  where an error could quote it back. And on Windows `az` and `gcloud` are `.cmd` files, which
+  `cmd.exe` parses a second time: `x&echo` ran `echo`, `%VAR%` expanded even inside quotes. Every
+  caller value that reaches a CLI now goes through a schema from `cli-json-kit.ts`, and
+  `nimbus-spawn.ts` — the only file allowed to spawn — refuses `cmd.exe` metacharacters for a
+  program that may be a batch file, judged by the file found first on `PATH`, looked up as Bun
+  looks it up, not by its name. The first version of that check counted a batch file anywhere on
+  `PATH`, and refused a template body for an `aws.exe` that came first.
+  `scripts/cli-argument-guards.test.ts` fails an argument whose schema lets a hostile value
+  through, even when the handler refuses it later.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's
   write-registration check is an exact string match, and a CRLF checkout left a trailing carriage
   return that made it report two correctly-hardened connectors as declaring ungated writes.

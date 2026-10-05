@@ -1,6 +1,69 @@
-import { spawn } from "node:child_process";
+/**
+ * nimbus-spawn — the one place this package starts a process.
+ *
+ * Every connector that reaches its service through a CLI spawns it through {@link nimbusSpawn},
+ * directly or by way of `run-cli-json.ts` and `cli-json-kit.ts`, and `scripts/spawn-chokepoint.test.ts`
+ * fails any other shipped file that imports a module able to start a process, in any import form,
+ * or refers to the `Bun` global at all. That is what makes a rule enforced here hold for every
+ * connector: today, `windows-batch-args.ts`'s refusal of an argument cmd.exe would act on, when the
+ * program may start a Windows batch file. Both implementations build the child's environment once
+ * and hand the SAME object to that check and to the spawn, so the environment that was checked is
+ * the one the child gets.
+ */
+
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { batchArgumentRefusal } from "./windows-batch-args.ts";
 
 export type SpawnResult = { code: number; stdout: string; stderr: string };
+
+/**
+ * The child's environment for `env`, and why `command` must not be spawned with it, if it must
+ * not. Nothing is spawned for a refused command: it resolves as a failure whose stderr says so.
+ */
+function prepareSpawn(
+  command: readonly string[],
+  env: Record<string, string | undefined>,
+): { childEnv: Record<string, string | undefined>; refusal: SpawnResult | undefined } {
+  const childEnv = { ...process.env, ...env };
+  const refusal = batchArgumentRefusal(command, childEnv);
+  return {
+    childEnv,
+    refusal: refusal === undefined ? undefined : { code: 1, stdout: "", stderr: refusal },
+  };
+}
+
+/**
+ * Collect a child's output and resolve with it once the child closes or fails to start.
+ *
+ * Output is accumulated as raw `Buffer`s and decoded ONCE at the end. Decoding each chunk with
+ * `chunk.toString("utf8")` corrupts any multi-byte character that straddles a chunk boundary, and
+ * chunk boundaries are a function of pipe timing — so it fails intermittently, on non-ASCII data,
+ * in production.
+ */
+function collectOutput(
+  child: ChildProcessWithoutNullStreams,
+  resolveP: (result: SpawnResult) => void,
+): void {
+  const outChunks: Buffer[] = [];
+  const errChunks: Buffer[] = [];
+  child.stdout.on("data", (c: Buffer) => {
+    outChunks.push(c);
+  });
+  child.stderr.on("data", (c: Buffer) => {
+    errChunks.push(c);
+  });
+  const decode = (): { stdout: string; stderr: string } => ({
+    stdout: Buffer.concat(outChunks).toString("utf8"),
+    stderr: Buffer.concat(errChunks).toString("utf8"),
+  });
+  child.on("error", (e: Error) => {
+    const d = decode();
+    resolveP({ code: 1, stdout: d.stdout, stderr: `${d.stderr}${e.message}` });
+  });
+  child.on("close", (code: number | null) => {
+    resolveP({ code: code ?? 1, ...decode() });
+  });
+}
 
 /**
  * Node implementation. Exported so it can be tested directly: the suite runs under Bun, so
@@ -15,11 +78,6 @@ export type SpawnResult = { code: number; stdout: string; stderr: string };
  *    `Bun.spawn` path reads stdout uncapped, and `aws logs` / `gcloud logging` JSON routinely
  *    exceeds 1 MB, so `execFile` would be a silent-truncation regression dressed up as a
  *    portability fix.
- *
- * Output is accumulated as raw `Buffer`s and decoded ONCE at the end. Decoding each chunk with
- * `chunk.toString("utf8")` corrupts any multi-byte character that straddles a chunk boundary, and
- * chunk boundaries are a function of pipe timing — so it fails intermittently, on non-ASCII data,
- * in production.
  */
 export function spawnViaNode(
   command: readonly string[],
@@ -29,27 +87,20 @@ export function spawnViaNode(
   if (bin === undefined) {
     return Promise.resolve({ code: 1, stdout: "", stderr: "empty command" });
   }
+  const { childEnv, refusal } = prepareSpawn(command, env);
+  if (refusal !== undefined) {
+    return Promise.resolve(refusal);
+  }
   return new Promise((resolveP) => {
-    const child = spawn(bin, args, { env: { ...process.env, ...env } });
-    const outChunks: Buffer[] = [];
-    const errChunks: Buffer[] = [];
-    child.stdout.on("data", (c: Buffer) => {
-      outChunks.push(c);
-    });
-    child.stderr.on("data", (c: Buffer) => {
-      errChunks.push(c);
-    });
-    const decode = (): { stdout: string; stderr: string } => ({
-      stdout: Buffer.concat(outChunks).toString("utf8"),
-      stderr: Buffer.concat(errChunks).toString("utf8"),
-    });
-    child.on("error", (e: Error) => {
-      const d = decode();
-      resolveP({ code: 1, stdout: d.stdout, stderr: `${d.stderr}${e.message}` });
-    });
-    child.on("close", (code: number | null) => {
-      resolveP({ code: code ?? 1, ...decode() });
-    });
+    // `spawn` THROWS, rather than emitting "error", for a command it cannot start at all: an
+    // argument holding a NUL byte, or — on Node, though not in Bun's `node:child_process` — a
+    // `.cmd` or `.bat` without a shell, which Node refuses with EINVAL. Uncaught, the throw would
+    // REJECT this promise, against the contract both implementations keep.
+    try {
+      collectOutput(spawn(bin, args, { env: childEnv }), resolveP);
+    } catch (e) {
+      resolveP({ code: 1, stdout: "", stderr: e instanceof Error ? e.message : String(e) });
+    }
   });
 }
 
@@ -61,12 +112,16 @@ export async function spawnViaBun(
   if (command.length === 0) {
     return { code: 1, stdout: "", stderr: "empty command" };
   }
+  const { childEnv, refusal } = prepareSpawn(command, env);
+  if (refusal !== undefined) {
+    return refusal;
+  }
   // `Bun.spawn` THROWS synchronously when the binary does not exist, where `child_process` emits
   // an "error" event instead. Both branches must honour the same contract — resolve with a
   // non-zero code, never reject — or a caller's behaviour would depend on the runtime.
   try {
     const proc = Bun.spawn([...command], {
-      env: { ...process.env, ...env },
+      env: childEnv,
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -119,6 +174,8 @@ export function selectSpawnImpl(g: unknown = globalThis): SpawnImpl {
  * routing unconditionally through Node made it spawn a real `aws` and hang the suite.
  *
  * Never rejects: a spawn failure resolves with a non-zero code, matching the previous behaviour.
+ * So does a REFUSED spawn — on Windows, an argument cmd.exe would act on, for a program that may
+ * start a batch file — whose stderr says why and that nothing was run.
  */
 export function nimbusSpawn(
   command: readonly string[],

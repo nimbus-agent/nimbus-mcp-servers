@@ -3,6 +3,7 @@ import {
   type CapturedTools,
   captureTools,
   type RecordedSpawn,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
 } from "../../../scripts/connector-tool-harness.ts";
@@ -92,6 +93,41 @@ describe("gcp write tools", () => {
     );
     expect(commands(stub.calls)).toEqual([GET_CREDENTIALS]);
   });
+});
+
+describe("gcp refuses an argument that is not a plain value, before gcloud or kubectl runs", () => {
+  // The service and the cluster are positionals to gcloud, and the deployment one to kubectl: a
+  // value starting with "-" would be read as a flag. The values written as --flag=<value> cannot
+  // be read that way, and are held to the same rule.
+  const DASH = 'must not start with "-"';
+  const CASES: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    [
+      "gcp_cloud_run_deploy",
+      { ...DEPLOY, service: "--impersonate-service-account=attacker@example.com" },
+      DASH,
+    ],
+    ["gcp_gke_workload_restart", { ...RESTART, cluster: "--flags-file=/tmp/x" }, DASH],
+    [
+      "gcp_gke_workload_restart",
+      { ...RESTART, deployment: "--kubeconfig=/tmp/attacker-kubeconfig" },
+      DASH,
+    ],
+    ["gcp_gke_workload_restart", { ...RESTART, namespace: "--kubeconfig=/x" }, DASH],
+    [
+      "gcp_cloud_run_deploy",
+      { ...DEPLOY, image: "gcr.io/p1/api:2\nx" },
+      "must not contain control characters",
+    ],
+    ["gcp_cloud_run_service_list", { projectId: "-p1", region: "r1" }, DASH],
+  ];
+
+  for (const [tool, args, refusal] of CASES) {
+    it(`${tool} refuses ${JSON.stringify(args)}`, async () => {
+      const stub = cli({ stdout: "" });
+      await expect(tools.call(tool, args)).rejects.toThrow(refusalSaying(refusal));
+      expect(stub.calls).toEqual([]);
+    });
+  }
 });
 
 describe("gcp_cloud_run_service_list", () => {

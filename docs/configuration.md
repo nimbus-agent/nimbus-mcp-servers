@@ -46,7 +46,7 @@ reads `NIMBUS_MCP_GITHUB_WRITE_SCOPE` and `monte-carlo` reads `NIMBUS_MCP_MONTE_
 Do not derive it from a connector's tool names or action types — `monte-carlo`'s are
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
 
-## Two behaviours that look like bugs and are not
+## Three behaviours that look like bugs and are not
 
 **No write tools appear.** Your client does not advertise the MCP `elicitation` capability, so there
 is no way to obtain consent and the tools are not offered at all. Reads work normally. **On Claude
@@ -57,6 +57,17 @@ same connector version gains its write tools.
 scope is set under a name the connector does not read. An empty scope authorises nothing. The
 server prints a warning to stderr at startup saying exactly this, naming the variable it reads. An
 `argocd` scope carried over from 0.2.1 or earlier is this case: see [Upgrading](#upgrading).
+
+**On Windows, an `azure` or `gcp` call answers "refused to run … it may start a Windows batch
+file".** `az` and `gcloud` are batch files on Windows, and `cmd.exe` parses a batch file's arguments
+a second time, so an argument holding `% ! " & | < > ^ ( )` or a line break could run a command or
+expand an environment variable into it. The connector refuses such an argument instead, before
+anything runs. Resource names do not hold these characters: an Azure resource group may hold
+parentheses, but `az.cmd` could never take one, since a resource group has no space and so is never
+quoted. An Azure subscription given by a display name that holds one is refused — pass its id. The
+same applies to any CLI whose first match on `PATH` is a `.cmd` or `.bat`, such as a pip-installed
+`aws` v1 ahead of the v2 installer's `aws.exe`, where it refuses a CloudFormation template body;
+with the `aws.exe` first, nothing is refused.
 
 ## Optional dependencies
 

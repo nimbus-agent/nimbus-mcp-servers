@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
   withEnv,
@@ -105,12 +106,18 @@ describe("cloud_logging tools", () => {
     ]);
   });
 
-  it("get refuses a sink name that would be read as a gcloud flag, before spawning", async () => {
+  it("get refuses a sink name that would be read as a gcloud flag, at its schema", async () => {
     const stub = cli({ stdout: "{}" });
     await expect(
       tools.call("cloud_logging_get", { sinkName: "--impersonate-service-account=x" }),
-    ).rejects.toThrow('Invalid sinkName: must not start with "-"');
+    ).rejects.toThrow(refusalSaying('must not start with "-"'));
     expect(stub.calls).toEqual([]);
+    // Refused by the schema itself, so before a consent prompt or the handler could run.
+    const schema = tools.get("cloud_logging_get").schema as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    expect(schema.safeParse({ sinkName: "--impersonate-service-account=x" }).success).toBe(false);
+    expect(schema.safeParse({ sinkName: "audit-to-bq" }).success).toBe(true);
   });
 
   it("search matches sink names, filters and destinations, case-insensitively", async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
 } from "../../../scripts/connector-tool-harness.ts";
@@ -85,6 +86,39 @@ describe("azure write tools", () => {
     it(`${tool} throws az's exit code and stderr`, async () => {
       cli({ exitCode: 3, stderr: "AuthorizationFailed" });
       await expect(tools.call(tool, args)).rejects.toThrow("az exited 3: AuthorizationFailed");
+    });
+  }
+});
+
+describe("azure refuses a value az would replace by a file, before az runs", () => {
+  // az replaces an argument that starts with @ by the contents of the file it names, with ~
+  // expanded and @- read from stdin, and does the same to whatever follows the first = in an
+  // argument. The file would reach Azure as the value, which a "not found" error can quote back.
+  const CASES: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    [
+      "azure_app_service_list",
+      { ...RG, resourceGroup: "@~/.azure/msal_token_cache.json" },
+      'must not start with "@"',
+    ],
+    ["azure_app_service_list", { ...RG, subscriptionId: "@-" }, 'must not start with "@"'],
+    ["azure_app_service_restart", { ...RG, name: "web=@/etc/hosts" }, 'must not contain "=@"'],
+    [
+      "azure_aks_node_pool_scale",
+      { ...RG, clusterName: "aks", poolName: "--debug", nodeCount: 1 },
+      'must not start with "-"',
+    ],
+    [
+      "azure_app_service_restart",
+      { ...RG, name: "web\nweb2" },
+      "must not contain control characters",
+    ],
+  ];
+
+  for (const [tool, args, refusal] of CASES) {
+    it(`${tool} refuses ${JSON.stringify(args)}`, async () => {
+      const stub = cli({ stdout: "" });
+      await expect(tools.call(tool, args)).rejects.toThrow(refusalSaying(refusal));
+      expect(stub.calls).toEqual([]);
     });
   }
 });

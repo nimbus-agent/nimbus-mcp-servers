@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { awsCliArg } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
@@ -66,7 +67,7 @@ export function registerAwsTools(
   reg(
     "aws_ecs_service_list",
     "List ECS services in a cluster.",
-    z.object({ cluster: z.string().min(1) }),
+    z.object({ cluster: awsCliArg }),
     async (p) => jsonResult(await awsJson(["ecs", "list-services", "--cluster", p.cluster])),
   );
 
@@ -83,9 +84,9 @@ export function registerAwsTools(
     },
     "Update ECS service (e.g. new task definition).",
     z.object({
-      cluster: z.string().min(1),
-      service: z.string().min(1),
-      taskDefinition: z.string().min(1),
+      cluster: awsCliArg,
+      service: awsCliArg,
+      taskDefinition: awsCliArg,
     }),
     async (p) => {
       const cmd = [
@@ -114,7 +115,8 @@ export function registerAwsTools(
     },
     "Invoke a Lambda function.",
     z.object({
-      functionName: z.string().min(1),
+      functionName: awsCliArg,
+      // Written to a temp file the CLI is pointed at with file://, never passed as an argument.
       payloadJson: z.string().optional(),
     }),
     async (p) => {
@@ -167,7 +169,7 @@ export function registerAwsTools(
       scopeTargetOf: (p) => ({ kind: "instance", value: p.instanceIds }),
     },
     "Stop EC2 instances.",
-    z.object({ instanceIds: z.string().min(1) }),
+    z.object({ instanceIds: awsCliArg }),
     async (p) => {
       await runCliOkThrowing(
         ["aws", "ec2", "stop-instances", "--instance-ids", p.instanceIds],
@@ -185,7 +187,7 @@ export function registerAwsTools(
       scopeTargetOf: (p) => ({ kind: "instance", value: p.instanceIds }),
     },
     "Start EC2 instances.",
-    z.object({ instanceIds: z.string().min(1) }),
+    z.object({ instanceIds: awsCliArg }),
     async (p) => {
       await runCliOkThrowing(
         ["aws", "ec2", "start-instances", "--instance-ids", p.instanceIds],

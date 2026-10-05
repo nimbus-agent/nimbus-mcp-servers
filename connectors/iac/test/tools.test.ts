@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   type CapturedTools,
   captureStandaloneTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
   withEnv,
@@ -81,8 +82,46 @@ const CASES: readonly {
   },
 ];
 
+/**
+ * PATH pointed at `dir()` for every test in a block, so the machine running it cannot decide the
+ * outcome. A CloudFormation template body is full of quotes, and on Windows `nimbusSpawn` refuses
+ * one whenever the `aws` found first on PATH is a batch file — a pip-installed v1.
+ */
+function pinPath(dir: () => string): void {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env["PATH"];
+    process.env["PATH"] = dir();
+  });
+  afterEach(() => {
+    if (saved === undefined) {
+      delete process.env["PATH"];
+    } else {
+      process.env["PATH"] = saved;
+    }
+  });
+}
+
+/** A fresh directory for a block's tests, holding `files`, removed after them. */
+function tempDirectoryHolding(files: Record<string, string>): () => string {
+  let dir = "";
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "nimbus-iac-path-"));
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(dir, name), content);
+    }
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return () => dir;
+}
+
 describe("iac tools (gateway mode)", () => {
   let tools: CapturedTools;
+
+  // An empty PATH: whether aws is a batch file on this machine is the Windows block's subject below.
+  pinPath(tempDirectoryHolding({}));
 
   beforeEach(() => {
     setConnectorMode("gateway");
@@ -133,7 +172,89 @@ describe("iac tools (gateway mode)", () => {
     );
     expect(stub.calls).toEqual([]);
   });
+
+  // A working directory starting with "-" would reach terraform or pulumi as a flag, and a stack
+  // name or template body starting with file:// would make aws read that file as the value.
+  const REFUSED: readonly (readonly [string, Record<string, unknown>, string])[] = [
+    ["iac_terraform_plan", { workingDirectory: "-help" }, 'must not start with "-"'],
+    ["iac_pulumi_preview", { workingDirectory: "--stack=prod" }, 'must not start with "-"'],
+    [
+      "iac_pulumi_up",
+      { workingDirectory: "stacks/web\n--yes" },
+      "must not contain control characters",
+    ],
+    [
+      "iac_cloudformation_deploy",
+      { stackName: "file:///etc/hosts", templateBody: "{}" },
+      'must not start with "file://"',
+    ],
+    [
+      "iac_cloudformation_deploy",
+      { stackName: "web", templateBody: "file:///etc/passwd" },
+      'must not start with "file://"',
+    ],
+    [
+      "iac_cloudformation_deploy",
+      { stackName: "web", templateBody: "--debug" },
+      'must not start with "-"',
+    ],
+  ];
+
+  for (const [tool, args, refusal] of REFUSED) {
+    it(`${tool} refuses ${JSON.stringify(args)} before running anything`, async () => {
+      const stub = cli({ stdout: "" });
+      await expect(tools.call(tool, args)).rejects.toThrow(refusalSaying(refusal));
+      expect(stub.calls).toEqual([]);
+    });
+  }
+
+  it("still passes a template body that spans lines and runs past 1024 characters", async () => {
+    // A template is a document, not a name: the argument rules about length and control
+    // characters would make every real one impossible to pass.
+    const templateBody = `AWSTemplateFormatVersion: "2010-09-09"\nDescription: ${"x".repeat(1100)}\nResources: {}\n`;
+    const stub = cli({ stdout: "" });
+    expect(
+      await tools.callJson("iac_cloudformation_deploy", { stackName: "web", templateBody }),
+    ).toEqual({ ok: true });
+    expect(stub.calls[0]?.command[6]).toBe(templateBody);
+  });
 });
+
+describe.skipIf(process.platform !== "win32")(
+  "iac when the aws first on PATH is a batch file (skipped off Windows: only there does cmd.exe parse a batch file's arguments again)",
+  () => {
+    let tools: CapturedTools;
+
+    // The aws.cmd a pip-installed AWS CLI v1 puts on PATH. It never runs — the spawn is stubbed —
+    // so what this shows is the refusal in front of it.
+    pinPath(tempDirectoryHolding({ "aws.cmd": "@echo off\r\nexit /b 97\r\n" }));
+
+    beforeEach(() => {
+      setConnectorMode("gateway");
+      tools = captureTools(registerIacTools);
+    });
+
+    it("passes a template body cmd.exe takes as written, and refuses one it would act on", async () => {
+      const stub = cli({ stdout: "" });
+      // The benign body first, through the same batch file: so the refusal after it is about the
+      // characters, and not about aws being a batch file at all.
+      expect(
+        await tools.callJson("iac_cloudformation_deploy", {
+          stackName: "web",
+          templateBody: "Resources: {}",
+        }),
+      ).toEqual({ ok: true });
+      expect(stub.calls).toHaveLength(1);
+      await expect(
+        tools.call("iac_cloudformation_deploy", {
+          stackName: "web",
+          templateBody: '{"Resources":{}}',
+        }),
+      ).rejects.toThrow('refused to run "aws": it may start a Windows batch file');
+      expect(stub.calls).toHaveLength(1);
+    });
+  },
+);
 
 describe("iac write scope (standalone mode)", () => {
   let auditDir: string;

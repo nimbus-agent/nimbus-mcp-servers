@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { assertSafeCliArg, isSafeCliArg } from "./safe-cli-arg.ts";
+import {
+  AWS_CLI_LOADING_PREFIXES,
+  assertSafeCliArg,
+  awsCliArgProblem,
+  awsCliDocumentProblem,
+  azCliArgProblem,
+  cliArgProblem,
+  isSafeCliArg,
+} from "./safe-cli-arg.ts";
 
 const NUL = String.fromCharCode(0);
 const UNIT_SEP = String.fromCharCode(0x1f); // the last control character
@@ -131,5 +139,132 @@ describe("isSafeCliArg — the non-throwing predicate form", () => {
       }
       expect(isSafeCliArg(v)).toBe(asserted);
     }
+  });
+});
+
+describe("cliArgProblem — the reason behind both forms", () => {
+  test("is exactly what assertSafeCliArg throws, after its label", () => {
+    for (const v of ["", "-x", `a${LF}b`, "a".repeat(1025)]) {
+      expect(() => assertSafeCliArg(v, "name")).toThrow(`Invalid name: ${cliArgProblem(v)}`);
+    }
+  });
+
+  test("is undefined for a value both forms accept", () => {
+    expect(cliArgProblem("my-sink-1")).toBeUndefined();
+  });
+});
+
+/**
+ * The AWS CLI does not take every argument as written: it REPLACES a value that starts with
+ * `file://` or `fileb://` by that local file's contents, and v1 does the same for an `http(s)://`
+ * URL, before sending it to AWS. An error naming the value it rejects can then quote it back — to
+ * a model, in this package — so a tool argument could read any file the user can.
+ */
+describe("awsCliArgProblem", () => {
+  test("accepts what aws resource values look like", () => {
+    for (const v of [
+      "my-cluster",
+      "arn:aws:lambda:us-east-1:123456789012:function:fn",
+      "api:7",
+      "i-1 i-2",
+      "/aws/lambda/my-fn",
+      "user@example.com",
+      "files://not-a-prefix",
+      "my-file://suffix",
+    ]) {
+      expect({ v, problem: awsCliArgProblem(v) }).toEqual({ v, problem: undefined });
+    }
+  });
+
+  test("refuses every loading prefix, in any case and after leading whitespace", () => {
+    for (const prefix of AWS_CLI_LOADING_PREFIXES) {
+      const expected = `must not start with "${prefix}" (the aws CLI would read the value from that location)`;
+      expect(awsCliArgProblem(`${prefix}x`)).toBe(expected);
+      expect(awsCliArgProblem(`${prefix.toUpperCase()}x`)).toBe(expected);
+      expect(awsCliArgProblem(`  ${prefix}x`)).toBe(expected);
+    }
+    expect(AWS_CLI_LOADING_PREFIXES).toEqual(["file://", "fileb://", "http://", "https://"]);
+  });
+
+  test("refuses the shorthand file-load operator @= anywhere", () => {
+    for (const v of ["Body@=file:///etc/hosts", "Key=a,Body@=x"]) {
+      expect(awsCliArgProblem(v)).toBe(
+        'must not contain "@=" (aws shorthand syntax would read a file into the value)',
+      );
+    }
+  });
+
+  test("applies the universal rule first", () => {
+    expect(awsCliArgProblem("-x")).toBe(cliArgProblem("-x"));
+    expect(awsCliArgProblem(`file://a${LF}b`)).toBe("must not contain control characters");
+    expect(awsCliArgProblem(42)).toBe("must be a non-empty string");
+    expect(awsCliArgProblem("")).toBe("must be a non-empty string");
+  });
+});
+
+describe("awsCliDocumentProblem — a template body, not a name", () => {
+  test("accepts a document that spans lines and runs past 1024 characters", () => {
+    const doc = `Resources:${LF}  Bucket:${LF}    Type: AWS::S3::Bucket${LF}# ${"x".repeat(2000)}`;
+    expect(awsCliDocumentProblem(doc)).toBeUndefined();
+    expect(awsCliDocumentProblem('{"Resources":{}}')).toBeUndefined();
+    // Shorthand syntax applies to structure parameters, and a template body is a string.
+    expect(awsCliDocumentProblem("Description: a@=b")).toBeUndefined();
+  });
+
+  test("refuses a leading dash and a loading prefix", () => {
+    expect(awsCliDocumentProblem("---")).toBe(cliArgProblem("-x"));
+    expect(awsCliDocumentProblem("file:///etc/passwd")).toBe(awsCliArgProblem("file:///x"));
+    expect(awsCliDocumentProblem(" https://example.invalid/t.yaml")).toBe(
+      awsCliArgProblem("https://x"),
+    );
+  });
+
+  test("refuses an empty or non-string value", () => {
+    expect(awsCliDocumentProblem("")).toBe("must be a non-empty string");
+    expect(awsCliDocumentProblem(undefined)).toBe("must be a non-empty string");
+  });
+});
+
+/**
+ * `az` replaces an argument that starts with `@` by the contents of the file named after it — `~`
+ * expanded, `@-` read from stdin — and does the same to what follows the first `=` of an argument.
+ */
+describe("azCliArgProblem", () => {
+  test("accepts what azure resource values look like, an @ in the middle included", () => {
+    for (const v of [
+      "rg-1",
+      "my_app",
+      "00000000-0000-4000-8000-000000000000",
+      "user@example.com",
+    ]) {
+      expect({ v, problem: azCliArgProblem(v) }).toEqual({ v, problem: undefined });
+    }
+    // `@=` is the aws operator, not az's: no = comes before the @.
+    expect(azCliArgProblem("a@=b")).toBeUndefined();
+    expect(azCliArgProblem("a=b")).toBeUndefined();
+  });
+
+  test("refuses a leading @, the stdin form included", () => {
+    for (const v of ["@/etc/hosts", "@~/.azure/msal_token_cache.json", "@-"]) {
+      expect(azCliArgProblem(v)).toBe(
+        'must not start with "@" (az would read the value from a file)',
+      );
+    }
+  });
+
+  test("refuses =@, after the first = or a later one, and at the very start", () => {
+    // az splits an argument at its first =, so a value that starts with =@ is = followed by the
+    // file's contents, and =@- by stdin's.
+    for (const v of ["name=@/etc/hosts", "a=b=@c", "=@/etc/hosts", "=@-"]) {
+      expect(azCliArgProblem(v)).toBe(
+        'must not contain "=@" (az would read what follows from a file)',
+      );
+    }
+  });
+
+  test("applies the universal rule first", () => {
+    expect(azCliArgProblem("-x")).toBe(cliArgProblem("-x"));
+    expect(azCliArgProblem(`@a${LF}`)).toBe("must not contain control characters");
+    expect(azCliArgProblem(null)).toBe("must be a non-empty string");
   });
 });

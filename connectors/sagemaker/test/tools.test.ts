@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
 } from "../../../scripts/connector-tool-harness.ts";
@@ -88,6 +89,17 @@ describe("sagemaker tools", () => {
     await expect(
       tools.call("sagemaker_get", { modelName: "--endpoint-url=https://evil.example" }),
     ).rejects.toThrow(/"modelName"[\s\S]*must not start with/);
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("refuses a value the CLI would read from a local file or a URL, before spawning", async () => {
+    const stub = cli({ stdout: "{}" });
+    await expect(tools.call("sagemaker_get", { modelName: "file:///etc/passwd" })).rejects.toThrow(
+      refusalSaying('must not start with "file://"'),
+    );
+    await expect(
+      tools.call("sagemaker_list", { nameContains: "http://169.254.169.254/latest/meta-data/" }),
+    ).rejects.toThrow(refusalSaying('must not start with "http://"'));
     expect(stub.calls).toEqual([]);
   });
 

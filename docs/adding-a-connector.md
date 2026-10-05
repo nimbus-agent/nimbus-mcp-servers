@@ -73,8 +73,19 @@ Before writing the plumbing, check whether a kit already owns it:
 | --- | --- |
 | GETs JSON from one base URL with a token from the environment | `shared/env-json-api.ts` — `createJsonGetter` + `envAuthHeaders` |
 | exposes the plain `list` / `get` / `search` triple over one collection | `shared/collection-tool-kit.ts` — `registerCollectionTools` |
-| spawns a cloud CLI and parses its JSON | `shared/cli-json-kit.ts` — `createCliJsonRunner`, and `cliArg` for every value that reaches argv |
+| spawns a cloud CLI and parses its JSON | `shared/cli-json-kit.ts` — `createCliJsonRunner`, and an argument schema for every value that reaches argv |
 | speaks IMAP/SMTP | `shared/imapflow-adapter.ts` — `createImapFlowClient`, `createNodemailerMailer` |
+
+A connector that drives a CLI spawns it only through `shared/nimbus-spawn.ts` — `nimbusSpawn`,
+`run-cli-json.ts` or `createCliJsonRunner` — and gives every caller-supplied value that reaches
+the CLI one of `cli-json-kit.ts`'s schemas: `awsCliArg` for `aws`, `azCliArg` for `az`, `cliArg`
+for any other CLI, and `awsCliDocument` for a document handed to `aws` whole — in the tool's
+schema, not in its handler, so the refusal comes before a consent prompt.
+`scripts/spawn-chokepoint.test.ts` fails a connector that spawns any other way — that imports
+`child_process`, `cluster`, `bun` or `bun:ffi` in any form, or touches the `Bun` global — and
+`scripts/cli-argument-guards.test.ts` calls every tool of every connector whose imports reach
+`nimbus-spawn.ts`, however indirectly, and fails an argument whose schema lets a value its CLI
+would misread through. So a new CLI connector is held to both the day it lands.
 
 Export the registered names as `<CONNECTOR>_TOOL_NAMES`. `bun run audit:tool-names` fails if that
 export drifts from what the connector actually registers; `bun run sync:tool-names` rewrites it.

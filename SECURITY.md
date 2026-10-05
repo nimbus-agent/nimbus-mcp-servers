@@ -28,8 +28,25 @@ The properties this package claims, and therefore the ones a report can be filed
   that rule, is a vulnerability.
 - **Credential handling.** Credentials come from the environment and must never appear in a tool
   result, a log line, or an error message.
-- **Argument handling.** A connector that shells out must not let a tool argument smuggle a flag or
-  escape into the command — see `shared/safe-cli-arg.ts`.
+- **Argument handling.** A connector that drives a CLI spawns it with an argv array and no shell,
+  and a tool argument must reach the CLI as the value it was meant to be. Three rules make that
+  hold, each enforced before anything runs:
+  - a value starting with `-` is refused, since the CLI would read it as a flag: a pod named
+    `--kubeconfig=<path>` would load that kubeconfig, whose exec credential plugin runs a command;
+  - a value the CLI would replace by reading something else is refused — `file://`, `fileb://`,
+    `http://`, `https://` or the shorthand operator `@=` for `aws`, a leading `@` or `=@` for `az` —
+    since what it read would be sent to the cloud API, and an error could quote it back;
+  - on Windows, where `az` and `gcloud` are batch files that `cmd.exe` parses a second time, the
+    spawn itself refuses an argument holding `% ! " & | < > ^ ( )` or a control character whenever
+    the program may be a `.cmd` or `.bat` — judged by the file its name resolves to first on
+    `PATH`, looked up as the runtime looks it up — since those would run a second command or
+    expand an environment variable into the argument.
+
+  The first two are the argument schemas in `shared/cli-json-kit.ts`, from the rules in
+  `shared/safe-cli-arg.ts`, and every caller-supplied value that reaches a CLI passes one of them;
+  the third is `shared/windows-batch-args.ts`, applied by `shared/nimbus-spawn.ts`, the only file
+  that starts a process. A tool argument that reaches a CLI past them, or a process started
+  anywhere else, is a vulnerability.
 
 ## What is NOT in scope
 

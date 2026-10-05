@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
   captureTools,
+  refusalSaying,
   type SpawnStub,
   stubSpawn,
 } from "../../../scripts/connector-tool-harness.ts";
@@ -118,6 +119,23 @@ describe("athena_get", () => {
       tools.call("athena_get", { catalog: "--profile", database: "d", table: "t" }),
     ).rejects.toThrow();
     expect(spawn?.calls).toHaveLength(0);
+  });
+
+  it("rejects a name the CLI would read from a local file or a URL instead", async () => {
+    // The AWS CLI replaces file://<path> by that file's contents and sends them to Athena as the
+    // name, and an error naming the value can quote them back.
+    for (const [args, refusal] of [
+      [{ catalog: "file:///etc/passwd", database: "d", table: "t" }, "file://"],
+      [{ catalog: "c", database: "fileb://C:/Users/me/.aws/credentials", table: "t" }, "fileb://"],
+      [{ catalog: "c", database: "d", table: "https://example.invalid/t" }, "https://"],
+    ] as const) {
+      cli({});
+      await expect(tools.call("athena_get", args)).rejects.toThrow(
+        refusalSaying(`must not start with "${refusal}"`),
+      );
+      expect(spawn?.calls).toHaveLength(0);
+      spawn?.restore();
+    }
   });
 });
 
