@@ -82,6 +82,11 @@ function refused(why: string): McpListResult {
   return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: why }) }] };
 }
 
+/** The message of whatever was thrown, which need not be an `Error`. */
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 /**
  * Ask the human, through the client, and report whether they said yes.
  *
@@ -329,7 +334,7 @@ export function createWriteToolRegistrar(
         try {
           preState = await toolCfg.capturePreState(args);
         } catch (e) {
-          preState = { captureFailed: e instanceof Error ? e.message : String(e) };
+          preState = { captureFailed: messageOf(e) };
         }
       }
 
@@ -338,11 +343,7 @@ export function createWriteToolRegistrar(
       try {
         result = await handler(args);
       } catch (e) {
-        await record(name, "failed", {
-          target,
-          preState,
-          error: e instanceof Error ? e.message : String(e),
-        });
+        await record(name, "failed", { target, preState, error: messageOf(e) });
         throw e;
       }
       // Outside the `try`: the mutation has happened, so a failure to RECORD it must not be
@@ -351,11 +352,9 @@ export function createWriteToolRegistrar(
       try {
         await record(name, "executed", { target, preState });
       } catch (e) {
-        throw new Error(
-          `${name} ran, but recording that it ran failed: ` +
-            `${e instanceof Error ? e.message : String(e)}`,
-          { cause: e },
-        );
+        throw new Error(`${name} ran, but recording that it ran failed: ${messageOf(e)}`, {
+          cause: e,
+        });
       }
       return result;
     };
