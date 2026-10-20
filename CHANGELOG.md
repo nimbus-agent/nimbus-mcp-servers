@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.4...connectors-v0.3.0) (2026-10-20)
+
+
+### Features
+
+* **readwise:** self-contained extension package with sync ([#59](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/59)) ([fcbc6a5](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/fcbc6a5d6bf9f4590cd39a4350d183b72506ebd1))
+
 ## [0.2.4](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.2.3...connectors-v0.2.4) (2026-10-05)
 
 
