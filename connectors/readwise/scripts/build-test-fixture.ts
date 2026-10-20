@@ -14,7 +14,7 @@
  */
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 // NOSONAR S1874: deprecated with no shipped replacement; `signManifest` IS the contract the
 // gateway verifies (flat `publisher.key` + `signature`), as in the Nimbus CLI's signing seam.
@@ -57,7 +57,10 @@ export function parseBaseUrl(raw: string): URL {
  * Loopback with a port (`127.0.0.1:4010`) is a valid RFC 1123 host plus port, so it is accepted.
  */
 export function networkEntry(url: URL): string {
-  const port = url.port !== "" ? url.port : url.protocol === "https:" ? "443" : "80";
+  let port = url.port;
+  if (port === "") {
+    port = url.protocol === "https:" ? "443" : "80";
+  }
   return port === "443" ? url.hostname : `${url.hostname}:${port}`;
 }
 
@@ -105,7 +108,8 @@ function canonicalPath(p: string): string {
 function isSameOrInside(a: string, b: string): boolean {
   const fold = (x: string): string => (process.platform === "win32" ? x.toLowerCase() : x);
   const rel = relative(fold(b), fold(a));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  const escapes = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  return rel === "" || !escapes;
 }
 
 /**

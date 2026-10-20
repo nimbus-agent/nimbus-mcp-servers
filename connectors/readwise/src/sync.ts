@@ -96,7 +96,7 @@ function isStream(v: unknown): v is ReadwiseStream {
  * (so no two spellings name one position).
  */
 export function decodeReadwiseCursor(raw: string | null): ReadwiseCursorPosition | null {
-  if (raw === null || !raw.startsWith(CURSOR_PREFIX)) {
+  if (!raw?.startsWith(CURSOR_PREFIX)) {
     return null;
   }
   let payload: unknown;

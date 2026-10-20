@@ -17,10 +17,12 @@ export const DEFAULT_OUT_FILE = join(CONNECTOR_DIR, "dist", "server.js");
 export async function buildExtension(
   outFile: string = DEFAULT_OUT_FILE,
   plugins: Bun.BunPlugin[] = [],
+  external: readonly string[] = [],
 ): Promise<void> {
   const result = await Bun.build({
     entrypoints: [EXTENSION_ENTRY],
     target: "bun",
+    external: [...external],
     outdir: dirname(outFile),
     naming: basename(outFile),
     plugins,

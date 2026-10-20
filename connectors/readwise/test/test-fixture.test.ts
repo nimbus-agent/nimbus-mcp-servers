@@ -246,6 +246,16 @@ describe("fixture --out guard", () => {
     }
   }, 60_000);
 
+  it("refuses a child literally named ..foo: it is inside the connector, not above it", async () => {
+    const before = readFileSync(MANIFEST);
+    const child = join(CONNECTOR_DIR, "..foo");
+    const { code, err } = await runOut(child);
+    expect(code).not.toBe(0);
+    expect(err).toContain("--out must not be");
+    expect(existsSync(child)).toBe(false);
+    expect(readFileSync(MANIFEST).equals(before)).toBe(true);
+  }, 60_000);
+
   it("refuses a directory that contains the connector", async () => {
     const before = readFileSync(MANIFEST);
     const { code, err } = await runOut(join(CONNECTOR_DIR, "..", ".."));
