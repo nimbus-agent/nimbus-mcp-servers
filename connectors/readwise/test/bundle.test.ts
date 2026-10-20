@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { SYNC_TOOL_NAME } from "@nimbus-dev/sdk/sync";
 import { READWISE_TOOL_NAMES } from "../src/tools.ts";
 
 const CONNECTOR_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -105,8 +106,9 @@ describe("readwise extension bundle", () => {
     expect(foreign.some((s) => s.startsWith("@modelcontextprotocol/sdk"))).toBe(true);
   }, 60_000);
 
-  it("runs alone and answers tools/list with exactly the read tools", async () => {
-    const env: Record<string, string> = { READWISE_TOKEN: "x" };
+  it("runs alone: tools/list is the read tools plus __nimbus_sync, which answers offline", async () => {
+    // Blank, so the sync tool must answer `unauthenticated` without touching the network.
+    const env: Record<string, string> = { READWISE_TOKEN: "   " };
     for (const key of ["SystemRoot", "PATH", "Path", "TEMP", "TMP", "HOME", "USERPROFILE"]) {
       const v = process.env[key];
       if (v !== undefined) {
@@ -124,7 +126,17 @@ describe("readwise extension bundle", () => {
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual([...READWISE_TOOL_NAMES].sort());
+      expect(tools.map((t) => t.name).sort()).toEqual(
+        [...READWISE_TOOL_NAMES, SYNC_TOOL_NAME].sort(),
+      );
+      const result = await client.callTool({
+        name: SYNC_TOOL_NAME,
+        arguments: { cursor: null, depth: "full" },
+      });
+      const content = result.content as readonly { type: string; text?: string }[];
+      expect(content).toHaveLength(1);
+      expect(content[0]?.type).toBe("text");
+      expect(JSON.parse(content[0]?.text ?? "")).toEqual({ status: "unauthenticated" });
     } finally {
       await client.close().catch(() => undefined);
     }

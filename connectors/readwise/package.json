@@ -1,6 +1,6 @@
 {
   "name": "nimbus-mcp-readwise",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.0",
-    "@nimbus-dev/sdk": "^2.0.0",
+    "@nimbus-dev/sdk": "^2.1.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {

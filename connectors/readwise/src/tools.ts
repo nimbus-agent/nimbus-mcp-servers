@@ -6,15 +6,15 @@ import {
 } from "../../../shared/collection-tool-kit.ts";
 import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { READWISE_BASE } from "./readwise-base.ts";
 import { filterReadwiseBooks, filterReadwiseHighlights } from "./search-filter.ts";
 
-const BASE = "https://readwise.io";
 const HIGHLIGHTS = "/api/v2/highlights/?page_size=1000";
 const BOOKS = "/api/v2/books/?page_size=1000";
 
 /** Readwise authenticates with `Authorization: Token <key>`, not Bearer. */
 const readwiseGet = createJsonGetter({
-  base: BASE,
+  base: READWISE_BASE,
   label: "Readwise",
   headers: envAuthHeaders({ env: "READWISE_TOKEN", scheme: "Token" }),
 });

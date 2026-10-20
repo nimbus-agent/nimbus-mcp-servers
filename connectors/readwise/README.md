@@ -31,18 +31,23 @@ The `readwise.token` value is a Readwise **API token** (get one at
 is never logged.
 
 The Gateway injects `readwise.token` as `READWISE_TOKEN` at spawn time; the
-connector itself never touches the vault. The gateway-side syncable
-(`packages/gateway/src/connectors/readwise-sync.ts`) runs two independent walks
-over the same token — both use the DRF `{ count, next, previous, results }`
-envelope and increment `page` while `results` is non-empty and `next` is
-non-null (each capped at 20 pages):
+connector itself never touches the vault. Indexing runs two walks over the same
+token — both use the DRF `{ count, next, previous, results }` envelope and
+increment `page` while `results` is non-empty and `next` is non-null (each
+capped at 20 pages). The bundled connector's walk lives in the gateway
+(`packages/gateway/src/connectors/readwise-sync.ts`); the signed extension
+(`src/extension.ts`, built to `dist/server.js`) serves the same walk and the
+same mappers itself, one page per call of the reserved `__nimbus_sync` tool
+(`src/sync.ts`, `src/sync-tool.ts`). `src/server.ts` never registers that tool.
 
 | Walk | Endpoint | Item type | Metadata |
 | --- | --- | --- | --- |
 | highlights | `GET /api/v2/highlights/?page_size=1000&page=N` | `readwise:highlight` | `highlight_id`, `text`, `note`, `book_id`, `location`, `location_type`, `color`, `tags`, `source_url`, `highlighted_at`, `updated_at`, `canonical_url` |
 | books | `GET /api/v2/books/?page_size=1000&page=N` | `readwise:book` | `book_id`, `title`, `author`, `category`, `source`, `num_highlights`, `asin`, `tags`, `document_note`, `source_url`, `highlights_url`, `last_highlight_at`, `updated_at`, `canonical_url` |
 
-A failure in one walk degrades that walk only — the other still upserts.
+A failure in one walk degrades that walk only — the other still upserts. In the
+extension, an HTTP 429 answers `rate_limited` (with `Retry-After` in ms) and a
+401/403 answers `unauthenticated`; any other error ends the current walk.
 
 Notes:
 
