@@ -149,7 +149,7 @@ All run by CI on Ubuntu, macOS and Windows:
 | Command | What it establishes |
 | --- | --- |
 | `bun run lint` | Biome formatting and lint rules, including `noExplicitAny`. |
-| `bun run typecheck` | One `tsc` pass over all 94 connectors plus `shared/`, `standalone/` and `scripts/`. Test files (`*.test.ts`) are excluded, so no gate type-checks them. |
+| `bun run typecheck` | One `tsc` pass over all 94 connectors (their `src/` and any `scripts/`) plus `shared/`, `standalone/` and `scripts/`. Test files (`*.test.ts`) are excluded, so no gate type-checks them. |
 | `bun run audit:connector-consent` | No connector declares a mutating tool without routing it through the consent kit, and nothing outside `shared/connector-mode.ts` names the mode setter. |
 | `bun run audit:connector-deps` | No connector pulls in a dependency the bundled gateway binary cannot carry. |
 | `bun run audit:connector-entrypoints` | Every `server.ts` that guards its startup with `import.meta.main` exports `startConnector()`, so the bundled registry can start it. |

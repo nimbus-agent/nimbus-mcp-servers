@@ -68,7 +68,7 @@ value from a file), `imapflow-adapter.ts` (IMAP/SMTP). The full set is listed in
 | --- | --- |
 | `bun run check` | Every gate, in order. **Run this before pushing.** |
 | `bun run lint` / `lint:fix` | Biome. |
-| `bun run typecheck` | One `tsc` pass over the connector, `shared/`, `standalone/` and `scripts/` sources. Test files (`*.test.ts`) are excluded, so nothing type-checks them. |
+| `bun run typecheck` | One `tsc` pass over the connector (including a connector's own `scripts/`), `shared/`, `standalone/` and `scripts/` sources. Test files (`*.test.ts`) are excluded, so nothing type-checks them. |
 | `bun run audit:connector-consent` | The structural consent gate. |
 | `bun run audit:connector-deps` | Every runtime dependency is on the pure-JavaScript allow-list. |
 | `bun run audit:connector-entrypoints` | A `server.ts` guarded by `import.meta.main` exports `startConnector()`. |

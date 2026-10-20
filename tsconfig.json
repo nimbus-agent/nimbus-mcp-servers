@@ -3,6 +3,12 @@
   "compilerOptions": {
     "types": ["bun"]
   },
-  "include": ["connectors/*/src/**/*", "shared/**/*", "standalone/src/**/*", "scripts/**/*"],
+  "include": [
+    "connectors/*/src/**/*",
+    "connectors/*/scripts/**/*",
+    "shared/**/*",
+    "standalone/src/**/*",
+    "scripts/**/*"
+  ],
   "exclude": ["node_modules", "dist", "coverage", "**/*.test.ts"]
 }

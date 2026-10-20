@@ -14,7 +14,7 @@
  */
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // NOSONAR S1874: deprecated with no shipped replacement; `signManifest` IS the contract the
 // gateway verifies (flat `publisher.key` + `signature`), as in the Nimbus CLI's signing seam.
@@ -30,6 +30,7 @@ export const TEST_BASE_MARKERS = [
 export const TEST_PUBLISHER_ID = "nimbus-test";
 
 const CONNECTOR_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
+const READWISE_BASE_MODULE = join(CONNECTOR_DIR, "src", "readwise-base.ts");
 
 /** http(s) origin only: no path, query, fragment or credentials. Returns the normalised origin. */
 export function parseBaseUrl(raw: string): URL {
@@ -64,10 +65,16 @@ function baseSubstitutePlugin(origin: string): Bun.BunPlugin {
   return {
     name: TEST_BASE_MARKERS[1],
     setup(build) {
-      build.onLoad({ filter: /readwise-base\.ts$/ }, () => ({
-        contents: `export const ${TEST_BASE_MARKERS[0]} = true;\nexport const READWISE_BASE = ${JSON.stringify(origin)};\n`,
-        loader: "ts",
-      }));
+      // Anchored on a separator (either kind), then checked against the one resolved module path.
+      build.onLoad({ filter: /[\\/]readwise-base\.ts$/ }, (args) => {
+        if (resolve(args.path) !== resolve(READWISE_BASE_MODULE)) {
+          return undefined;
+        }
+        return {
+          contents: `export const ${TEST_BASE_MARKERS[0]} = true;\nexport const READWISE_BASE = ${JSON.stringify(origin)};\n`,
+          loader: "ts" as const,
+        };
+      });
     },
   };
 }
