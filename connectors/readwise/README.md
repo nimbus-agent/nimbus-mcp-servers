@@ -92,6 +92,20 @@ Tools exposed:
 All six tools are read-only; `hitlRequired` is intentionally empty. Documents,
 the daily-review feed, and the Reader v3 API are deferred follow-ups.
 
+## Fixed host, and the test fixture
+
+The production build hard-codes `https://readwise.io` (`src/readwise-base.ts`) and has no override:
+no environment variable, argument or config changes it. For gateway end-to-end tests only,
+`scripts/build-test-fixture.ts` produces a test-signed package that talks to another host:
+
+```
+bun connectors/readwise/scripts/build-test-fixture.ts --base-url http://127.0.0.1:4010 --out <dir>
+```
+
+It swaps that one module at build time, rewrites `permissions.network` to the given host, and signs
+the manifest with an ephemeral key (public half in `<dir>/test-publisher.pub`). The script is not
+published, and the production `dist/server.js` carries no trace of it.
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)

@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/",
     "test": "bun test",
-    "build:extension": "bun build src/extension.ts --target bun --outfile dist/server.js",
+    "build:extension": "bun scripts/build-extension.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
