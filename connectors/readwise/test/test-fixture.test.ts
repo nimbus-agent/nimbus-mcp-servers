@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -205,6 +205,63 @@ describe("fixture script argument validation", () => {
       "not a url",
     ]) {
       expect(await run(bad)).not.toBe(0);
+    }
+  }, 60_000);
+});
+
+describe("fixture --out guard", () => {
+  const MANIFEST = join(CONNECTOR_DIR, "nimbus.extension.json");
+
+  async function runOut(out: string): Promise<{ code: number; err: string }> {
+    const proc = Bun.spawn(
+      [process.execPath, FIXTURE_SCRIPT, "--base-url", "http://127.0.0.1:4010", "--out", out],
+      { cwd: CONNECTOR_DIR, stdout: "ignore", stderr: "pipe" },
+    );
+    const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+    return { code, err };
+  }
+
+  it("refuses the connector directory itself and leaves the manifest untouched", async () => {
+    const before = readFileSync(MANIFEST);
+    const { code, err } = await runOut(CONNECTOR_DIR);
+    expect(code).not.toBe(0);
+    expect(err).toContain("overwrite the checked-in nimbus.extension.json");
+    expect(readFileSync(MANIFEST).equals(before)).toBe(true);
+    expect(existsSync(join(CONNECTOR_DIR, "test-publisher.pub"))).toBe(false);
+  }, 60_000);
+
+  it("refuses a path inside the connector, however spelled", async () => {
+    const before = readFileSync(MANIFEST);
+    const inside = [
+      join(CONNECTOR_DIR, "dist"),
+      join(CONNECTOR_DIR, "src", "..", "dist"),
+      // Case-insensitive drive letter / path on Windows only.
+      ...(process.platform === "win32" ? [join(CONNECTOR_DIR, "DIST").toUpperCase()] : []),
+    ];
+    for (const out of inside) {
+      const { code, err } = await runOut(out);
+      expect(code).not.toBe(0);
+      expect(err).toContain("--out must not be");
+      expect(readFileSync(MANIFEST).equals(before)).toBe(true);
+    }
+  }, 60_000);
+
+  it("refuses a directory that contains the connector", async () => {
+    const before = readFileSync(MANIFEST);
+    const { code, err } = await runOut(join(CONNECTOR_DIR, "..", ".."));
+    expect(code).not.toBe(0);
+    expect(err).toContain("--out must not be");
+    expect(readFileSync(MANIFEST).equals(before)).toBe(true);
+  }, 60_000);
+
+  it("still builds into a separate temp directory", async () => {
+    const work = mkdtempSync(join(tmpdir(), "readwise-guard-ok-"));
+    try {
+      const { code } = await runOut(join(work, "pkg"));
+      expect(code).toBe(0);
+      expect(existsSync(join(work, "pkg", "nimbus.extension.json"))).toBe(true);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
     }
   }, 60_000);
 });

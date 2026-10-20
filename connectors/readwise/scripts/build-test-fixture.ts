@@ -13,8 +13,8 @@
  * written anywhere; the public key goes to `<out>/test-publisher.pub` for a consumer to pin.
  */
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // NOSONAR S1874: deprecated with no shipped replacement; `signManifest` IS the contract the
 // gateway verifies (flat `publisher.key` + `signature`), as in the Nimbus CLI's signing seam.
@@ -89,8 +89,46 @@ function generateKeypair(): { seed: Uint8Array; pubkey: Uint8Array } {
   };
 }
 
+/** Resolve through symlinks as far as the path exists, then append the not-yet-created tail. */
+function canonicalPath(p: string): string {
+  let existing = resolve(p);
+  const tail: string[] = [];
+  while (!existsSync(existing) && dirname(existing) !== existing) {
+    tail.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  const real = existsSync(existing) ? realpathSync.native(existing) : existing;
+  return resolve(real, ...tail);
+}
+
+/** `a` is `b` or lies inside `b`; case-insensitive on Windows, which has case-insensitive paths. */
+function isSameOrInside(a: string, b: string): boolean {
+  const fold = (x: string): string => (process.platform === "win32" ? x.toLowerCase() : x);
+  const rel = relative(fold(b), fold(a));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The fixture overwrites `nimbus.extension.json` and `dist/server.js` under `outDir`. Aimed at the
+ * connector directory, an ancestor of it, or anything inside it, that would replace the
+ * checked-in manifest with a test-signed loopback one and leave a test-base bundle in `dist/`
+ * where a publish step could ship it.
+ */
+export function assertSafeOutDir(outDir: string): void {
+  const out = canonicalPath(outDir);
+  const connector = canonicalPath(CONNECTOR_DIR);
+  if (isSameOrInside(out, connector) || isSameOrInside(connector, out)) {
+    throw new Error(
+      `--out must not be the Readwise connector directory, a directory containing it, or a path inside it (${outDir}): ` +
+        "the fixture would overwrite the checked-in nimbus.extension.json with a test-signed loopback manifest " +
+        "and leave a test-base dist/server.js where a publish step could ship it. Use a separate temp directory.",
+    );
+  }
+}
+
 export async function buildTestFixture(baseUrl: string, outDir: string): Promise<void> {
   const url = parseBaseUrl(baseUrl);
+  assertSafeOutDir(outDir);
   const origin = url.origin;
   mkdirSync(join(outDir, "dist"), { recursive: true });
   await buildExtension(join(outDir, "dist", "server.js"), [baseSubstitutePlugin(origin)]);
