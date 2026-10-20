@@ -1,10 +1,11 @@
 /**
  * The `__nimbus_sync` walk: one Readwise page per call, highlights then books, threaded by an
- * extension-owned cursor. Every response produced here goes through `respond()`, which asserts it
- * passes the SDK's `validateSyncResponse` and the gateway parser's extra rules, and that it never
- * carries the token; `afterAll` proves that check actually saw responses.
+ * extension-owned cursor. No response escapes validation: the only producers are `respond()` and the
+ * tool tests, and both pass every response through `check()`, which asserts it passes the SDK's
+ * `validateSyncResponse` and the gateway parser's extra rules, fits the size budget, and never
+ * carries the token. (A per-test helper, not a global count, so a filtered run still passes.)
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { SYNC_TOOL_NAME, type SyncResponse, validateSyncResponse } from "@nimbus-dev/sdk/sync";
 import type { McpListResult, ZodObjectSchema } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -13,8 +14,10 @@ import {
   encodeReadwiseCursor,
   READWISE_RESTING_CURSOR,
   READWISE_SYNC_MAX_PAGES,
+  READWISE_SYNC_RESPONSE_BUDGET_BYTES,
   type ReadwiseFetch,
   readwiseSyncPage,
+  syncResponseBytes,
 } from "../src/sync.ts";
 import { registerReadwiseSyncTool } from "../src/sync-tool.ts";
 
@@ -27,8 +30,6 @@ const META_MAX_BYTES = 65_536;
 const ITEM_TYPES = new Set(["highlight", "book"]);
 
 // ─── Every response is checked here ───────────────────────────────────────────
-
-let checkedResponses = 0;
 
 /** What the gateway's `parseSyncResponse` refuses or drops beyond the SDK's structural check. */
 function gatewayProblems(r: SyncResponse): string[] {
@@ -52,20 +53,26 @@ function gatewayProblems(r: SyncResponse): string[] {
   return problems;
 }
 
-function check(response: SyncResponse): SyncResponse {
+/**
+ * Every response's gate. Over `budget` is allowed only for a ONE-item response: the walk sends a
+ * single item even when it alone is over budget, so it always progresses.
+ */
+function check(
+  response: SyncResponse,
+  budget: number = READWISE_SYNC_RESPONSE_BUDGET_BYTES,
+): SyncResponse {
   const verdict = validateSyncResponse(JSON.parse(JSON.stringify(response)) as unknown);
   if (!verdict.ok) {
     throw new Error(`invalid sync response: ${verdict.reason}`);
   }
   expect(gatewayProblems(response)).toEqual([]);
   expect(JSON.stringify(response)).not.toContain(TOKEN);
-  checkedResponses += 1;
+  const singleItem = response.status === "ok" && response.items.length === 1;
+  if (!singleItem) {
+    expect(syncResponseBytes(response)).toBeLessThanOrEqual(budget);
+  }
   return response;
 }
-
-afterAll(() => {
-  expect(checkedResponses).toBeGreaterThan(30);
-});
 
 // ─── A fake Readwise behind an injected fetch ────────────────────────────────
 
@@ -122,9 +129,16 @@ async function respond(
   cursor: string | null,
   fake: { fetch: ReadwiseFetch },
   auth: { readonly token: string | undefined } = { token: TOKEN },
+  budgetBytes: number = READWISE_SYNC_RESPONSE_BUDGET_BYTES,
 ): Promise<SyncResponse> {
   return check(
-    await readwiseSyncPage(cursor, { token: auth.token, fetch: fake.fetch, now: () => NOW }),
+    await readwiseSyncPage(cursor, {
+      token: auth.token,
+      fetch: fake.fetch,
+      now: () => NOW,
+      budgetBytes,
+    }),
+    budgetBytes,
   );
 }
 
@@ -187,6 +201,12 @@ describe("cursor", () => {
     ["a string page", enc({ stream: "books", page: "2" })],
     ["a page past the cap", enc({ stream: "books", page: READWISE_SYNC_MAX_PAGES + 1 })],
     ["an extra key", enc({ stream: "books", page: 2, extra: true })],
+    ["an extra key beside skip", enc({ stream: "books", page: 2, skip: 1, extra: true })],
+    ["skip 0", enc({ stream: "books", page: 2, skip: 0 })],
+    ["a negative skip", enc({ stream: "books", page: 2, skip: -1 })],
+    ["a fractional skip", enc({ stream: "books", page: 2, skip: 1.5 })],
+    ["a string skip", enc({ stream: "books", page: 2, skip: "1" })],
+    ["skip before page", enc({ stream: "books", skip: 1, page: 2 })],
     ["an array payload", enc(["books", 2])],
     [
       "a payload that is not JSON",
@@ -366,6 +386,150 @@ describe("paging", () => {
       });
     }
   });
+});
+
+// ─── Size budget ──────────────────────────────────────────────────────────────
+
+function longHighlight(id: number, chars: number): Record<string, unknown> {
+  const text = `${String(id)} ${"long highlight text ".repeat(Math.ceil(chars / 20))}`.slice(
+    0,
+    chars,
+  );
+  return { id, text, note: null, updated: "2024-03-02T08:00:00.000Z" };
+}
+
+/**
+ * Calls from `start` until the cursor leaves `stream` page `page`, as the gateway would, and
+ * returns every response. Each one goes through `check()` with `budget`.
+ */
+async function drainPage(
+  start: string | null,
+  fake: { fetch: ReadwiseFetch },
+  budget: number,
+  stream: "highlights" | "books",
+  page: number,
+): Promise<Extract<SyncResponse, { status: "ok" }>[]> {
+  const out: Extract<SyncResponse, { status: "ok" }>[] = [];
+  let cursor = start;
+  for (let calls = 0; calls < 200; calls += 1) {
+    const r = okOf(await respond(cursor, fake, { token: TOKEN }, budget));
+    out.push(r);
+    const at = decodeReadwiseCursor(r.cursor);
+    if (!r.hasMore || at === null || at.stream !== stream || at.page !== page || !at.skip) {
+      return out;
+    }
+    cursor = r.cursor;
+  }
+  throw new Error("the page never finished");
+}
+
+describe("size budget", () => {
+  test("the budget is 3 MiB", () => {
+    expect(READWISE_SYNC_RESPONSE_BUDGET_BYTES).toBe(3 * 1024 * 1024);
+  });
+
+  test("a skip cursor round-trips, and skip 0 is the plain cursor", () => {
+    const c = encodeReadwiseCursor({ stream: "highlights", page: 2, skip: 7 });
+    expect(c).toBe(
+      `nimbus-readwise1:${Buffer.from('{"stream":"highlights","page":2,"skip":7}', "utf8").toString("base64url")}`,
+    );
+    expect(decodeReadwiseCursor(c)).toEqual({ stream: "highlights", page: 2, skip: 7 });
+    expect(encodeReadwiseCursor({ stream: "books", page: 1, skip: 0 })).toBe(BOOKS_1);
+  });
+
+  test("an over-budget last highlights page splits; the pieces concatenate to the unsplit page and the last hands off to books", async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => longHighlight(i + 1, 900));
+    const unsplit = okOf(await respond(null, fakeReadwise({ highlights: [rows] })));
+    expect(unsplit.items).toHaveLength(12);
+    const budget = Math.floor(syncResponseBytes(unsplit) / 3);
+
+    const fake = fakeReadwise({ highlights: [rows] });
+    const parts = await drainPage(null, fake, budget, "highlights", 1);
+    expect(parts.length).toBeGreaterThanOrEqual(3);
+    expect(parts.flatMap((p) => p.items)).toEqual(unsplit.items);
+    // Every piece but the last resumes the same page after what it returned.
+    let returned = 0;
+    for (const p of parts.slice(0, -1)) {
+      returned += p.items.length;
+      expect(p.items.length).toBeGreaterThan(0);
+      expect(p.hasMore).toBe(true);
+      expect(decodeReadwiseCursor(p.cursor)).toEqual({
+        stream: "highlights",
+        page: 1,
+        skip: returned,
+      });
+    }
+    const last = parts.at(-1);
+    expect(last?.cursor).toBe(BOOKS_1);
+    expect(last?.hasMore).toBe(true);
+    expect(fake.requests.every((q) => q.stream === "highlights" && q.page === 1)).toBe(true);
+  });
+
+  test("a split page with a next page continues to it only after its last item", async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => longHighlight(i + 1, 900));
+    const fake = fakeReadwise({ highlights: [rows, [highlight(100)]] });
+    const parts = await drainPage(null, fake, 6000, "highlights", 1);
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.flatMap((p) => p.items).map((i) => i.externalId)).toEqual(
+      rows.map((r) => String(r["id"])),
+    );
+    expect(parts.at(-1)?.cursor).toBe(encodeReadwiseCursor({ stream: "highlights", page: 2 }));
+  });
+
+  test("a split last books page ends the pass with the resting cursor", async () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      ...book(i + 1),
+      document_note: "n".repeat(900),
+    }));
+    const parts = await drainPage(BOOKS_1, fakeReadwise({ books: [rows] }), 6000, "books", 1);
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    expect(parts.slice(0, -1).every((p) => p.hasMore)).toBe(true);
+    expect(parts.at(-1)?.cursor).toBe(READWISE_RESTING_CURSOR);
+    expect(parts.at(-1)?.hasMore).toBe(false);
+    expect(parts.flatMap((p) => p.items)).toHaveLength(8);
+  });
+
+  test("a skip cursor resumes after that many mapped items of the same page", async () => {
+    // Row 2 has no id and maps to nothing: skip counts MAPPED items, so skip 2 drops ids 1 and 3.
+    const rows = [highlight(1), { text: "no id" }, highlight(3), highlight(4), highlight(5)];
+    const fake = fakeReadwise({ highlights: [rows] });
+    const cursor = encodeReadwiseCursor({ stream: "highlights", page: 1, skip: 2 });
+    const r = okOf(await respond(cursor, fake));
+    expect(fake.requests.map((q) => [q.stream, q.page])).toEqual([["highlights", 1]]);
+    expect(r.items.map((i) => i.externalId)).toEqual(["4", "5"]);
+    expect(r.cursor).toBe(BOOKS_1);
+    expect(r.hasMore).toBe(true);
+  });
+
+  test("a skip past the page's end reads as the page's end", async () => {
+    const fake = fakeReadwise({ highlights: [[highlight(1)]] });
+    const cursor = encodeReadwiseCursor({ stream: "highlights", page: 1, skip: 5 });
+    expect(await respond(cursor, fake)).toEqual({
+      status: "ok",
+      items: [],
+      cursor: BOOKS_1,
+      hasMore: true,
+    });
+  });
+
+  test("an item alone over budget still goes out, one per call, so the walk progresses", async () => {
+    const rows = [longHighlight(1, 900), longHighlight(2, 900), longHighlight(3, 900)];
+    const parts = await drainPage(null, fakeReadwise({ highlights: [rows] }), 100, "highlights", 1);
+    expect(parts.map((p) => p.items.map((i) => i.externalId))).toEqual([["1"], ["2"], ["3"]]);
+    expect(parts.at(-1)?.cursor).toBe(BOOKS_1);
+  });
+
+  test("at the real budget, a page of 1000 long highlights splits under 3 MiB and loses nothing", async () => {
+    const rows = Array.from({ length: 1000 }, (_, i) => longHighlight(i + 1, 2000));
+    const fake = fakeReadwise({ highlights: [rows] });
+    const parts = await drainPage(null, fake, READWISE_SYNC_RESPONSE_BUDGET_BYTES, "highlights", 1);
+    expect(parts.length).toBeGreaterThanOrEqual(2);
+    for (const p of parts) {
+      expect(syncResponseBytes(p)).toBeLessThanOrEqual(READWISE_SYNC_RESPONSE_BUDGET_BYTES);
+    }
+    const ids = parts.flatMap((p) => p.items.map((i) => i.externalId));
+    expect(ids).toEqual(rows.map((r) => String(r["id"])));
+  }, 30_000);
 });
 
 // ─── Errors ───────────────────────────────────────────────────────────────────

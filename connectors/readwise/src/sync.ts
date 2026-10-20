@@ -11,6 +11,8 @@
  *   encoding the gateway's `encodeNimbusJsonCursor` used for the resting cursor.
  * - after the last books page: {@link READWISE_RESTING_CURSOR}, byte-identical to the gateway's
  *   `pass1Cursor()`, with `hasMore: false`.
+ * - a page split for size: the same position plus `"skip":K`, the number of that page's MAPPED
+ *   items (see {@link mapPage}) already returned. See {@link READWISE_SYNC_RESPONSE_BUDGET_BYTES}.
  *
  * A stream ends when its page is empty, its `next` is null/empty, or its 20th page was read; the
  * highlights stream's end hands off to books page 1 in the same response that carries the page's
@@ -26,6 +28,8 @@ import { mapReadwiseHighlightToItem } from "./highlight-mapping.ts";
 import { READWISE_BASE } from "./readwise-base.ts";
 import { asRecord, type ReadwiseMappingContext, type ReadwiseSyncItem } from "./record-fields.ts";
 
+type OkResponse = Extract<SyncResponse, { status: "ok" }>;
+
 const CURSOR_PREFIX = "nimbus-readwise1:";
 const PAGE_SIZE = 1000;
 
@@ -37,7 +41,20 @@ export type ReadwiseStream = "highlights" | "books";
 export interface ReadwiseCursorPosition {
   readonly stream: ReadwiseStream;
   readonly page: number;
+  /**
+   * How many of this page's MAPPED items (after null-mapped rows are dropped and repeated ids
+   * collapsed) earlier calls already returned. Absent means 0; when present, a positive integer.
+   */
+  readonly skip?: number;
 }
+
+/**
+ * The most a response's JSON text may weigh, in UTF-8 bytes. The gateway refuses a `__nimbus_sync`
+ * result over 4 MiB (`MCP_TOOL_RESULT_MAX_BYTES`), which fails the run; 3 MiB leaves room for the
+ * MCP envelope around the text. A page of 1000 long highlights repeats each text in the title, the
+ * preview and the metadata, and can pass 4 MiB, so a page over budget is split across calls.
+ */
+export const READWISE_SYNC_RESPONSE_BUDGET_BYTES = 3 * 1024 * 1024;
 
 const STREAMS: Readonly<
   Record<
@@ -60,7 +77,12 @@ function encodePayload(payload: unknown): string {
 export const READWISE_RESTING_CURSOR = encodePayload({ pass: 1 });
 
 export function encodeReadwiseCursor(position: ReadwiseCursorPosition): string {
-  return encodePayload({ stream: position.stream, page: position.page });
+  const skip = position.skip ?? 0;
+  return encodePayload(
+    skip === 0
+      ? { stream: position.stream, page: position.page }
+      : { stream: position.stream, page: position.page, skip },
+  );
 }
 
 function isStream(v: unknown): v is ReadwiseStream {
@@ -69,8 +91,9 @@ function isStream(v: unknown): v is ReadwiseStream {
 
 /**
  * The position a cursor this module minted points at, or `null` for anything else — which the
- * walk reads as "start a full pass". Strict: exactly the two keys, a known stream, a page within
- * the cap, and the canonical encoding (so no two spellings name one position).
+ * walk reads as "start a full pass". Strict: exactly `stream` and `page`, plus `skip` only when it
+ * is a positive safe integer; a known stream, a page within the cap, and the canonical encoding
+ * (so no two spellings name one position).
  */
 export function decodeReadwiseCursor(raw: string | null): ReadwiseCursorPosition | null {
   if (raw === null || !raw.startsWith(CURSOR_PREFIX)) {
@@ -85,10 +108,18 @@ export function decodeReadwiseCursor(raw: string | null): ReadwiseCursorPosition
     return null;
   }
   const o = asRecord(payload);
-  if (o === undefined || Object.keys(o).length !== 2) {
+  if (o === undefined) {
     return null;
   }
-  const { stream, page } = o;
+  const { stream, page, skip } = o;
+  const keyCount = Object.keys(o).length;
+  if (keyCount === 3) {
+    if (typeof skip !== "number" || !Number.isSafeInteger(skip) || skip < 1) {
+      return null;
+    }
+  } else if (keyCount !== 2) {
+    return null;
+  }
   if (
     !isStream(stream) ||
     typeof page !== "number" ||
@@ -98,7 +129,8 @@ export function decodeReadwiseCursor(raw: string | null): ReadwiseCursorPosition
   ) {
     return null;
   }
-  const position: ReadwiseCursorPosition = { stream, page };
+  const position: ReadwiseCursorPosition =
+    typeof skip === "number" ? { stream, page, skip } : { stream, page };
   return encodeReadwiseCursor(position) === raw ? position : null;
 }
 
@@ -112,6 +144,8 @@ export interface ReadwiseSyncDeps {
   readonly fetch?: ReadwiseFetch;
   /** Defaults to `Date.now`. The mappers' `modifiedAt` fallback and the Retry-After clock. */
   readonly now?: () => number;
+  /** Defaults to {@link READWISE_SYNC_RESPONSE_BUDGET_BYTES}; tests lower it to split small pages. */
+  readonly budgetBytes?: number;
 }
 
 type PageOutcome =
@@ -206,7 +240,7 @@ function mapPage(
 }
 
 /** The response that ends `stream`: highlights hand off to books page 1; books end the pass. */
-function endOfStream(stream: ReadwiseStream, items: ReadwiseSyncItem[]): SyncResponse {
+function endOfStream(stream: ReadwiseStream, items: ReadwiseSyncItem[]): OkResponse {
   return stream === "highlights"
     ? {
         status: "ok",
@@ -215,6 +249,55 @@ function endOfStream(stream: ReadwiseStream, items: ReadwiseSyncItem[]): SyncRes
         hasMore: true,
       }
     : { status: "ok", items, cursor: READWISE_RESTING_CURSOR, hasMore: false };
+}
+
+/** The UTF-8 size of the exact text the tool returns for `response`. */
+export function syncResponseBytes(response: SyncResponse): number {
+  return Buffer.byteLength(JSON.stringify(response), "utf8");
+}
+
+/**
+ * `whole` when it fits the budget; otherwise the largest prefix of `items` that fits, with a
+ * cursor that resumes this page right after it. The page's own continuation (next page, handoff,
+ * end of pass) lives in `whole`, so only the call that returns the page's LAST item carries it;
+ * a remainder still over budget is split again by the next call.
+ *
+ * At least one item goes out even when that item alone is over budget, so the walk always
+ * progresses instead of re-fetching the same page forever. That is safe: one item is bounded — the
+ * gateway drops any item whose metadata passes 64 KiB, and its title and preview are one
+ * highlight's or book's own text — so a one-item response stays far under the gateway's 4 MiB.
+ */
+function fitToBudget(
+  whole: OkResponse,
+  position: ReadwiseCursorPosition,
+  budget: number,
+): SyncResponse {
+  // One item (or none) is never split: that response carries the page's own continuation.
+  if (whole.items.length <= 1 || syncResponseBytes(whole) <= budget) {
+    return whole;
+  }
+  const skipped = position.skip ?? 0;
+  const prefix = (count: number): OkResponse => ({
+    status: "ok",
+    items: whole.items.slice(0, count),
+    cursor: encodeReadwiseCursor({ ...position, skip: skipped + count }),
+    hasMore: true,
+  });
+  // The largest count in [1, items - 1] that fits; the size only grows with the count, and all
+  // of the items (`whole`) are already known not to fit.
+  let lo = 1;
+  let hi = whole.items.length - 1;
+  let best = 1;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (syncResponseBytes(prefix(mid)) <= budget) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return prefix(best);
 }
 
 /** One `__nimbus_sync` call: fetch the page `cursor` points at and answer with its items. */
@@ -248,14 +331,18 @@ export async function readwiseSyncPage(
   }
 
   const page = parseReadwisePage(outcome.parsed);
-  const items = mapPage(page.items, position.stream, { syncedAt: now });
-  if (page.hasMore && position.page < READWISE_SYNC_MAX_PAGES) {
-    return {
-      status: "ok",
-      items,
-      cursor: encodeReadwiseCursor({ stream: position.stream, page: position.page + 1 }),
-      hasMore: true,
-    };
-  }
-  return endOfStream(position.stream, items);
+  // `skip` counts MAPPED items: the same page maps to the same items in the same order, so the
+  // count holds across the calls that split it. A field edited in between changes values, not
+  // positions; a row added to or removed from the page in between shifts the split by that many.
+  const items = mapPage(page.items, position.stream, { syncedAt: now }).slice(position.skip ?? 0);
+  const whole: OkResponse =
+    page.hasMore && position.page < READWISE_SYNC_MAX_PAGES
+      ? {
+          status: "ok",
+          items,
+          cursor: encodeReadwiseCursor({ stream: position.stream, page: position.page + 1 }),
+          hasMore: true,
+        }
+      : endOfStream(position.stream, items);
+  return fitToBudget(whole, position, deps.budgetBytes ?? READWISE_SYNC_RESPONSE_BUDGET_BYTES);
 }
