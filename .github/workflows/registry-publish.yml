@@ -4,7 +4,10 @@ name: Registry publish
 # folder on this repo's `gh-pages` branch, served by GitHub Pages. Called by release.yml after each
 # connectors release; dispatch it by hand for the first publish. It publishes only when the version
 # in connectors/readwise/nimbus.extension.json is not yet in the registry — every other run is a
-# no-op. The procedure and the owner's one-time setup are in docs/publishing.md.
+# no-op, decided in `preflight` without the keys, so it never asks for an approval. The procedure
+# and the owner's one-time setup are in docs/publishing.md.
+#
+# The protections here are pinned by scripts/publish-registry.test.ts, which parses this file.
 
 on:
   workflow_dispatch:
@@ -14,12 +17,17 @@ permissions:
   contents: read
 
 jobs:
-  # Runs WITHOUT the environment, so a refusal here happens before any approval prompt — and before
-  # GitHub would auto-create an `official-registry` environment, unprotected, that does not exist.
+  # Runs WITHOUT the environment and without any secret, so a refusal or a no-op here happens
+  # before any approval prompt — and before GitHub would auto-create an `official-registry`
+  # environment, unprotected, that does not exist yet.
   preflight:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      # Read the repository and its gh-pages branch. Nothing else.
+      contents: read
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -38,8 +46,8 @@ jobs:
             exit 1
           fi
 
-      # Only main's code may hold the keys. The environment's deployment-branch rule should say the
-      # same; this holds even if it is loosened.
+      # Only main's code may hold the keys. The environment's deployment-branch rule is the
+      # boundary; this is defence in depth, and it refuses before an approval is requested.
       - name: Refuse a ref other than main
         env:
           REF: ${{ github.ref }}
@@ -49,8 +57,41 @@ jobs:
             exit 1
           fi
 
+      - name: Check the registry branch exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh api "repos/${GITHUB_REPOSITORY}/branches/gh-pages" --silent; then
+            echo "::error::branch gh-pages does not exist. Bootstrapping the registry is the owner's one-time job — see docs/publishing.md § Publishing to the official Nimbus registry."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout the registry (gh-pages)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: registry
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3"
+
+      # Keyless: compares the Readwise manifest version with index.json. A missing index.json
+      # fails here with the bootstrap instruction. Needs no install — --check imports only builtins.
+      - name: Is there anything to publish?
+        id: check
+        run: bun scripts/publish-registry.ts --check --registry registry
+
   publish:
     needs: preflight
+    if: needs.preflight.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # The protected environment holds both signing keys and requires a reviewer's approval. Its
@@ -79,15 +120,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check the registry branch exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! gh api "repos/${GITHUB_REPOSITORY}/branches/gh-pages" --silent; then
-            echo "::error::branch gh-pages does not exist. Bootstrapping the registry is the owner's one-time job — see docs/publishing.md § Publishing to the official Nimbus registry."
-            exit 1
-          fi
-
       # No persisted credential: the build and the CLI run before the push, and neither needs one.
       # The push step supplies the token itself.
       - name: Checkout the registry (gh-pages)
@@ -102,8 +134,10 @@ jobs:
         with:
           bun-version: "1.3"
 
+      # No lifecycle scripts: nothing from a dependency may start a process that outlives this step
+      # and is still running when the keys are on disk. The Readwise build needs none.
       - name: Install
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Download and verify the Nimbus CLI
         run: |
@@ -116,8 +150,13 @@ jobs:
           printf '%s  %s\n' "$NIMBUS_CLI_SHA256" "$dir/nimbus" | sha256sum --check --strict -
           chmod +x "$dir/nimbus"
 
+      # Built before the keys exist; the signing step copies this file and builds nothing.
+      - name: Build the extension bundle
+        run: bun connectors/readwise/scripts/build-extension.ts
+
       # The keys reach the disk through env and the `printf` builtin — never argv, never a traced
-      # shell — into a 0700 directory with umask 077. The CLI and the script take only their paths.
+      # shell — into a 0700 directory with umask 077, immediately before the one step that reads
+      # them. The CLI and the script take only their paths.
       - name: Write the signing keys
         env:
           ROOT_KEY: ${{ secrets.NIMBUS_REGISTRY_ROOT_KEY }}
@@ -139,6 +178,7 @@ jobs:
           printf '%s' "$ROOT_KEY" > "$keys/root.key"
           printf '%s' "$PUBLISHER_KEY" > "$keys/publisher.key"
 
+      # Re-decides under the registry lock: a version published since preflight is a no-op here.
       - name: Sign and add to the registry
         id: publish
         env:
@@ -149,7 +189,8 @@ jobs:
             --registry registry \
             --publisher-key-file "$RUNNER_TEMP/nimbus-keys/publisher.key" \
             --root-key-file "$RUNNER_TEMP/nimbus-keys/root.key" \
-            --publisher-id "$PUBLISHER_ID"
+            --publisher-id "$PUBLISHER_ID" \
+            --prebuilt connectors/readwise/dist/server.js
 
       # Remove the keys before anything talks to the network again.
       - name: Delete the signing keys

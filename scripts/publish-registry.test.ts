@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  checkPublish,
   decodeSeed,
   derivePublicKey,
   loadIndex,
@@ -383,6 +384,9 @@ describe("publishRegistry", () => {
   });
 });
 
+/** A GitHub Actions expression, `${{ … }}`, as the parsed workflow holds it. */
+const gha = (expression: string): string => `\${{ ${expression} }}`;
+
 describe("the registry workflow", () => {
   const workflow = readFileSync(join(ROOT, ".github", "workflows", "registry-publish.yml"), "utf8");
   const release = readFileSync(join(ROOT, ".github", "workflows", "release.yml"), "utf8");
@@ -415,15 +419,187 @@ describe("the registry workflow", () => {
     );
   });
 
-  test("the workflow refuses before the protected job unless OFFICIAL_REGISTRY_ENABLED is true", () => {
-    const preflight = workflow.slice(
-      workflow.indexOf("  preflight:"),
-      workflow.indexOf("  publish:"),
+  // Every assertion below reads the PARSED workflow, so a comment that mentions a protection does
+  // not count as the protection.
+  const parsed = Bun.YAML.parse(workflow) as Workflow;
+  const preflight = parsed.jobs["preflight"];
+  const publish = parsed.jobs["publish"];
+  const preflightSteps = preflight?.steps ?? [];
+  const publishSteps = publish?.steps ?? [];
+  const stepNamed = (steps: Step[], name: string): Step | undefined =>
+    steps.find((s) => s.name === name);
+  const indexNamed = (steps: Step[], name: string): number =>
+    steps.findIndex((s) => s.name === name);
+
+  test("has exactly the two jobs these assertions are about", () => {
+    expect(Object.keys(parsed.jobs).sort()).toEqual(["preflight", "publish"]);
+    expect(preflightSteps.length).toBeGreaterThan(3);
+    expect(publishSteps.length).toBeGreaterThan(5);
+  });
+
+  test("preflight holds no environment and refuses unless OFFICIAL_REGISTRY_ENABLED is 'true'", () => {
+    expect(preflight?.environment).toBeUndefined();
+    const step = stepNamed(preflightSteps, "Refuse unless the registry is enabled");
+    expect(step?.env?.["ENABLED"]).toBe(gha("vars.OFFICIAL_REGISTRY_ENABLED"));
+    expect(step?.run).toMatch(/if \[ "\$ENABLED" != "true" \]; then[\s\S]*exit 1/);
+  });
+
+  test("preflight refuses a ref other than refs/heads/main", () => {
+    const step = stepNamed(preflightSteps, "Refuse a ref other than main");
+    expect(step?.env?.["REF"]).toBe(gha("github.ref"));
+    expect(step?.run).toMatch(/if \[ "\$REF" != "refs\/heads\/main" \]; then[\s\S]*exit 1/);
+  });
+
+  test("preflight decides keylessly, and publish runs only when it says there is work", () => {
+    const check = stepNamed(preflightSteps, "Is there anything to publish?");
+    expect(check?.id).toBe("check");
+    expect(check?.run).toMatch(
+      /^bun scripts\/publish-registry\.ts --check --registry registry\s*$/,
     );
-    expect(preflight).toContain("vars.OFFICIAL_REGISTRY_ENABLED");
-    expect(preflight).not.toContain("environment:");
-    expect(workflow).toMatch(
-      / {2}publish:[\s\S]*needs: preflight[\s\S]*environment: official-registry/,
+    expect(preflight?.outputs?.["publish"]).toBe(gha("steps.check.outputs.publish"));
+    expect(publish?.needs).toBe("preflight");
+    expect(publish?.if).toBe("needs.preflight.outputs.publish == 'true'");
+    expect(publish?.environment).toBe("official-registry");
+  });
+
+  test("per-job permissions: preflight reads, publish holds contents: write and nothing else", () => {
+    expect(parsed.permissions).toEqual({ contents: "read" });
+    expect([{}, { contents: "read" }]).toContainEqual(preflight?.permissions ?? "missing");
+    expect(publish?.permissions).toEqual({ contents: "write" });
+  });
+
+  test("every checkout sets persist-credentials: false", () => {
+    const checkouts = [...preflightSteps, ...publishSteps].filter((s) =>
+      (s.uses ?? "").startsWith("actions/checkout@"),
     );
+    expect(checkouts.length).toBe(4);
+    expect(checkouts.map((s) => s.with?.["persist-credentials"])).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  test("the key-deletion step runs always()", () => {
+    const step = stepNamed(publishSteps, "Delete the signing keys");
+    expect(step?.if).toBe("always()");
+    expect(step?.run).toMatch(/rm -rf "\$RUNNER_TEMP\/nimbus-keys"/);
+  });
+
+  test("the key secrets appear only in the step that writes them", () => {
+    const writer = stepNamed(publishSteps, "Write the signing keys");
+    expect(writer?.env?.["ROOT_KEY"]).toBe(gha("secrets.NIMBUS_REGISTRY_ROOT_KEY"));
+    expect(writer?.env?.["PUBLISHER_KEY"]).toBe(gha("secrets.NIMBUS_PUBLISHER_KEY"));
+    // The whole workflow — top level, both jobs, every other step — with only the writer removed.
+    const withoutWriter = {
+      ...parsed,
+      jobs: {
+        preflight,
+        publish: { ...publish, steps: publishSteps.filter((s) => s !== writer) },
+      },
+    };
+    expect(JSON.stringify(withoutWriter)).not.toMatch(/secrets\./);
+  });
+
+  test("the keys are written after the build, immediately before the step that reads them", () => {
+    const build = indexNamed(publishSteps, "Build the extension bundle");
+    const install = indexNamed(publishSteps, "Install");
+    const write = indexNamed(publishSteps, "Write the signing keys");
+    const sign = indexNamed(publishSteps, "Sign and add to the registry");
+    expect(install).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(install);
+    expect(write).toBeGreaterThan(build);
+    expect(sign).toBe(write + 1);
+    expect(publishSteps[sign]?.run).toContain("--prebuilt connectors/readwise/dist/server.js");
+  });
+
+  test("install uses the frozen lockfile and runs no lifecycle scripts", () => {
+    const run = stepNamed(publishSteps, "Install")?.run ?? "";
+    expect(run).toMatch(/^bun install\b/);
+    expect(run).toContain("--frozen-lockfile");
+    expect(run).toContain("--ignore-scripts");
+  });
+
+  test("the push targets gh-pages and nothing else", () => {
+    const run = stepNamed(publishSteps, "Commit and push the registry")?.run ?? "";
+    const pushes = [...run.matchAll(/git push (.*)$/gm)].map((m) => m[1]?.trim());
+    // The remote is this repository, by the runner-set GITHUB_REPOSITORY; the refspec is gh-pages.
+    expect(pushes).toEqual([`"https://github.com/\${GITHUB_REPOSITORY}.git" HEAD:gh-pages`]);
+  });
+});
+
+interface Step {
+  name?: string;
+  id?: string;
+  if?: string;
+  uses?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, unknown>;
+}
+
+interface Workflow {
+  permissions?: unknown;
+  jobs: Record<
+    string,
+    {
+      needs?: unknown;
+      if?: string;
+      environment?: unknown;
+      permissions?: unknown;
+      outputs?: Record<string, string>;
+      steps?: Step[];
+    }
+  >;
+}
+
+describe("checkPublish (the keyless --check mode)", () => {
+  test("a version not in the index means publish", () => {
+    writeFileSync(join(scratch, "index.json"), JSON.stringify(indexWith({})));
+    expect(checkPublish(scratch, fakeConnector())).toEqual({
+      publish: true,
+      id: ID,
+      version: "0.2.0",
+      reason: expect.stringContaining("will be published"),
+    });
+  });
+
+  test("a version already in the index means no publish", () => {
+    writeFileSync(
+      join(scratch, "index.json"),
+      JSON.stringify(indexWith({ [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } } })),
+    );
+    expect(checkPublish(scratch, fakeConnector()).publish).toBe(false);
+  });
+
+  test("a missing index.json fails with the bootstrap instruction", () => {
+    expect(() => checkPublish(scratch, fakeConnector())).toThrow(/nimbus registry maintain init/);
+  });
+
+  test("the CLI mode writes publish=… to GITHUB_OUTPUT and needs no key", async () => {
+    const registry = join(scratch, "registry");
+    mkdirSync(registry);
+    writeFileSync(join(registry, "index.json"), JSON.stringify(indexWith({})));
+    const out = join(scratch, "github-output");
+    writeFileSync(out, "");
+    const proc = Bun.spawn(
+      ["bun", join(ROOT, "scripts", "publish-registry.ts"), "--check", "--registry", registry],
+      { env: { ...process.env, GITHUB_OUTPUT: out }, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await proc.exited).toBe(0);
+    const manifest = JSON.parse(
+      readFileSync(join(ROOT, "connectors", "readwise", "nimbus.extension.json"), "utf8"),
+    );
+    expect(readFileSync(out, "utf8")).toBe(`publish=true\nid=${ID}\nversion=${manifest.version}\n`);
+  });
+
+  test("the CLI mode fails, naming the bootstrap, when index.json is missing", async () => {
+    const proc = Bun.spawn(
+      ["bun", join(ROOT, "scripts", "publish-registry.ts"), "--check", "--registry", scratch],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await proc.exited).toBe(1);
+    expect(await new Response(proc.stderr).text()).toContain("nimbus registry maintain init");
   });
 });

@@ -9,6 +9,15 @@
  *     --publisher-key-file <file>        the publisher's Ed25519 seed, one line of base64
  *     --root-key-file <file>             the registry root's Ed25519 seed, one line of base64
  *     --publisher-id <id>                the publisher id recorded for the extension
+ *     [--prebuilt <file>]                copy this bundle as dist/server.js instead of building
+ *
+ *   bun scripts/publish-registry.ts --check --registry <dir>
+ *
+ * `--check` needs no key: it reads the registry's `index.json` and the Readwise manifest, and says
+ * whether there is anything to publish (`publish=true|false` in `GITHUB_OUTPUT`). CI runs it in a
+ * job without the signing environment, so a release with nothing to publish never asks for an
+ * approval. `--prebuilt` lets CI build the bundle in its own step, before the keys exist, so the
+ * process that reads the keys runs no build.
  *
  * It publishes only when the version in `connectors/readwise/nimbus.extension.json` is not yet in
  * the registry's `index.json`; any other release is a no-op. It never bootstraps a registry —
@@ -263,17 +272,51 @@ function readSeedFile(file: string, what: string): string {
   }
 }
 
-export async function publishRegistry(
-  options: PublishOptions,
-  deps: PublishDeps,
-): Promise<PublishResult> {
-  const connectorDir = options.connectorDir ?? READWISE_DIR;
+export interface CheckResult {
+  publish: boolean;
+  id: string;
+  version: string;
+  reason: string;
+}
+
+function manifestIdVersion(connectorDir: string): { id: string; version: string } {
   const manifest = readManifest(connectorDir);
   const id = manifest["id"];
   const version = manifest["version"];
   if (typeof id !== "string" || typeof version !== "string") {
     throw new Error("nimbus.extension.json needs a string `id` and `version`");
   }
+  return { id, version };
+}
+
+/**
+ * Whether the connector's manifest version is missing from the registry — the keyless decision CI
+ * makes before asking for the signing environment. A missing `index.json` throws, as in a publish.
+ * The publish itself re-decides under the registry lock, with the key checks this cannot make.
+ */
+export function checkPublish(
+  registryDir: string,
+  connectorDir: string = READWISE_DIR,
+): CheckResult {
+  const { id, version } = manifestIdVersion(connectorDir);
+  const index = loadIndex(registryDir);
+  const published = Object.hasOwn(index.extensions[id]?.versions ?? {}, version);
+  return {
+    publish: !published,
+    id,
+    version,
+    reason: published
+      ? `${id}@${version} is already published; nothing to do.`
+      : `${id}@${version} is not in the registry; it will be published.`,
+  };
+}
+
+export async function publishRegistry(
+  options: PublishOptions,
+  deps: PublishDeps,
+): Promise<PublishResult> {
+  const connectorDir = options.connectorDir ?? READWISE_DIR;
+  const { id, version } = manifestIdVersion(connectorDir);
   if (options.publisherId.trim() === "") throw new Error("the publisher id is empty");
 
   const publisher: Publisher = {
@@ -329,15 +372,9 @@ export async function publishRegistry(
   return { status: "published", id, version, sequence: after.sequence ?? 0 };
 }
 
-function writeOutputs(result: PublishResult): void {
+function writeOutputs(lines: string[]): void {
   const file = process.env["GITHUB_OUTPUT"];
   if (file === undefined || file === "") return;
-  const lines = [
-    `published=${result.status === "published"}`,
-    `id=${result.id}`,
-    `version=${result.version}`,
-    `sequence=${result.status === "published" ? result.sequence : ""}`,
-  ];
   appendFileSync(file, `${lines.join("\n")}\n`, "utf8");
 }
 
@@ -349,16 +386,35 @@ async function main(): Promise<void> {
       "publisher-key-file": { type: "string" },
       "root-key-file": { type: "string" },
       "publisher-id": { type: "string" },
+      prebuilt: { type: "string" },
+      check: { type: "boolean" },
     },
     strict: true,
     allowPositionals: false,
   });
+  if (values.check === true) {
+    if (!values.registry) throw new Error("--check needs --registry <dir>");
+    const result = checkPublish(values.registry);
+    console.log(result.reason);
+    writeOutputs([`publish=${result.publish}`, `id=${result.id}`, `version=${result.version}`]);
+    return;
+  }
   const required = ["cli", "registry", "publisher-key-file", "root-key-file", "publisher-id"];
   const missing = required.filter((k) => !values[k as keyof typeof values]);
   if (missing.length > 0) {
     throw new Error(`missing required flag(s): ${missing.map((m) => `--${m}`).join(", ")}`);
   }
-  const { buildExtension } = await import("../connectors/readwise/scripts/build-extension.ts");
+  const prebuilt = values.prebuilt;
+  const build =
+    prebuilt !== undefined
+      ? async (outFile: string): Promise<void> => {
+          if (!existsSync(prebuilt)) throw new Error(`--prebuilt ${prebuilt} does not exist`);
+          copyFileSync(prebuilt, outFile);
+        }
+      : async (outFile: string): Promise<void> => {
+          const m = await import("../connectors/readwise/scripts/build-extension.ts");
+          await m.buildExtension(outFile);
+        };
   const result = await publishRegistry(
     {
       cli: values.cli ?? "",
@@ -368,7 +424,7 @@ async function main(): Promise<void> {
       publisherId: values["publisher-id"] ?? "",
     },
     {
-      build: (outFile) => buildExtension(outFile),
+      build,
       run: async (argv) =>
         Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" }).exited,
       log: (message) => console.log(message),
@@ -377,7 +433,12 @@ async function main(): Promise<void> {
   if (result.status === "published") {
     console.log(`published ${result.id}@${result.version}; registry sequence ${result.sequence}`);
   }
-  writeOutputs(result);
+  writeOutputs([
+    `published=${result.status === "published"}`,
+    `id=${result.id}`,
+    `version=${result.version}`,
+    `sequence=${result.status === "published" ? result.sequence : ""}`,
+  ]);
 }
 
 if (import.meta.main) {
