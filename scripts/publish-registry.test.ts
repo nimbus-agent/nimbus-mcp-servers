@@ -20,7 +20,9 @@ import {
   checkPublish,
   decodeSeed,
   derivePublicKey,
+  fixedLayout,
   isInside,
+  LAYOUT,
   loadIndex,
   type PublishDeps,
   planPublish,
@@ -43,6 +45,28 @@ const OTHER_SEED_B64 = Buffer.alloc(32, 1).toString("base64");
 
 const ID = "com.nimbus.readwise";
 const PUBLISHER = { id: "nimbus", key: PUB_B64 };
+
+/** Parse a JSON object file as `unknown` and narrow it — never the `any` a bare JSON.parse gives. */
+function readJsonObject(file: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new TypeError(`${file} is not a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+const READWISE_MANIFEST = join(ROOT, "connectors", "readwise", "nimbus.extension.json");
+
+/** The real Readwise manifest's id@version, which runCli labels its log lines with. */
+const READWISE = (() => {
+  const manifest = readJsonObject(READWISE_MANIFEST);
+  const id = manifest["id"];
+  const version = manifest["version"];
+  if (typeof id !== "string" || typeof version !== "string") {
+    throw new TypeError("the Readwise manifest needs a string id and version");
+  }
+  return { id, version };
+})();
 
 function indexWith(extensions: RegistryIndex["extensions"], sequence = 3): RegistryIndex {
   return { rootKey: derivePublicKey(OTHER_SEED_B64), sequence, extensions };
@@ -190,10 +214,10 @@ describe("stagePackage", () => {
     });
 
     expect(readFileSync(join(connector, "nimbus.extension.json")).equals(repoBytes)).toBe(true);
-    const staged = JSON.parse(readFileSync(join(stage, "nimbus.extension.json"), "utf8"));
-    expect(staged.publisher).toEqual(PUBLISHER);
-    expect(staged.entry).toBe("dist/server.js");
-    expect(staged.description).toBe("é ✓");
+    const staged = readJsonObject(join(stage, "nimbus.extension.json"));
+    expect(staged["publisher"]).toEqual(PUBLISHER);
+    expect(staged["entry"]).toBe("dist/server.js");
+    expect(staged["description"]).toBe("é ✓");
     expect(readdirSync(stage).sort()).toEqual([
       "LICENSE",
       "README.md",
@@ -249,12 +273,10 @@ describe("stagePackage", () => {
   });
 
   test("the real readwise manifest still has an entrypoint and no publisher block", () => {
-    const manifest = JSON.parse(
-      readFileSync(join(ROOT, "connectors", "readwise", "nimbus.extension.json"), "utf8"),
-    );
-    expect(manifest.id).toBe(ID);
-    expect(manifest.entrypoint).toBe("dist/server.js");
-    expect(manifest.publisher).toBeUndefined();
+    const manifest = readJsonObject(READWISE_MANIFEST);
+    expect(manifest["id"]).toBe(ID);
+    expect(manifest["entrypoint"]).toBe("dist/server.js");
+    expect(manifest["publisher"]).toBeUndefined();
   });
 });
 
@@ -294,10 +316,16 @@ describe("publishRegistry", () => {
           expect(existsSync(join(argv[3] ?? "", "nimbus.extension.json"))).toBe(true);
         }
         if (argv[1] === "registry") {
-          const index = JSON.parse(readFileSync(join(registry, "index.json"), "utf8"));
-          index.sequence += 1;
-          index.extensions[ID] = { publisher: PUBLISHER, versions: { "0.2.0": {} } };
-          writeFileSync(join(registry, "index.json"), JSON.stringify(index));
+          const current = loadIndex(registry);
+          const next: RegistryIndex = {
+            ...current,
+            sequence: (current.sequence ?? 0) + 1,
+            extensions: {
+              ...current.extensions,
+              [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } },
+            },
+          };
+          writeFileSync(join(registry, "index.json"), JSON.stringify(next));
         }
         return 0;
       },
@@ -460,9 +488,7 @@ describe("the registry workflow", () => {
   test("preflight decides keylessly, and publish runs only when it says there is work", () => {
     const check = stepNamed(preflightSteps, "Is there anything to publish?");
     expect(check?.id).toBe("check");
-    expect(check?.run).toMatch(
-      /^bun scripts\/publish-registry\.ts --check --registry registry\s*$/,
-    );
+    expect(check?.run).toMatch(/^bun scripts\/publish-registry\.ts --check\s*$/);
     expect(preflight?.outputs?.["publish"]).toBe(gha("steps.check.outputs.publish"));
     expect(publish?.needs).toBe("preflight");
     expect(publish?.if).toBe("needs.preflight.outputs.publish == 'true'");
@@ -518,7 +544,31 @@ describe("the registry workflow", () => {
     expect(build).toBeGreaterThan(install);
     expect(write).toBeGreaterThan(build);
     expect(sign).toBe(write + 1);
-    expect(publishSteps[sign]?.run).toContain("--prebuilt connectors/readwise/dist/server.js");
+    // The script takes no path from argv: only the publisher id.
+    expect(publishSteps[sign]?.run).toMatch(
+      /^bun scripts\/publish-registry\.ts --publisher-id "\$PUBLISHER_ID"\s*$/,
+    );
+  });
+
+  test("the steps put every file where the script's fixed layout looks for it", () => {
+    const registryCheckouts = [...preflightSteps, ...publishSteps].filter(
+      (s) => s.with?.["ref"] === "gh-pages",
+    );
+    expect(registryCheckouts.map((s) => s.with?.["path"])).toEqual([
+      LAYOUT.registry,
+      LAYOUT.registry,
+    ]);
+    expect(stepNamed(publishSteps, "Build the extension bundle")?.run).toBe(
+      "bun connectors/readwise/scripts/build-extension.ts",
+    );
+    expect(LAYOUT.bundle.replaceAll("\\", "/")).toBe("connectors/readwise/dist/server.js");
+    const download = stepNamed(publishSteps, "Download and verify the Nimbus CLI")?.run ?? "";
+    expect(download).toContain('dir="$RUNNER_TEMP/nimbus-cli"');
+    expect(download).toContain('-o "$dir/nimbus"');
+    const writer = stepNamed(publishSteps, "Write the signing keys")?.run ?? "";
+    expect(writer).toContain(`keys="$RUNNER_TEMP/${LAYOUT.keyDir}"`);
+    expect(writer).toContain(`> "$keys/${LAYOUT.rootKey}"`);
+    expect(writer).toContain(`> "$keys/${LAYOUT.publisherKey}"`);
   });
 
   test("install uses the frozen lockfile and runs no lifecycle scripts", () => {
@@ -590,37 +640,29 @@ describe("checkPublish (the keyless --check mode)", () => {
     writeFileSync(join(registry, "index.json"), JSON.stringify(indexWith({})));
     const out = join(scratch, "github-output");
     writeFileSync(out, "");
-    const proc = Bun.spawn(
-      ["bun", join(ROOT, "scripts", "publish-registry.ts"), "--check", "--registry", "registry"],
-      {
-        cwd: scratch,
-        env: { ...process.env, GITHUB_OUTPUT: out },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
+    const proc = Bun.spawn(["bun", join(ROOT, "scripts", "publish-registry.ts"), "--check"], {
+      cwd: scratch,
+      env: { ...process.env, GITHUB_OUTPUT: out },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     expect(await proc.exited).toBe(0);
-    const manifest = JSON.parse(
-      readFileSync(join(ROOT, "connectors", "readwise", "nimbus.extension.json"), "utf8"),
+    expect(readFileSync(out, "utf8")).toBe(
+      `publish=true\nid=${READWISE.id}\nversion=${READWISE.version}\n`,
     );
-    expect(readFileSync(out, "utf8")).toBe(`publish=true\nid=${ID}\nversion=${manifest.version}\n`);
   });
 
   test("the CLI mode fails, naming the bootstrap, when index.json is missing", async () => {
     mkdirSync(join(scratch, "registry"));
-    const proc = Bun.spawn(
-      ["bun", join(ROOT, "scripts", "publish-registry.ts"), "--check", "--registry", "registry"],
-      { cwd: scratch, stdout: "pipe", stderr: "pipe" },
-    );
+    const proc = Bun.spawn(["bun", join(ROOT, "scripts", "publish-registry.ts"), "--check"], {
+      cwd: scratch,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     expect(await proc.exited).toBe(1);
     expect(await new Response(proc.stderr).text()).toContain("nimbus registry maintain init");
   });
 });
-
-/** The real Readwise manifest's id@version, which runCli labels its log lines with. */
-const READWISE = JSON.parse(
-  readFileSync(join(ROOT, "connectors", "readwise", "nimbus.extension.json"), "utf8"),
-) as { id: string; version: string };
 
 describe("checkedPath", () => {
   test("resolves a relative path inside its base to the real absolute path", () => {
@@ -674,69 +716,86 @@ describe("checkedPath", () => {
 
 describe("runCli", () => {
   /**
-   * scratch/work is the working directory (registry, prebuilt bundle); scratch/tmp stands in for
-   * $RUNNER_TEMP (the keys). The CLI is a stand-in that records argv and lands the version.
+   * scratch/work is the workspace (registry checkout, prebuilt bundle); scratch/tmp stands in for
+   * $RUNNER_TEMP (the CLI and the keys). Every file sits where fixedLayout puts it. The CLI is a
+   * stand-in that records argv and lands the version in the index.
    */
   function world(index: RegistryIndex | undefined = indexWith({}, 4)) {
     const work = join(scratch, "work");
     const temp = join(scratch, "tmp");
-    mkdirSync(join(work, "registry"), { recursive: true });
-    mkdirSync(temp);
+    const paths = fixedLayout(work, temp);
+    mkdirSync(paths.registryDir, { recursive: true });
+    mkdirSync(join(paths.bundle, ".."), { recursive: true });
+    mkdirSync(join(paths.cli, ".."), { recursive: true });
+    mkdirSync(join(paths.publisherKeyFile, ".."), { recursive: true });
     if (index !== undefined) {
-      writeFileSync(join(work, "registry", "index.json"), JSON.stringify(index));
+      writeFileSync(join(paths.registryDir, "index.json"), JSON.stringify(index));
     }
-    writeFileSync(join(work, "bundle.js"), "export {};\n");
-    writeFileSync(join(temp, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
-    writeFileSync(join(temp, "root.key"), `${OTHER_SEED_B64}\n`, { mode: 0o600 });
-    writeFileSync(join(temp, "nimbus"), "");
+    writeFileSync(paths.bundle, "export {};\n");
+    writeFileSync(paths.publisherKeyFile, `${SEED_B64}\n`, { mode: 0o600 });
+    writeFileSync(paths.rootKeyFile, `${OTHER_SEED_B64}\n`, { mode: 0o600 });
+    writeFileSync(paths.cli, "");
     const out = join(scratch, "github-output");
     writeFileSync(out, "");
     const logs: string[] = [];
     const calls: string[][] = [];
     const io: CliIo = {
-      cwd: work,
-      env: { RUNNER_TEMP: temp, GITHUB_OUTPUT: out },
+      workspace: work,
+      tempDir: temp,
+      githubOutput: out,
       log: (m) => logs.push(m),
-      build: async () => {
-        throw new Error("--prebuilt was given; nothing may build");
-      },
       run: async (argv) => {
         calls.push(argv);
         if (argv[1] === "registry") {
-          const file = join(work, "registry", "index.json");
-          const idx = JSON.parse(readFileSync(file, "utf8"));
-          idx.sequence += 1;
-          idx.extensions[READWISE.id] = {
-            publisher: PUBLISHER,
-            versions: { [READWISE.version]: {} },
+          const current = loadIndex(paths.registryDir);
+          const next: RegistryIndex = {
+            ...current,
+            sequence: (current.sequence ?? 0) + 1,
+            extensions: {
+              ...current.extensions,
+              [READWISE.id]: { publisher: PUBLISHER, versions: { [READWISE.version]: {} } },
+            },
           };
-          writeFileSync(file, JSON.stringify(idx));
+          writeFileSync(join(paths.registryDir, "index.json"), JSON.stringify(next));
         }
         return 0;
       },
     };
-    const args = [
-      "--cli",
-      join(temp, "nimbus"),
-      "--registry",
-      "registry",
-      "--publisher-key-file",
-      join(temp, "publisher.key"),
-      "--root-key-file",
-      join(temp, "root.key"),
-      "--publisher-id",
-      "nimbus",
-      "--prebuilt",
-      "bundle.js",
-    ];
-    return { work, temp, out, logs, calls, io, args };
+    return { work, temp, paths, out, logs, calls, io, args: ["--publisher-id", "nimbus"] };
   }
 
   const label = `${READWISE.id}@${READWISE.version}`;
+  const publishedIndex = () =>
+    indexWith({ [READWISE.id]: { publisher: PUBLISHER, versions: { [READWISE.version]: {} } } });
+
+  test("every path is a constant name under one of the two bases", () => {
+    const p = fixedLayout(join("W"), join("T"));
+    expect(p).toEqual({
+      registryDir: join("W", "registry"),
+      bundle: join("W", "connectors", "readwise", "dist", "server.js"),
+      cli: join("T", "nimbus-cli", process.platform === "win32" ? "nimbus.exe" : "nimbus"),
+      publisherKeyFile: join("T", "nimbus-keys", "publisher.key"),
+      rootKeyFile: join("T", "nimbus-keys", "root.key"),
+    });
+  });
+
+  test("argv takes no path: the old path flags are unknown options", async () => {
+    const w = world();
+    for (const flag of [
+      "--registry",
+      "--cli",
+      "--publisher-key-file",
+      "--root-key-file",
+      "--prebuilt",
+    ]) {
+      await expect(runCli([flag, "x"], w.io)).rejects.toThrow(/Unknown option/);
+    }
+    expect(w.calls).toHaveLength(0);
+  });
 
   test("--check writes publish=true and logs only the label", async () => {
     const w = world();
-    await runCli(["--check", "--registry", "registry"], w.io);
+    await runCli(["--check"], w.io);
     expect(readFileSync(w.out, "utf8")).toBe(
       `publish=true\nid=${READWISE.id}\nversion=${READWISE.version}\n`,
     );
@@ -744,31 +803,33 @@ describe("runCli", () => {
   });
 
   test("--check writes publish=false for a published version", async () => {
-    const w = world(
-      indexWith({ [READWISE.id]: { publisher: PUBLISHER, versions: { [READWISE.version]: {} } } }),
-    );
-    await runCli(["--check", "--registry", "registry"], w.io);
+    const w = world(publishedIndex());
+    await runCli(["--check"], w.io);
     expect(readFileSync(w.out, "utf8")).toStartWith("publish=false\n");
     expect(w.logs).toEqual([`${label}: already published.`]);
   });
 
-  test("--check refuses a registry outside the working directory", async () => {
+  test("--check fails clearly when there is no registry checkout", async () => {
     const w = world();
-    await expect(runCli(["--check", "--registry", w.temp], w.io)).rejects.toThrow(/outside/);
+    rmSync(w.paths.registryDir, { recursive: true });
+    await expect(runCli(["--check"], w.io)).rejects.toThrow(
+      /the registry checkout .* does not exist/,
+    );
   });
 
-  test("publishes, copying the prebuilt bundle, and never logs or passes key material", async () => {
+  test("publishes the prebuilt bundle, and never logs or passes key material", async () => {
     const w = world();
     await runCli(w.args, w.io);
     expect(readFileSync(w.out, "utf8")).toBe(
       `published=true\nid=${READWISE.id}\nversion=${READWISE.version}\nsequence=5\n`,
     );
     expect(w.logs).toEqual([`${label}: published.`]);
-    expect(w.calls.map((c) => c.slice(1, 3))).toEqual([
-      ["extension", "sign"],
-      ["registry", "maintain"],
+    expect(w.calls.map((c) => c.slice(0, 3))).toEqual([
+      [realpathSync(w.paths.cli), "extension", "sign"],
+      [realpathSync(w.paths.cli), "registry", "maintain"],
     ]);
-    expect(w.calls[0]?.at(-1)).toBe(realpathSync(join(w.temp, "publisher.key")));
+    expect(w.calls[0]?.at(-1)).toBe(realpathSync(w.paths.publisherKeyFile));
+    expect(w.calls[1]?.at(-1)).toBe(realpathSync(w.paths.rootKeyFile));
     const everything = [...w.logs, ...w.calls.flat(), readFileSync(w.out, "utf8")].join("\n");
     for (const secretish of [SEED_B64, OTHER_SEED_B64, PUB_B64, derivePublicKey(OTHER_SEED_B64)]) {
       expect(everything).not.toContain(secretish);
@@ -776,72 +837,76 @@ describe("runCli", () => {
   });
 
   test("an already-published version is a logged no-op", async () => {
-    const w = world(
-      indexWith({ [READWISE.id]: { publisher: PUBLISHER, versions: { [READWISE.version]: {} } } }),
-    );
+    const w = world(publishedIndex());
     await runCli(w.args, w.io);
     expect(w.calls).toHaveLength(0);
     expect(readFileSync(w.out, "utf8")).toStartWith("published=false\n");
   });
 
-  test("names every missing flag", async () => {
+  test("requires a non-empty --publisher-id", async () => {
     const w = world();
-    await expect(runCli(["--registry", "registry"], w.io)).rejects.toThrow(
-      "missing required flag(s): --cli, --publisher-key-file, --root-key-file, --publisher-id",
-    );
+    await expect(runCli([], w.io)).rejects.toThrow("missing required flag --publisher-id");
+    await expect(runCli(["--publisher-id", " "], w.io)).rejects.toThrow(/--publisher-id/);
   });
 
-  test("refuses a key file outside the temp directory", async () => {
+  test("refuses to publish without a prebuilt bundle, rather than building", async () => {
     const w = world();
-    writeFileSync(join(w.work, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
-    const args = [...w.args];
-    args[args.indexOf("--publisher-key-file") + 1] = "publisher.key";
-    await expect(runCli(args, w.io)).rejects.toThrow(/--publisher-key-file .* is outside/);
+    rmSync(w.paths.bundle);
+    await expect(runCli(w.args, w.io)).rejects.toThrow(/prebuilt bundle .*build-extension/);
     expect(w.calls).toHaveLength(0);
   });
 
-  test("refuses a key file inside the registry, even under the temp directory", async () => {
-    const w = world();
-    const io = { ...w.io, cwd: scratch, env: { ...w.io.env, RUNNER_TEMP: scratch } };
-    writeFileSync(join(w.work, "registry", "root.key"), `${OTHER_SEED_B64}\n`, { mode: 0o600 });
-    const args = [...w.args];
-    args[args.indexOf("--registry") + 1] = "work/registry";
-    args[args.indexOf("--prebuilt") + 1] = "work/bundle.js";
-    args[args.indexOf("--root-key-file") + 1] = join(w.work, "registry", "root.key");
-    await expect(runCli(args, io)).rejects.toThrow(/--root-key-file is inside the registry/);
+  test("refuses a missing key file or CLI before running anything", async () => {
+    for (const which of ["rootKeyFile", "publisherKeyFile", "cli"] as const) {
+      const w = world();
+      rmSync(w.paths[which]);
+      await expect(runCli(w.args, w.io)).rejects.toThrow(/does not exist/);
+      expect(w.calls).toHaveLength(0);
+      rmSync(scratch, { recursive: true, force: true });
+      mkdirSync(scratch);
+    }
   });
 
-  test("refuses a prebuilt bundle outside the working directory", async () => {
+  test("refuses a key file inside the registry, when the temp dir is the workspace", async () => {
     const w = world();
-    writeFileSync(join(w.temp, "bundle.js"), "x");
-    const args = [...w.args];
-    args[args.indexOf("--prebuilt") + 1] = join(w.temp, "bundle.js");
-    await expect(runCli(args, w.io)).rejects.toThrow(/--prebuilt .* is outside/);
-  });
-
-  test("without --prebuilt it builds through io.build", async () => {
-    const w = world();
-    const built: string[] = [];
-    const io: CliIo = {
-      ...w.io,
-      build: async (outFile) => {
-        built.push(outFile);
-        writeFileSync(outFile, "export {};\n");
-      },
-    };
-    await runCli(w.args.slice(0, -2), io);
-    expect(built).toHaveLength(1);
+    // The temp base is the registry checkout itself, so the key directory lands inside it.
+    const io: CliIo = { ...w.io, tempDir: w.paths.registryDir };
+    const inside = fixedLayout(w.work, w.paths.registryDir);
+    mkdirSync(join(inside.publisherKeyFile, ".."), { recursive: true });
+    mkdirSync(join(inside.cli, ".."), { recursive: true });
+    writeFileSync(inside.cli, "");
+    writeFileSync(inside.publisherKeyFile, `${SEED_B64}\n`, { mode: 0o600 });
+    writeFileSync(inside.rootKeyFile, `${OTHER_SEED_B64}\n`, { mode: 0o600 });
+    await expect(runCli(w.args, io)).rejects.toThrow(/is inside the registry/);
+    expect(w.calls).toHaveLength(0);
   });
 
   test.skipIf(process.platform === "win32")(
     "refuses a key file readable by group or others",
     async () => {
       const w = world();
-      chmodSync(join(w.temp, "root.key"), 0o644);
+      chmodSync(w.paths.rootKeyFile, 0o644);
       await expect(runCli(w.args, w.io)).rejects.toThrow(/readable by group or others/);
       expect(w.calls).toHaveLength(0);
     },
   );
+
+  test("refuses a key directory that is a symlink", async () => {
+    const w = world();
+    const keyDir = join(w.paths.publisherKeyFile, "..");
+    const elsewhere = join(scratch, "elsewhere");
+    mkdirSync(elsewhere);
+    rmSync(keyDir, { recursive: true });
+    try {
+      symlinkSync(elsewhere, keyDir, "dir");
+    } catch {
+      return; // Creating symlinks needs a privilege on Windows; the POSIX legs cover this.
+    }
+    writeFileSync(join(elsewhere, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
+    writeFileSync(join(elsewhere, "root.key"), `${OTHER_SEED_B64}\n`, { mode: 0o600 });
+    await expect(runCli(w.args, w.io)).rejects.toThrow(/outside/);
+    expect(w.calls).toHaveLength(0);
+  });
 });
 
 describe("no key-derived value reaches a message", () => {

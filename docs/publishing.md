@@ -99,7 +99,7 @@ never prompts a reviewer. It:
    against a SHA-256 written into the workflow;
 4. builds `dist/server.js` — before any key exists;
 5. writes the two keys to files under `$RUNNER_TEMP` (mode 0600), and in the very next step runs
-   `scripts/publish-registry.ts --prebuilt …`, which re-checks the version under the registry
+   `scripts/publish-registry.ts --publisher-id …`, which copies the prebuilt bundle, re-checks the version under the registry
    lock, stages the package with the publisher block added to the staged manifest (never the
    repository's), runs `nimbus extension sign` and then `nimbus registry maintain add`, which
    re-signs `index.json`;
@@ -130,13 +130,27 @@ A registry version is immutable: the same version is never re-signed or replaced
 The script refuses, before running the CLI, when the publisher key it is given differs from the
 one the registry records for the id, or the root key differs from the index's `rootKey`. Its
 messages name what the registry records, never anything read from or derived from a key file.
-Every path it takes is resolved and checked first. It must exist as the right kind, and it must not
-be a symlink. `--registry` and `--prebuilt` must be inside the working directory. Both key files
-must be inside the temp directory (`$RUNNER_TEMP`, else the OS temp directory) and outside the
-registry, and on POSIX readable by their owner only. A key in the workspace would be one
-`git add -A` away from being published. **A
-publisher key can never change for an id** — installs pin it — so losing the publisher seed means
-publishing under a new id.
+**A publisher key can never change for an id** — installs pin it — so losing the publisher seed
+means publishing under a new id.
+
+**The script takes no path from its arguments**, only the mode (`--check`) and `--publisher-id`.
+Every file sits at a fixed place under a base the script determines itself. The workspace is the
+working directory, the repository root. The temp directory is `$RUNNER_TEMP`, else the OS temp
+directory. The workflow's steps put each file there:
+
+| File | Fixed place |
+| --- | --- |
+| Registry checkout (`gh-pages`) | `<workspace>/registry/` |
+| Bundle, built beforehand | `<workspace>/connectors/readwise/dist/server.js` |
+| Nimbus CLI | `<temp>/nimbus-cli/nimbus` (`nimbus.exe` on Windows) |
+| Publisher seed | `<temp>/nimbus-keys/publisher.key` |
+| Root seed | `<temp>/nimbus-keys/root.key` |
+
+Each must exist as the right kind and must not be a symlink. The key files must be outside the
+registry and, on POSIX, readable by their owner only. A key in the workspace would be one
+`git add -A` away from being published. To run it by hand, put the files in those places, run
+`bun connectors/readwise/scripts/build-extension.ts`, and then run the script from the repository
+root. The publish never builds.
 
 The pinned CLI (v9.2.1) reads the manifest's `entry` and not `entrypoint`, so the staged manifest
 sets `entry` to the same value. That shim goes once the pin moves to a release that reads

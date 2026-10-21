@@ -87,7 +87,7 @@ jobs:
       # fails here with the bootstrap instruction. Needs no install — --check imports only builtins.
       - name: Is there anything to publish?
         id: check
-        run: bun scripts/publish-registry.ts --check --registry registry
+        run: bun scripts/publish-registry.ts --check
 
   publish:
     needs: preflight
@@ -156,7 +156,7 @@ jobs:
 
       # The keys reach the disk through env and the `printf` builtin — never argv, never a traced
       # shell — into a 0700 directory with umask 077, immediately before the one step that reads
-      # them. The CLI and the script take only their paths.
+      # them, at the fixed place the script looks for them. The CLI gets only their paths.
       - name: Write the signing keys
         env:
           ROOT_KEY: ${{ secrets.NIMBUS_REGISTRY_ROOT_KEY }}
@@ -183,14 +183,9 @@ jobs:
         id: publish
         env:
           PUBLISHER_ID: ${{ vars.NIMBUS_PUBLISHER_ID }}
-        run: |
-          bun scripts/publish-registry.ts \
-            --cli "$RUNNER_TEMP/nimbus-cli/nimbus" \
-            --registry registry \
-            --publisher-key-file "$RUNNER_TEMP/nimbus-keys/publisher.key" \
-            --root-key-file "$RUNNER_TEMP/nimbus-keys/root.key" \
-            --publisher-id "$PUBLISHER_ID" \
-            --prebuilt connectors/readwise/dist/server.js
+        # No path on argv: the script finds the registry, the bundle, the CLI and the keys at the
+        # fixed places the steps above put them (scripts/publish-registry.ts LAYOUT).
+        run: bun scripts/publish-registry.ts --publisher-id "$PUBLISHER_ID"
 
       # Remove the keys before anything talks to the network again.
       - name: Delete the signing keys

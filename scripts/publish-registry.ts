@@ -3,28 +3,28 @@
  *
  * Run by `.github/workflows/registry-publish.yml` on every connectors release; runnable by hand:
  *
- *   bun scripts/publish-registry.ts \
- *     --cli <nimbus-cli>                 the Nimbus CLI binary (pinned and hash-checked by CI)
- *     --registry <dir>                   a checkout of the registry (the `gh-pages` branch)
- *     --publisher-key-file <file>        the publisher's Ed25519 seed, one line of base64
- *     --root-key-file <file>             the registry root's Ed25519 seed, one line of base64
- *     --publisher-id <id>                the publisher id recorded for the extension
- *     [--prebuilt <file>]                copy this bundle as dist/server.js instead of building
+ *   bun scripts/publish-registry.ts --check
+ *   bun scripts/publish-registry.ts --publisher-id <id>
  *
- *   bun scripts/publish-registry.ts --check --registry <dir>
+ * It takes NO path from argv. Every file it touches sits at a fixed place under a base it
+ * determines itself — the working directory (the repository root) or the temp directory
+ * (`$RUNNER_TEMP`, else the OS temp dir) — see {@link fixedLayout}:
+ *
+ *   <workspace>/registry/                              a checkout of the registry (`gh-pages`)
+ *   <workspace>/connectors/readwise/dist/server.js     the bundle, built beforehand
+ *   <temp>/nimbus-cli/nimbus[.exe]                     the Nimbus CLI (pinned, hash-checked by CI)
+ *   <temp>/nimbus-keys/publisher.key                   the publisher's Ed25519 seed, base64
+ *   <temp>/nimbus-keys/root.key                        the registry root's Ed25519 seed, base64
  *
  * `--check` needs no key: it reads the registry's `index.json` and the Readwise manifest, and says
  * whether there is anything to publish (`publish=true|false` in `GITHUB_OUTPUT`). CI runs it in a
  * job without the signing environment, so a release with nothing to publish never asks for an
- * approval. `--prebuilt` lets CI build the bundle in its own step, before the keys exist, so the
- * process that reads the keys runs no build.
+ * approval. The publish never builds: the bundle is built in its own step, before the keys exist,
+ * so the process that reads the keys runs no build.
  *
- * Where each path may be — every one is resolved, must exist as the expected kind, and must not be
- * a symlink:
- *  - `--registry` and `--prebuilt` inside the working directory;
- *  - both key files inside the temp directory (`$RUNNER_TEMP`, else the OS temp dir), never inside
- *    the registry, and on POSIX readable by their owner only — a key in the workspace is one
- *    `git add -A` away from being published.
+ * Each path must exist as the expected kind and must not be a symlink. The key files must be
+ * readable by their owner only on POSIX, and never inside the registry — a key in the workspace is
+ * one `git add -A` away from being published.
  *
  * It publishes only when the version in `connectors/readwise/nimbus.extension.json` is not yet in
  * the registry's `index.json`; any other release is a no-op. It never bootstraps a registry —
@@ -483,42 +483,60 @@ export async function publishRegistry(
 // ---------------------------------------------------------------------------------------------
 
 export interface CliIo {
-  cwd: string;
-  env: Record<string, string | undefined>;
+  /** The repository root; the script uses `process.cwd()`. */
+  workspace: string;
+  /** Where the CLI and the keys live; the script uses `$RUNNER_TEMP`, else the OS temp dir. */
+  tempDir: string;
+  /** Where to append step outputs (`$GITHUB_OUTPUT`), if anywhere. */
+  githubOutput?: string | undefined;
   log(message: string): void;
   run(argv: string[]): Promise<number>;
-  /** Builds the bundle when no `--prebuilt` is given. */
-  build(outFile: string): Promise<void>;
 }
 
-const PUBLISH_FLAGS = [
-  "cli",
-  "registry",
-  "publisher-key-file",
-  "root-key-file",
-  "publisher-id",
-] as const;
+/** The fixed places, relative to their base, of everything the script reads. */
+export const LAYOUT = {
+  registry: "registry",
+  bundle: join("connectors", "readwise", "dist", "server.js"),
+  cli: join("nimbus-cli", process.platform === "win32" ? "nimbus.exe" : "nimbus"),
+  keyDir: "nimbus-keys",
+  publisherKey: "publisher.key",
+  rootKey: "root.key",
+} as const;
 
-const asFlag = (name: string): string => `--${name}`;
+export interface Layout {
+  registryDir: string;
+  bundle: string;
+  cli: string;
+  publisherKeyFile: string;
+  rootKeyFile: string;
+}
 
-function writeOutputs(env: CliIo["env"], lines: string[]): void {
-  const file = env["GITHUB_OUTPUT"];
+/** Every path the script uses: constant names joined onto the two bases. Nothing from argv. */
+export function fixedLayout(workspace: string, tempDir: string): Layout {
+  return {
+    registryDir: join(workspace, LAYOUT.registry),
+    bundle: join(workspace, LAYOUT.bundle),
+    cli: join(tempDir, LAYOUT.cli),
+    publisherKeyFile: join(tempDir, LAYOUT.keyDir, LAYOUT.publisherKey),
+    rootKeyFile: join(tempDir, LAYOUT.keyDir, LAYOUT.rootKey),
+  };
+}
+
+function writeOutputs(file: string | undefined, lines: string[]): void {
   if (file === undefined || file === "") return;
   appendFileSync(file, `${lines.join("\n")}\n`, "utf8");
 }
 
-/** Run the script with `argv` (no program name). Every path is checked before anything reads it. */
+/**
+ * Run the script with `argv` (no program name). Argv carries only the mode and the publisher id;
+ * every path comes from {@link fixedLayout} and is checked before anything reads it.
+ */
 export async function runCli(argv: string[], io: CliIo): Promise<void> {
   const { values } = parseArgs({
     args: argv,
     options: {
-      cli: { type: "string" },
-      registry: { type: "string" },
-      "publisher-key-file": { type: "string" },
-      "root-key-file": { type: "string" },
-      "publisher-id": { type: "string" },
-      prebuilt: { type: "string" },
       check: { type: "boolean" },
+      "publisher-id": { type: "string" },
     },
     strict: true,
     allowPositionals: false,
@@ -527,54 +545,48 @@ export async function runCli(argv: string[], io: CliIo): Promise<void> {
   // anything read from a key file.
   const { id, version } = manifestIdVersion(READWISE_DIR);
   const label = `${id}@${version}`;
-  const inCwd = (input: string | undefined, kind: PathKind, what: string): string =>
-    checkedPath(input ?? "", { cwd: io.cwd, kind, what, base: io.cwd });
+  const paths = fixedLayout(io.workspace, io.tempDir);
+  const registryDir = checkedPath(paths.registryDir, {
+    cwd: io.workspace,
+    kind: "directory",
+    what: "the registry checkout",
+    base: io.workspace,
+  });
 
   if (values.check === true) {
-    const registryDir = inCwd(values.registry, "directory", "--registry");
     const { publish } = checkPublish(registryDir);
     io.log(publish ? `${label}: not in the registry; publishing.` : `${label}: already published.`);
-    writeOutputs(io.env, [`publish=${publish}`, `id=${id}`, `version=${version}`]);
+    writeOutputs(io.githubOutput, [`publish=${publish}`, `id=${id}`, `version=${version}`]);
     return;
   }
 
-  const missing = PUBLISH_FLAGS.filter((k) => !values[k]);
-  if (missing.length > 0) {
-    throw new Error(`missing required flag(s): ${missing.map(asFlag).join(", ")}`);
+  const publisherId = values["publisher-id"];
+  if (publisherId === undefined || publisherId.trim() === "") {
+    throw new Error("missing required flag --publisher-id");
   }
-  const registryDir = inCwd(values.registry, "directory", "--registry");
-  const tempBase = io.env["RUNNER_TEMP"] || tmpdir();
-  const keyFile = (flag: "publisher-key-file" | "root-key-file"): string => {
-    const file = checkedPath(values[flag] ?? "", {
-      cwd: io.cwd,
-      kind: "file",
-      what: asFlag(flag),
-      base: tempBase,
-    });
-    if (isInside(registryDir, file)) throw new Error(`${asFlag(flag)} is inside the registry`);
-    return file;
+  const bundle = checkedPath(paths.bundle, {
+    cwd: io.workspace,
+    kind: "file",
+    what: "the prebuilt bundle (run `bun connectors/readwise/scripts/build-extension.ts` first)",
+    base: io.workspace,
+  });
+  const inTemp = (file: string, what: string): string => {
+    const real = checkedPath(file, { cwd: io.tempDir, kind: "file", what, base: io.tempDir });
+    if (isInside(registryDir, real)) throw new Error(`${what} is inside the registry`);
+    return real;
   };
-  const publisherKeyFile = keyFile("publisher-key-file");
-  const rootKeyFile = keyFile("root-key-file");
-  const cli = checkedPath(values.cli ?? "", { cwd: io.cwd, kind: "file", what: "--cli" });
-  const prebuilt =
-    values.prebuilt === undefined ? undefined : inCwd(values.prebuilt, "file", "--prebuilt");
-  const build =
-    prebuilt === undefined ? io.build : (outFile: string) => copyFile(prebuilt, outFile);
+  const cli = inTemp(paths.cli, "the Nimbus CLI");
+  const publisherKeyFile = inTemp(paths.publisherKeyFile, "the publisher key file");
+  const rootKeyFile = inTemp(paths.rootKeyFile, "the root key file");
 
   const result = await publishRegistry(
-    {
-      cli,
-      registryDir,
-      publisherKeyFile,
-      rootKeyFile,
-      publisherId: values["publisher-id"] ?? "",
-    },
-    { build, run: io.run, log: io.log },
+    { cli, registryDir, publisherKeyFile, rootKeyFile, publisherId },
+    // The bundle was built before the keys existed; this process only copies it.
+    { build: (outFile) => copyFile(bundle, outFile), run: io.run, log: io.log },
   );
   const published = result.status === "published";
   if (published) io.log(`${label}: published.`);
-  writeOutputs(io.env, [
+  writeOutputs(io.githubOutput, [
     `published=${published}`,
     `id=${id}`,
     `version=${version}`,
@@ -585,15 +597,12 @@ export async function runCli(argv: string[], io: CliIo): Promise<void> {
 if (import.meta.main) {
   try {
     await runCli(process.argv.slice(2), {
-      cwd: process.cwd(),
-      env: process.env,
+      workspace: process.cwd(),
+      tempDir: process.env["RUNNER_TEMP"] || tmpdir(),
+      githubOutput: process.env["GITHUB_OUTPUT"],
       log: (message) => console.log(message),
       run: (argv) =>
         Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" }).exited,
-      build: async (outFile) => {
-        const m = await import("../connectors/readwise/scripts/build-extension.ts");
-        await m.buildExtension(outFile);
-      },
     });
   } catch (e) {
     console.error(`::error::${e instanceof Error ? e.message : String(e)}`);
