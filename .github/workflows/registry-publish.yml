@@ -1,0 +1,165 @@
+name: Registry publish
+
+# Signs the Readwise extension and adds it to the official Nimbus extension registry: the static
+# folder on this repo's `gh-pages` branch, served by GitHub Pages. Called by release.yml after each
+# connectors release; dispatch it by hand for the first publish. It publishes only when the version
+# in connectors/readwise/nimbus.extension.json is not yet in the registry — every other run is a
+# no-op. The procedure and the owner's one-time setup are in docs/publishing.md.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The protected environment holds both signing keys and requires a reviewer's approval. Its
+    # secrets reach only this job, and only after that approval.
+    environment: official-registry
+    permissions:
+      # Push to gh-pages. Nothing else.
+      contents: write
+    concurrency:
+      group: official-registry
+      cancel-in-progress: false
+    env:
+      # The CLI is not on npm. Pinned to a release and to the SHA-256 of its linux binary, checked
+      # here as a literal: SHA256SUMS comes from the same release as the binary, so it cannot be
+      # the only check.
+      NIMBUS_CLI_VERSION: v9.2.1
+      NIMBUS_CLI_SHA256: e9dfc632f707d679782b23d6d8d08d16c82abaedb5bbce3c2c5af72e107bc00d
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # Only main's code may hold the keys. The environment's deployment-branch rule should say the
+      # same; this holds even if it is loosened.
+      - name: Refuse a ref other than main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::registry publishing runs from refs/heads/main only, not $REF"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the registry branch exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh api "repos/${GITHUB_REPOSITORY}/branches/gh-pages" --silent; then
+            echo "::error::branch gh-pages does not exist. Bootstrapping the registry is the owner's one-time job — see docs/publishing.md § Publishing to the official Nimbus registry."
+            exit 1
+          fi
+
+      # No persisted credential: the build and the CLI run before the push, and neither needs one.
+      # The push step supplies the token itself.
+      - name: Checkout the registry (gh-pages)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: registry
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3"
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Download and verify the Nimbus CLI
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/nimbus-cli"
+          mkdir -p "$dir"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 \
+            -o "$dir/nimbus" \
+            "https://github.com/nimbus-agent/Nimbus/releases/download/${NIMBUS_CLI_VERSION}/nimbus-cli-linux-x64"
+          printf '%s  %s\n' "$NIMBUS_CLI_SHA256" "$dir/nimbus" | sha256sum --check --strict -
+          chmod +x "$dir/nimbus"
+
+      # The keys reach the disk through env and the `printf` builtin — never argv, never a traced
+      # shell — into a 0700 directory with umask 077. The CLI and the script take only their paths.
+      - name: Write the signing keys
+        env:
+          ROOT_KEY: ${{ secrets.NIMBUS_REGISTRY_ROOT_KEY }}
+          PUBLISHER_KEY: ${{ secrets.NIMBUS_PUBLISHER_KEY }}
+          PUBLISHER_ID: ${{ vars.NIMBUS_PUBLISHER_ID }}
+        run: |
+          set -eu
+          umask 077
+          missing=""
+          [ -n "${ROOT_KEY:-}" ] || missing="$missing secret:NIMBUS_REGISTRY_ROOT_KEY"
+          [ -n "${PUBLISHER_KEY:-}" ] || missing="$missing secret:NIMBUS_PUBLISHER_KEY"
+          [ -n "${PUBLISHER_ID:-}" ] || missing="$missing variable:NIMBUS_PUBLISHER_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::the official-registry environment is missing:$missing"
+            exit 1
+          fi
+          keys="$RUNNER_TEMP/nimbus-keys"
+          mkdir -m 700 "$keys"
+          printf '%s' "$ROOT_KEY" > "$keys/root.key"
+          printf '%s' "$PUBLISHER_KEY" > "$keys/publisher.key"
+
+      - name: Sign and add to the registry
+        id: publish
+        env:
+          PUBLISHER_ID: ${{ vars.NIMBUS_PUBLISHER_ID }}
+        run: |
+          bun scripts/publish-registry.ts \
+            --cli "$RUNNER_TEMP/nimbus-cli/nimbus" \
+            --registry registry \
+            --publisher-key-file "$RUNNER_TEMP/nimbus-keys/publisher.key" \
+            --root-key-file "$RUNNER_TEMP/nimbus-keys/root.key" \
+            --publisher-id "$PUBLISHER_ID"
+
+      # Remove the keys before anything talks to the network again.
+      - name: Delete the signing keys
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/nimbus-keys"
+
+      - name: Commit and push the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHED: ${{ steps.publish.outputs.published }}
+          EXT_ID: ${{ steps.publish.outputs.id }}
+          EXT_VERSION: ${{ steps.publish.outputs.version }}
+          SEQUENCE: ${{ steps.publish.outputs.sequence }}
+        working-directory: registry
+        run: |
+          set -euo pipefail
+          # GitHub Pages must serve the folder as-is, not through Jekyll.
+          touch .nojekyll
+          git add -A
+          if git diff --cached --quiet; then
+            echo "registry unchanged; nothing to push"
+            exit 0
+          fi
+          if [ "$PUBLISHED" = "true" ]; then
+            msg="registry: add ${EXT_ID}@${EXT_VERSION} (sequence ${SEQUENCE})"
+          else
+            msg="registry: add .nojekyll"
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "$msg" -m "From ${GITHUB_REPOSITORY}@${GITHUB_SHA}, run ${GITHUB_RUN_ID}."
+          # The token goes to git through GIT_CONFIG_* env, not argv and not .git/config.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push "https://github.com/${GITHUB_REPOSITORY}.git" HEAD:gh-pages

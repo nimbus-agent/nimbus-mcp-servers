@@ -10,7 +10,7 @@ pages are the detail behind it.
 | [Configuration](./configuration.md) | You are wiring a connector into a client: credentials, write scopes, the audit log. |
 | [Standalone launcher](./standalone-launcher.md) | You want the `nimbus-connector` entry point: eligibility, exit codes, refusal behaviour. |
 | [Adding a connector](./adding-a-connector.md) | You are writing a new connector or changing an existing one. |
-| [Publishing](./publishing.md) | You are cutting a release of `@nimbus-dev/connectors`. |
+| [Publishing](./publishing.md) | You are cutting a release of `@nimbus-dev/connectors`, or publishing the Readwise extension to the official Nimbus registry. |
 
 Four files at the repository root are documentation in their own right and are deliberately not
 duplicated here:

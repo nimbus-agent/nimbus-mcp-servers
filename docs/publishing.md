@@ -62,6 +62,64 @@ cleanly can still fail to resolve once installed.
 0.1.0 and 0.1.1 were published by hand, before this pipeline existed, and carry no provenance.
 Every release since 0.2.0 came from it.
 
+## Publishing to the official Nimbus registry
+
+The Readwise connector also ships as a self-contained, signed Nimbus extension
+(`com.nimbus.readwise`), published to the **official Nimbus extension registry**: a static folder
+on this repository's `gh-pages` branch, served by GitHub Pages. The registry URL is the Pages URL,
+`https://nimbus-agent.github.io/nimbus-mcp-servers/`.
+
+### What the job does
+
+After the npm publish of every release, `release.yml` calls
+`.github/workflows/registry-publish.yml`. It can also be dispatched by hand from `main`, which is
+how the first publish happens. The job:
+
+1. waits for a reviewer to approve the protected `official-registry` environment, whose secrets
+   are the two signing keys;
+2. checks out the release commit and the `gh-pages` branch, and refuses to run from any ref but
+   `main`;
+3. downloads the Nimbus CLI — it is not on npm — from a pinned Nimbus release, and verifies it
+   against a SHA-256 written into the workflow;
+4. writes the two keys to files under `$RUNNER_TEMP` (mode 0600), and runs
+   `scripts/publish-registry.ts`, which builds `dist/server.js`, stages the package with the
+   publisher block added to the staged manifest (never the repository's), runs
+   `nimbus extension sign` and then `nimbus registry maintain add`, which re-signs `index.json`;
+5. deletes the key files, and commits the changed registry to `gh-pages` as
+   `registry: add <id>@<version> (sequence N)`.
+
+**The version rule.** The job publishes only when the `version` in
+`connectors/readwise/nimbus.extension.json` is not yet in the registry. A release that does not bump
+it publishes nothing. To ship a new extension build, bump that `version` in the PR that changes it.
+A registry version is immutable: the same version is never re-signed or replaced.
+
+The script refuses, before running the CLI, when the publisher key it is given differs from the
+one the registry records for the id, or the root key differs from the index's `rootKey`. **A
+publisher key can never change for an id** — installs pin it — so losing the publisher seed means
+publishing under a new id.
+
+The pinned CLI (v9.2.1) reads the manifest's `entry` and not `entrypoint`, so the staged manifest
+sets `entry` to the same value. That shim goes once the pin moves to a release that reads
+`entrypoint`.
+
+### One-time setup (the owner)
+
+CI never bootstraps the registry: `nimbus registry maintain init` mints a fresh root key, so a
+bootstrap run in CI would either fail or replace the root of trust.
+
+1. Generate the publisher key: `nimbus extension keygen --out <publisher-key>`.
+2. Create the registry: `nimbus registry maintain init <dir> --key <root-key>`. Push the contents
+   of `<dir>` — `index.json`, `extensions/`, and an empty `.nojekyll` — as the root of an orphan
+   `gh-pages` branch.
+3. Enable GitHub Pages: deploy from a branch, `gh-pages`, folder `/ (root)`.
+4. Create the environment `official-registry` (Settings → Environments) with required reviewers
+   and its deployment branches limited to `main`. Give it the secrets `NIMBUS_REGISTRY_ROOT_KEY`
+   and `NIMBUS_PUBLISHER_KEY` — each the full contents of its key file — and the variable
+   `NIMBUS_PUBLISHER_ID`, the publisher id to record. Put the keys in the environment, not in the
+   repository's secrets: environment secrets reach only the approved job.
+5. Keep offline backups of both seeds. The root key re-signs the index on every publish, and the
+   publisher key can never be replaced for an id.
+
 ## After publishing
 
 The Nimbus gateway consumes this package from npm. It pins it in `packages/gateway/package.json`,
