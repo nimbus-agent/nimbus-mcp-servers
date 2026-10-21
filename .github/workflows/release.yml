@@ -214,7 +214,9 @@ jobs:
   # `secrets: inherit` would hand the release-bot key to a job that has no use for it.
   publish-registry:
     needs: [release-please, publish]
-    if: needs.release-please.outputs.releases_created == 'true'
+    # OFFICIAL_REGISTRY_ENABLED is a repository variable the owner sets to 'true' last, once the
+    # registry's one-time setup is complete. Until then releases skip this job and stay green.
+    if: needs.release-please.outputs.releases_created == 'true' && vars.OFFICIAL_REGISTRY_ENABLED == 'true'
     permissions:
       contents: write
     uses: ./.github/workflows/registry-publish.yml

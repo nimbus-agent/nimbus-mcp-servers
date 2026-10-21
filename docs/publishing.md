@@ -72,8 +72,11 @@ on this repository's `gh-pages` branch, served by GitHub Pages. The registry URL
 ### What the job does
 
 After the npm publish of every release, `release.yml` calls
-`.github/workflows/registry-publish.yml`. It can also be dispatched by hand from `main`, which is
-how the first publish happens. The job:
+`.github/workflows/registry-publish.yml` — but only once the repository variable
+`OFFICIAL_REGISTRY_ENABLED` is `true`. Until the owner sets it, releases skip the job and stay
+green. The workflow can also be dispatched by hand from `main`, which is how the first publish
+happens; a dispatch is refused, before any approval is requested, unless the variable is `true`.
+The job:
 
 1. waits for a reviewer to approve the protected `official-registry` environment, whose secrets
    are the two signing keys;
@@ -87,6 +90,11 @@ how the first publish happens. The job:
    `nimbus extension sign` and then `nimbus registry maintain add`, which re-signs `index.json`;
 5. deletes the key files, and commits the changed registry to `gh-pages` as
    `registry: add <id>@<version> (sequence N)`.
+
+**What the package contains:** `nimbus.extension.json` (the staged manifest), `dist/server.js`,
+the connector's `README.md`, and a `LICENSE`. The AGPL requires the licence text to travel with
+the code, so a connector without a LICENSE of its own — Readwise has none — ships the repository's
+root `LICENSE`.
 
 **The version rule.** The job publishes only when the `version` in
 `connectors/readwise/nimbus.extension.json` is not yet in the registry. A release that does not bump
@@ -119,6 +127,12 @@ bootstrap run in CI would either fail or replace the root of trust.
    repository's secrets: environment secrets reach only the approved job.
 5. Keep offline backups of both seeds. The root key re-signs the index on every publish, and the
    publisher key can never be replaced for an id.
+6. **Last**, set the repository variable `OFFICIAL_REGISTRY_ENABLED` to `true` (Settings → Secrets
+   and variables → Actions → Variables) — only after the environment, its secrets and variable,
+   the `gh-pages` branch and Pages are all in place. The environment in particular must already
+   exist, with required reviewers and deployment restricted to `main`, before you enable: a job
+   that names an environment which does not exist makes GitHub create it, with no protection
+   rules at all.
 
 ## After publishing
 

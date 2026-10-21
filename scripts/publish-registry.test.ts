@@ -186,8 +186,45 @@ describe("stagePackage", () => {
     expect(staged.publisher).toEqual(PUBLISHER);
     expect(staged.entry).toBe("dist/server.js");
     expect(staged.description).toBe("é ✓");
-    expect(readdirSync(stage).sort()).toEqual(["README.md", "dist", "nimbus.extension.json"]);
+    expect(readdirSync(stage).sort()).toEqual([
+      "LICENSE",
+      "README.md",
+      "dist",
+      "nimbus.extension.json",
+    ]);
     expect(existsSync(join(stage, "dist", "server.js"))).toBe(true);
+  });
+
+  test("a connector without a LICENSE ships the repository's AGPL text", async () => {
+    const connector = fakeConnector();
+    const stage = join(scratch, "stage");
+    await stagePackage({
+      connectorDir: connector,
+      stageDir: stage,
+      publisher: PUBLISHER,
+      build: fakeBuild,
+    });
+    const rootLicense = readFileSync(join(ROOT, "LICENSE"));
+    expect(rootLicense.toString("utf8")).toContain("GNU AFFERO GENERAL PUBLIC LICENSE");
+    expect(readFileSync(join(stage, "LICENSE")).equals(rootLicense)).toBe(true);
+  });
+
+  test("the real readwise connector has no LICENSE of its own, so it relies on the root one", () => {
+    expect(
+      readdirSync(join(ROOT, "connectors", "readwise")).filter((n) => /^LICENSE/i.test(n)),
+    ).toEqual([]);
+  });
+
+  test("a missing licence file fails the staging rather than shipping without one", async () => {
+    await expect(
+      stagePackage({
+        connectorDir: fakeConnector(),
+        stageDir: join(scratch, "stage"),
+        publisher: PUBLISHER,
+        build: fakeBuild,
+        licenseFile: join(scratch, "no-such-LICENSE"),
+      }),
+    ).rejects.toThrow(/licence file/);
   });
 
   test("copies a LICENSE when the connector has one", async () => {
@@ -369,5 +406,24 @@ describe("the registry workflow", () => {
   test("release.yml calls it after the npm publish, only when a release was created", () => {
     expect(release).toContain("uses: ./.github/workflows/registry-publish.yml");
     expect(release).toMatch(/publish-registry:[\s\S]*needs: \[release-please, publish\]/);
+  });
+
+  test("release.yml runs it only once the owner has set OFFICIAL_REGISTRY_ENABLED", () => {
+    const job = release.slice(release.indexOf("  publish-registry:"));
+    expect(job).toMatch(
+      /if: needs\.release-please\.outputs\.releases_created == 'true' && vars\.OFFICIAL_REGISTRY_ENABLED == 'true'/,
+    );
+  });
+
+  test("the workflow refuses before the protected job unless OFFICIAL_REGISTRY_ENABLED is true", () => {
+    const preflight = workflow.slice(
+      workflow.indexOf("  preflight:"),
+      workflow.indexOf("  publish:"),
+    );
+    expect(preflight).toContain("vars.OFFICIAL_REGISTRY_ENABLED");
+    expect(preflight).not.toContain("environment:");
+    expect(workflow).toMatch(
+      / {2}publish:[\s\S]*needs: preflight[\s\S]*environment: official-registry/,
+    );
   });
 });

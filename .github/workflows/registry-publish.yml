@@ -14,7 +14,43 @@ permissions:
   contents: read
 
 jobs:
+  # Runs WITHOUT the environment, so a refusal here happens before any approval prompt — and before
+  # GitHub would auto-create an `official-registry` environment, unprotected, that does not exist.
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The owner sets OFFICIAL_REGISTRY_ENABLED=true last, once the environment (with required
+      # reviewers, deployment restricted to main), its secrets, gh-pages and Pages are all in place.
+      # release.yml skips this workflow until then; a manual dispatch is refused here.
+      - name: Refuse unless the registry is enabled
+        env:
+          ENABLED: ${{ vars.OFFICIAL_REGISTRY_ENABLED }}
+        run: |
+          if [ "$ENABLED" != "true" ]; then
+            echo "::error::repository variable OFFICIAL_REGISTRY_ENABLED is not 'true'. Finish the one-time registry setup in docs/publishing.md (§ Publishing to the official Nimbus registry) and set the variable last."
+            exit 1
+          fi
+
+      # Only main's code may hold the keys. The environment's deployment-branch rule should say the
+      # same; this holds even if it is loosened.
+      - name: Refuse a ref other than main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::registry publishing runs from refs/heads/main only, not $REF"
+            exit 1
+          fi
+
   publish:
+    needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # The protected environment holds both signing keys and requires a reviewer's approval. Its
@@ -37,17 +73,6 @@ jobs:
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
-
-      # Only main's code may hold the keys. The environment's deployment-branch rule should say the
-      # same; this holds even if it is loosened.
-      - name: Refuse a ref other than main
-        env:
-          REF: ${{ github.ref }}
-        run: |
-          if [ "$REF" != "refs/heads/main" ]; then
-            echo "::error::registry publishing runs from refs/heads/main only, not $REF"
-            exit 1
-          fi
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

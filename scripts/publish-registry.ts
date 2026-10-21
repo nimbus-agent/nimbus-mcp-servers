@@ -210,20 +210,37 @@ function readManifest(connectorDir: string): Record<string, unknown> {
   return parsed;
 }
 
-/** Lay out the package in `stageDir`: the staged manifest, `dist/`, and README/LICENSE. */
+/** The repository's AGPL-3.0 licence text. */
+export const ROOT_LICENSE = join(ROOT, "LICENSE");
+
+/**
+ * Lay out the package in `stageDir`: the staged manifest, `dist/`, the connector's README, and a
+ * LICENSE. The AGPL requires the licence text to travel with the code, so a connector without a
+ * LICENSE of its own ships the repository's (`licenseFile`, default {@link ROOT_LICENSE}).
+ */
 export async function stagePackage(args: {
   connectorDir: string;
   stageDir: string;
   publisher: Publisher;
   build: (outFile: string) => Promise<void>;
+  licenseFile?: string;
 }): Promise<Record<string, unknown>> {
   const { connectorDir, stageDir, publisher, build } = args;
   mkdirSync(join(stageDir, "dist"), { recursive: true });
   await build(join(stageDir, "dist", "server.js"));
+  let hasLicense = false;
   for (const name of readdirSync(connectorDir)) {
     if (/^(?:README|LICENSE)(?:\.|$)/i.test(name)) {
       copyFileSync(join(connectorDir, name), join(stageDir, name));
+      if (/^LICENSE/i.test(name)) hasLicense = true;
     }
+  }
+  if (!hasLicense) {
+    const licenseFile = args.licenseFile ?? ROOT_LICENSE;
+    if (!existsSync(licenseFile)) {
+      throw new Error(`licence file ${licenseFile} does not exist; the package must carry one`);
+    }
+    copyFileSync(licenseFile, join(stageDir, "LICENSE"));
   }
   const staged = stageManifest(readManifest(connectorDir), publisher);
   // UTF-8 explicitly: the manifest carries non-ASCII text.
