@@ -128,7 +128,13 @@ it publishes nothing. To ship a new extension build, bump that `version` in the 
 A registry version is immutable: the same version is never re-signed or replaced.
 
 The script refuses, before running the CLI, when the publisher key it is given differs from the
-one the registry records for the id, or the root key differs from the index's `rootKey`. **A
+one the registry records for the id, or the root key differs from the index's `rootKey`. Its
+messages name what the registry records, never anything read from or derived from a key file.
+Every path it takes is resolved and checked first. It must exist as the right kind, and it must not
+be a symlink. `--registry` and `--prebuilt` must be inside the working directory. Both key files
+must be inside the temp directory (`$RUNNER_TEMP`, else the OS temp directory) and outside the
+registry, and on POSIX readable by their owner only. A key in the workspace would be one
+`git add -A` away from being published. **A
 publisher key can never change for an id** — installs pin it — so losing the publisher seed means
 publishing under a new id.
 

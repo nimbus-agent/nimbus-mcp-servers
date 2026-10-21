@@ -19,12 +19,20 @@
  * approval. `--prebuilt` lets CI build the bundle in its own step, before the keys exist, so the
  * process that reads the keys runs no build.
  *
+ * Where each path may be — every one is resolved, must exist as the expected kind, and must not be
+ * a symlink:
+ *  - `--registry` and `--prebuilt` inside the working directory;
+ *  - both key files inside the temp directory (`$RUNNER_TEMP`, else the OS temp dir), never inside
+ *    the registry, and on POSIX readable by their owner only — a key in the workspace is one
+ *    `git add -A` away from being published.
+ *
  * It publishes only when the version in `connectors/readwise/nimbus.extension.json` is not yet in
  * the registry's `index.json`; any other release is a no-op. It never bootstraps a registry —
  * `nimbus registry maintain init` mints a fresh root key, which is the owner's job, once.
  *
- * Keys travel only as FILE PATHS: no key reaches argv, a log line or an error message. When
- * `GITHUB_OUTPUT` is set, the outcome is written there for the commit step.
+ * Keys travel only as FILE PATHS. Nothing read from a key file, or derived from one — not even the
+ * public key — reaches argv, a log line or an error message. When `GITHUB_OUTPUT` is set, the
+ * outcome is written there for the commit step.
  *
  * This file is repo tooling, not shipped code, so it is outside the spawn chokepoint's scope and
  * starts the CLI with `Bun.spawn` and an argv array — never a shell.
@@ -35,15 +43,19 @@ import {
   appendFileSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  type Stats,
   writeFileSync,
 } from "node:fs";
+import { copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -97,6 +109,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------------------------
+
+export type PathKind = "file" | "directory";
+
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `child` (absolute, real) is strictly inside `parent` (absolute, real). */
+export function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  const prefix = parent.endsWith(sep) ? parent : parent + sep;
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) && child.startsWith(prefix);
+}
+
+/**
+ * `input` (relative to `cwd`) as a real absolute path: it must exist as `kind`, must not itself be
+ * a symlink, and — when `base` is given — must resolve strictly inside `base`.
+ */
+export function checkedPath(
+  input: string,
+  opts: { cwd: string; kind: PathKind; what: string; base?: string },
+): string {
+  if (input === "") throw new Error(`${opts.what} is empty`);
+  const candidate = resolve(opts.cwd, input);
+  const stats = lstatOrNull(candidate);
+  if (stats === null) throw new Error(`${opts.what} ${candidate} does not exist`);
+  if (stats.isSymbolicLink()) throw new Error(`${opts.what} ${candidate} is a symlink`);
+  const rightKind = opts.kind === "file" ? stats.isFile() : stats.isDirectory();
+  if (!rightKind) throw new Error(`${opts.what} ${candidate} is not a ${opts.kind}`);
+  const real = realpathSync(candidate);
+  if (opts.base !== undefined) {
+    const base = realpathSync(resolve(opts.cwd, opts.base));
+    if (!isInside(base, real)) {
+      throw new Error(`${opts.what} ${candidate} is outside ${base}, where it must be`);
+    }
+  }
+  return real;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Keys
+// ---------------------------------------------------------------------------------------------
+
 /**
  * Decode a key file's text — one line of base64 holding a 32-byte Ed25519 seed, as
  * `nimbus extension keygen --out` and `nimbus registry maintain init --key` write it. The error
@@ -119,18 +181,65 @@ export function derivePublicKey(seedBase64: string): string {
     type: "pkcs8",
   });
   const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
-  return Buffer.from(spki.subarray(spki.length - 32)).toString("base64");
+  return Buffer.from(spki.subarray(-32)).toString("base64");
+}
+
+/**
+ * A key file's seed. The file must be a regular file, not a symlink, and on POSIX unreadable by
+ * group and others. No error quotes the contents.
+ */
+function readSeedFile(file: string, what: string): string {
+  const stats = lstatOrNull(file);
+  if (stats === null) throw new Error(`${what} file ${file} does not exist`);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`${what} file ${file} is not a regular file`);
+  }
+  if (process.platform !== "win32" && (stats.mode & 0o077) !== 0) {
+    throw new Error(`${what} file ${file} is readable by group or others; chmod 600 it`);
+  }
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+    decodeSeed(text);
+  } catch {
+    throw new Error(`${what} file ${file} is not one line of base64 holding a 32-byte seed`);
+  }
+  return text.trim();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Registry index
+// ---------------------------------------------------------------------------------------------
+
+function parsePublisher(value: unknown): Partial<Publisher> | undefined {
+  if (!isRecord(value)) return undefined;
+  const p: Partial<Publisher> = {};
+  if (typeof value["id"] === "string") p.id = value["id"];
+  if (typeof value["key"] === "string") p.key = value["key"];
+  return p;
+}
+
+function parseEntry(entry: Record<string, unknown>): RegistryEntry {
+  const out: RegistryEntry = {};
+  const publisher = parsePublisher(entry["publisher"]);
+  if (publisher !== undefined) out.publisher = publisher;
+  if (isRecord(entry["versions"])) out.versions = entry["versions"];
+  return out;
 }
 
 /** Read `<registryDir>/index.json`. A missing one is the owner's to bootstrap, never CI's. */
 export function loadIndex(registryDir: string): RegistryIndex {
   const file = join(registryDir, "index.json");
-  if (!existsSync(file)) {
+  const stats = lstatOrNull(file);
+  if (stats === null) {
     throw new Error(
       `${file} does not exist. The registry has not been bootstrapped: the owner runs ` +
         "`nimbus registry maintain init <dir> --key <root-key>` once and pushes the result as the " +
         "gh-pages branch (docs/publishing.md). CI never bootstraps — init mints a fresh root key.",
     );
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`${file} is not a regular file`);
   }
   const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
   if (!isRecord(parsed) || !isRecord(parsed["extensions"])) {
@@ -138,18 +247,7 @@ export function loadIndex(registryDir: string): RegistryIndex {
   }
   const extensions: Record<string, RegistryEntry> = {};
   for (const [id, entry] of Object.entries(parsed["extensions"])) {
-    if (!isRecord(entry)) continue;
-    const publisher = isRecord(entry["publisher"]) ? entry["publisher"] : undefined;
-    const versions = isRecord(entry["versions"]) ? entry["versions"] : undefined;
-    const out: RegistryEntry = {};
-    if (publisher !== undefined) {
-      const p: Partial<Publisher> = {};
-      if (typeof publisher["id"] === "string") p.id = publisher["id"];
-      if (typeof publisher["key"] === "string") p.key = publisher["key"];
-      out.publisher = p;
-    }
-    if (versions !== undefined) out.versions = versions;
-    extensions[id] = out;
+    if (isRecord(entry)) extensions[id] = parseEntry(entry);
   }
   const index: RegistryIndex = { extensions };
   if (typeof parsed["rootKey"] === "string") index.rootKey = parsed["rootKey"];
@@ -157,7 +255,10 @@ export function loadIndex(registryDir: string): RegistryIndex {
   return index;
 }
 
-/** Whether `id@version` should be published under `publisher`. */
+/**
+ * Whether `id@version` should be published under `publisher`. A refusal names what the REGISTRY
+ * records, never the key supplied: nothing derived from a key file is printed.
+ */
 export function planPublish(
   index: RegistryIndex,
   id: string,
@@ -171,9 +272,9 @@ export function planPublish(
     return {
       action: "refuse",
       reason:
-        `the registry records publisher key ${known.key} for ${id}, but the publisher key ` +
-        `supplied derives ${publisher.key}. A publisher key can never change for an id — ` +
-        "installs pin it. Supply the original publisher seed.",
+        `the publisher key supplied does not match the one the registry records for ${id} ` +
+        `(${known.key}). A publisher key can never change for an id — installs pin it. Supply ` +
+        "the original publisher seed.",
     };
   }
   if (known?.id !== undefined && known.id !== publisher.id) {
@@ -187,6 +288,10 @@ export function planPublish(
   }
   return { action: "publish" };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Staging
+// ---------------------------------------------------------------------------------------------
 
 /**
  * The manifest as it ships in the package: the repo manifest plus the publisher block and the
@@ -203,7 +308,7 @@ export function stageManifest(
 ): Record<string, unknown> {
   const entrypoint = manifest["entrypoint"];
   if (typeof entrypoint !== "string" || entrypoint === "") {
-    throw new Error("the extension manifest has no `entrypoint`");
+    throw new TypeError("the extension manifest has no `entrypoint`");
   }
   if (manifest["entry"] !== undefined && manifest["entry"] !== entrypoint) {
     throw new Error("the extension manifest's `entry` differs from its `entrypoint`");
@@ -215,8 +320,18 @@ function readManifest(connectorDir: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(
     readFileSync(join(connectorDir, "nimbus.extension.json"), "utf8"),
   );
-  if (!isRecord(parsed)) throw new Error("nimbus.extension.json is not a JSON object");
+  if (!isRecord(parsed)) throw new TypeError("nimbus.extension.json is not a JSON object");
   return parsed;
+}
+
+function manifestIdVersion(connectorDir: string): { id: string; version: string } {
+  const manifest = readManifest(connectorDir);
+  const id = manifest["id"];
+  const version = manifest["version"];
+  if (typeof id !== "string" || typeof version !== "string") {
+    throw new TypeError("nimbus.extension.json needs a string `id` and `version`");
+  }
+  return { id, version };
 }
 
 /** The repository's AGPL-3.0 licence text. */
@@ -261,32 +376,15 @@ export async function stagePackage(args: {
   return staged;
 }
 
-function readSeedFile(file: string, what: string): string {
-  if (!existsSync(file)) throw new Error(`${what} file ${file} does not exist`);
-  try {
-    const text = readFileSync(file, "utf8");
-    decodeSeed(text);
-    return text.trim();
-  } catch {
-    throw new Error(`${what} file ${file} is not one line of base64 holding a 32-byte seed`);
-  }
-}
+// ---------------------------------------------------------------------------------------------
+// Check and publish
+// ---------------------------------------------------------------------------------------------
 
 export interface CheckResult {
   publish: boolean;
   id: string;
   version: string;
   reason: string;
-}
-
-function manifestIdVersion(connectorDir: string): { id: string; version: string } {
-  const manifest = readManifest(connectorDir);
-  const id = manifest["id"];
-  const version = manifest["version"];
-  if (typeof id !== "string" || typeof version !== "string") {
-    throw new Error("nimbus.extension.json needs a string `id` and `version`");
-  }
-  return { id, version };
 }
 
 /**
@@ -311,6 +409,13 @@ export function checkPublish(
   };
 }
 
+async function runStep(run: PublishDeps["run"], argv: string[]): Promise<void> {
+  const code = await run(argv);
+  if (code !== 0) {
+    throw new Error(`\`nimbus ${argv.slice(1, 4).join(" ")}\` exited ${code}`);
+  }
+}
+
 export async function publishRegistry(
   options: PublishOptions,
   deps: PublishDeps,
@@ -328,12 +433,13 @@ export async function publishRegistry(
   const index = loadIndex(options.registryDir);
   if (index.rootKey !== undefined && index.rootKey !== rootKey) {
     throw new Error(
-      `the root key supplied derives ${rootKey}, but the registry's rootKey is ${index.rootKey}`,
+      `the root key supplied does not match the registry's rootKey (${index.rootKey})`,
     );
   }
   const plan = planPublish(index, id, version, publisher);
-  if (plan.action === "refuse")
+  if (plan.action === "refuse") {
     throw new Error(`refusing to publish ${id}@${version}: ${plan.reason}`);
+  }
   if (plan.action === "skip") {
     deps.log(plan.reason);
     return { status: "skipped", id, version };
@@ -342,25 +448,25 @@ export async function publishRegistry(
   const stageDir = mkdtempSync(join(tmpdir(), "nimbus-extension-stage-"));
   try {
     await stagePackage({ connectorDir, stageDir, publisher, build: deps.build });
-    const steps: string[][] = [
-      [options.cli, "extension", "sign", stageDir, "--key", options.publisherKeyFile],
-      [
-        options.cli,
-        "registry",
-        "maintain",
-        "add",
-        options.registryDir,
-        stageDir,
-        "--key",
-        options.rootKeyFile,
-      ],
-    ];
-    for (const argv of steps) {
-      const code = await deps.run(argv);
-      if (code !== 0) {
-        throw new Error(`\`nimbus ${argv.slice(1, 4).join(" ")}\` exited ${code}`);
-      }
-    }
+    // Sequential, and in this order: `add` packs the signature `sign` writes.
+    await runStep(deps.run, [
+      options.cli,
+      "extension",
+      "sign",
+      stageDir,
+      "--key",
+      options.publisherKeyFile,
+    ]);
+    await runStep(deps.run, [
+      options.cli,
+      "registry",
+      "maintain",
+      "add",
+      options.registryDir,
+      stageDir,
+      "--key",
+      options.rootKeyFile,
+    ]);
   } finally {
     rmSync(stageDir, { recursive: true, force: true });
   }
@@ -372,14 +478,39 @@ export async function publishRegistry(
   return { status: "published", id, version, sequence: after.sequence ?? 0 };
 }
 
-function writeOutputs(lines: string[]): void {
-  const file = process.env["GITHUB_OUTPUT"];
+// ---------------------------------------------------------------------------------------------
+// Command line
+// ---------------------------------------------------------------------------------------------
+
+export interface CliIo {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  log(message: string): void;
+  run(argv: string[]): Promise<number>;
+  /** Builds the bundle when no `--prebuilt` is given. */
+  build(outFile: string): Promise<void>;
+}
+
+const PUBLISH_FLAGS = [
+  "cli",
+  "registry",
+  "publisher-key-file",
+  "root-key-file",
+  "publisher-id",
+] as const;
+
+const asFlag = (name: string): string => `--${name}`;
+
+function writeOutputs(env: CliIo["env"], lines: string[]): void {
+  const file = env["GITHUB_OUTPUT"];
   if (file === undefined || file === "") return;
   appendFileSync(file, `${lines.join("\n")}\n`, "utf8");
 }
 
-async function main(): Promise<void> {
+/** Run the script with `argv` (no program name). Every path is checked before anything reads it. */
+export async function runCli(argv: string[], io: CliIo): Promise<void> {
   const { values } = parseArgs({
+    args: argv,
     options: {
       cli: { type: "string" },
       registry: { type: "string" },
@@ -392,58 +523,78 @@ async function main(): Promise<void> {
     strict: true,
     allowPositionals: false,
   });
+  // The label comes from the repository manifest alone, so a log line built from it cannot carry
+  // anything read from a key file.
+  const { id, version } = manifestIdVersion(READWISE_DIR);
+  const label = `${id}@${version}`;
+  const inCwd = (input: string | undefined, kind: PathKind, what: string): string =>
+    checkedPath(input ?? "", { cwd: io.cwd, kind, what, base: io.cwd });
+
   if (values.check === true) {
-    if (!values.registry) throw new Error("--check needs --registry <dir>");
-    const result = checkPublish(values.registry);
-    console.log(result.reason);
-    writeOutputs([`publish=${result.publish}`, `id=${result.id}`, `version=${result.version}`]);
+    const registryDir = inCwd(values.registry, "directory", "--registry");
+    const { publish } = checkPublish(registryDir);
+    io.log(publish ? `${label}: not in the registry; publishing.` : `${label}: already published.`);
+    writeOutputs(io.env, [`publish=${publish}`, `id=${id}`, `version=${version}`]);
     return;
   }
-  const required = ["cli", "registry", "publisher-key-file", "root-key-file", "publisher-id"];
-  const missing = required.filter((k) => !values[k as keyof typeof values]);
+
+  const missing = PUBLISH_FLAGS.filter((k) => !values[k]);
   if (missing.length > 0) {
-    throw new Error(`missing required flag(s): ${missing.map((m) => `--${m}`).join(", ")}`);
+    throw new Error(`missing required flag(s): ${missing.map(asFlag).join(", ")}`);
   }
-  const prebuilt = values.prebuilt;
+  const registryDir = inCwd(values.registry, "directory", "--registry");
+  const tempBase = io.env["RUNNER_TEMP"] || tmpdir();
+  const keyFile = (flag: "publisher-key-file" | "root-key-file"): string => {
+    const file = checkedPath(values[flag] ?? "", {
+      cwd: io.cwd,
+      kind: "file",
+      what: asFlag(flag),
+      base: tempBase,
+    });
+    if (isInside(registryDir, file)) throw new Error(`${asFlag(flag)} is inside the registry`);
+    return file;
+  };
+  const publisherKeyFile = keyFile("publisher-key-file");
+  const rootKeyFile = keyFile("root-key-file");
+  const cli = checkedPath(values.cli ?? "", { cwd: io.cwd, kind: "file", what: "--cli" });
+  const prebuilt =
+    values.prebuilt === undefined ? undefined : inCwd(values.prebuilt, "file", "--prebuilt");
   const build =
-    prebuilt !== undefined
-      ? async (outFile: string): Promise<void> => {
-          if (!existsSync(prebuilt)) throw new Error(`--prebuilt ${prebuilt} does not exist`);
-          copyFileSync(prebuilt, outFile);
-        }
-      : async (outFile: string): Promise<void> => {
-          const m = await import("../connectors/readwise/scripts/build-extension.ts");
-          await m.buildExtension(outFile);
-        };
+    prebuilt === undefined ? io.build : (outFile: string) => copyFile(prebuilt, outFile);
+
   const result = await publishRegistry(
     {
-      cli: values.cli ?? "",
-      registryDir: values.registry ?? "",
-      publisherKeyFile: values["publisher-key-file"] ?? "",
-      rootKeyFile: values["root-key-file"] ?? "",
+      cli,
+      registryDir,
+      publisherKeyFile,
+      rootKeyFile,
       publisherId: values["publisher-id"] ?? "",
     },
-    {
-      build,
-      run: async (argv) =>
-        Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" }).exited,
-      log: (message) => console.log(message),
-    },
+    { build, run: io.run, log: io.log },
   );
-  if (result.status === "published") {
-    console.log(`published ${result.id}@${result.version}; registry sequence ${result.sequence}`);
-  }
-  writeOutputs([
-    `published=${result.status === "published"}`,
-    `id=${result.id}`,
-    `version=${result.version}`,
-    `sequence=${result.status === "published" ? result.sequence : ""}`,
+  const published = result.status === "published";
+  if (published) io.log(`${label}: published.`);
+  writeOutputs(io.env, [
+    `published=${published}`,
+    `id=${id}`,
+    `version=${version}`,
+    `sequence=${published ? result.sequence : ""}`,
   ]);
 }
 
 if (import.meta.main) {
   try {
-    await main();
+    await runCli(process.argv.slice(2), {
+      cwd: process.cwd(),
+      env: process.env,
+      log: (message) => console.log(message),
+      run: (argv) =>
+        Bun.spawn(argv, { stdin: "ignore", stdout: "inherit", stderr: "inherit" }).exited,
+      build: async (outFile) => {
+        const m = await import("../connectors/readwise/scripts/build-extension.ts");
+        await m.buildExtension(outFile);
+      },
+    });
   } catch (e) {
     console.error(`::error::${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
