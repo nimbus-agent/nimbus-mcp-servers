@@ -1,8 +1,28 @@
 {
   "format": 1,
   "rootKey": "tBHSfVjFZzyMoSVR69FbZfMyUstbLdUcfGwHKIaY/qA=",
-  "sequence": 1,
-  "generatedAt": "2026-10-22T07:47:54.160Z",
-  "extensions": {},
-  "signature": "APCsXmyRO5npPB5EtEoPt62FyOep3OdbFA7fxekGGczCI22Qhbx4CQWk6ixYFr2ukXkrtZr4pq2i+JdjLB53Dw=="
+  "sequence": 2,
+  "generatedAt": "2026-10-22T09:07:13.425Z",
+  "extensions": {
+    "com.nimbus.readwise": {
+      "publisher": {
+        "id": "nimbus",
+        "key": "wrUu5uyn3aS2efQOEAUd1eC6H3uqX/RwzIEqQHvAZ9A="
+      },
+      "versions": {
+        "0.2.0": {
+          "channel": "stable",
+          "name": "com.nimbus.readwise",
+          "manifest": "extensions/com.nimbus.readwise/0.2.0/manifest.json",
+          "manifestSha256": "f51384bee6bc4d2e73898e63101fd5431389fe332458e177c0cba31f8baaf62c",
+          "package": "extensions/com.nimbus.readwise/0.2.0/package.tgz",
+          "packageSha256": "3024c52bbde1f2136e04f2bfe6a367ef4a4d145a1f194a605825538a68419ec4",
+          "packageSizeBytes": 231438,
+          "entryHash": "35dc77436d0cf139bc36a8dcd4b7e0fdf65196bd8d6880dddf5ce95329ecd594",
+          "publishedAt": "2026-10-22T09:07:13.425Z"
+        }
+      }
+    }
+  },
+  "signature": "dk6nU4PjhU/QLDeswMb6dDt+/+PrAZFb4ksU3JIZNijLc9J1NTQlGi31ThlWI+PSGszaZnpoTbKI9iIbv9/4BQ=="
 }
