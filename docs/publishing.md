@@ -175,8 +175,12 @@ bootstrap run in CI would either fail or replace the root of trust.
    and `NIMBUS_PUBLISHER_KEY` — each the full contents of its key file — and the variable
    `NIMBUS_PUBLISHER_ID`, the publisher id to record. Put the keys in the environment, not in the
    repository's secrets: environment secrets reach only the approved job.
-5. Keep offline backups of both seeds. The root key re-signs the index on every publish, and the
-   publisher key can never be replaced for an id.
+5. Keep offline backups of both seeds, then delete the plaintext key files. GitHub never shows a
+   secret again, so the environment is not a backup. Encrypt each file with a passphrase
+   (`age -p -o <key>.age <key>`) and keep the `.age` files on two offline drives in different
+   places. Each seed is a single 44-character line, so a paper copy of the root key in a safe is a
+   good last resort. The root key re-signs the index on every publish, and the publisher key can
+   never be replaced for an id.
 6. **Last**, set the repository variable `OFFICIAL_REGISTRY_ENABLED` to `true` (Settings → Secrets
    and variables → Actions → Variables) — only after the environment, its secrets and variable,
    the `gh-pages` branch and Pages are all in place. The environment in particular must already
