@@ -62,6 +62,133 @@ cleanly can still fail to resolve once installed.
 0.1.0 and 0.1.1 were published by hand, before this pipeline existed, and carry no provenance.
 Every release since 0.2.0 came from it.
 
+## Publishing to the official Nimbus registry
+
+The Readwise connector also ships as a self-contained, signed Nimbus extension
+(`com.nimbus.readwise`), published to the **official Nimbus extension registry**: a static folder
+on this repository's `gh-pages` branch, served by GitHub Pages. The registry URL is the Pages URL,
+`https://nimbus-agent.github.io/nimbus-mcp-servers/`.
+
+### What the job does
+
+After the npm publish of every release, `release.yml` calls
+`.github/workflows/registry-publish.yml` — but only once the repository variable
+`OFFICIAL_REGISTRY_ENABLED` is `true`. Until the owner sets it, releases skip the job and stay
+green. The workflow can also be dispatched by hand from `main`, which is how the first publish
+happens. The workflow has two jobs.
+
+**`preflight`** has no environment, no secret, and read-only permissions, so nothing in it asks for
+an approval. It:
+
+1. refuses unless `OFFICIAL_REGISTRY_ENABLED` is `true`;
+2. refuses any ref but `refs/heads/main` — defence in depth behind the environment's
+   deployment-branch rule, which is the real boundary, since anyone who can push a branch can edit
+   that branch's copy of this workflow;
+3. fails clearly if `gh-pages` or its `index.json` is missing;
+4. runs `scripts/publish-registry.ts --check`, which compares the Readwise manifest version with
+   the registry's `index.json` and outputs `publish=true|false`.
+
+**`publish`** runs only when `preflight` output `publish=true`, so a release with nothing to publish
+never prompts a reviewer. It:
+
+1. waits for a reviewer to approve the protected `official-registry` environment, whose secrets
+   are the two signing keys;
+2. checks out the release commit and `gh-pages`, with no persisted credential, and runs
+   `bun install --frozen-lockfile --ignore-scripts`;
+3. downloads the Nimbus CLI — it is not on npm — from a pinned Nimbus release, and verifies it
+   against a SHA-256 written into the workflow;
+4. builds `dist/server.js` — before any key exists;
+5. writes the two keys to files under `$RUNNER_TEMP` (mode 0600), and in the very next step runs
+   `scripts/publish-registry.ts --publisher-id …`, which copies the prebuilt bundle, re-checks the version under the registry
+   lock, stages the package with the publisher block added to the staged manifest (never the
+   repository's), runs `nimbus extension sign` and then `nimbus registry maintain add`, which
+   re-signs `index.json`;
+6. deletes the key files, whatever happened, and commits the changed registry to `gh-pages` as
+   `registry: add <id>@<version> (sequence N)`.
+
+`scripts/publish-registry.test.ts` parses the workflow and fails if any of these protections is
+removed: the enable and `main` checks, the per-job permissions, `persist-credentials: false`, the
+`always()` key deletion, the keys appearing only in the step that writes them, the build-before-keys
+order, the install flags, and the `HEAD:gh-pages` push target.
+
+**Known trade-offs.** Harden Runner runs in `egress-policy: audit`, as in `release.yml`, not
+`block`: an allowlist that drifted from GitHub's release-asset hosts would fail releases, and audit
+still records every connection. And `publish` holds `contents: write` for its whole run, including
+the build and the CLI; the token is never in those steps' environment or on disk — only the push
+step supplies it — so splitting the push into a third job was not worth the extra hand-off.
+
+**What the package contains:** `nimbus.extension.json` (the staged manifest), `dist/server.js`,
+the connector's `README.md`, and a `LICENSE`. The AGPL requires the licence text to travel with
+the code, so a connector without a LICENSE of its own — Readwise has none — ships the repository's
+root `LICENSE`.
+
+**The version rule.** The job publishes only when the `version` in
+`connectors/readwise/nimbus.extension.json` is not yet in the registry. A release that does not bump
+it publishes nothing. To ship a new extension build, bump that `version` in the PR that changes it.
+A registry version is immutable: the same version is never re-signed or replaced.
+
+The script refuses, before running the CLI, when the publisher key it is given differs from the
+one the registry records for the id, or the root key differs from the index's `rootKey`. Its
+messages name what the registry records, never anything read from or derived from a key file.
+**A publisher key can never change for an id** — installs pin it — so losing the publisher seed
+means publishing under a new id.
+
+**The script takes no path from its arguments**, only the mode (`--check`) and `--publisher-id`.
+Every file sits at a fixed place under a base the script determines itself. The workspace is the
+working directory, the repository root. The temp directory is `$RUNNER_TEMP`, else the OS temp
+directory. The workflow's steps put each file there:
+
+| File | Fixed place |
+| --- | --- |
+| Registry checkout (`gh-pages`) | `<workspace>/registry/` |
+| Bundle, built beforehand | `<workspace>/connectors/readwise/dist/server.js` |
+| Nimbus CLI | `<temp>/nimbus-cli/nimbus` (`nimbus.exe` on Windows) |
+| Publisher seed | `<temp>/nimbus-keys/publisher.key` |
+| Root seed | `<temp>/nimbus-keys/root.key` |
+
+Each must exist as the right kind and must not be a symlink. The key files must be outside the
+registry and, on POSIX, readable by their owner only. A key in the workspace would be one
+`git add -A` away from being published. To run it by hand, put the files in those places, run
+`bun connectors/readwise/scripts/build-extension.ts`, and then run the script from the repository
+root. The publish never builds.
+
+The pinned CLI (v9.2.1) reads the manifest's `entry` and not `entrypoint`, so the staged manifest
+sets `entry` to the same value. That shim goes once the pin moves to a release that reads
+`entrypoint`.
+
+### One-time setup (the owner)
+
+CI never bootstraps the registry: `nimbus registry maintain init` mints a fresh root key, so a
+bootstrap run in CI would either fail or replace the root of trust.
+
+1. Generate the publisher key: `nimbus extension keygen --out <publisher-key>`.
+2. Create the registry: `nimbus registry maintain init <dir> --key <root-key>`. Push `index.json`
+   and an empty `.nojekyll` as the root of an orphan `gh-pages` branch. `init` also creates an
+   empty `extensions/`, which git cannot track; it appears on `gh-pages` with the first publish,
+   since `maintain add` creates it.
+3. Enable GitHub Pages: deploy from a branch, `gh-pages`, folder `/ (root)`.
+4. Create the environment `official-registry` (Settings → Environments) with required reviewers
+   and its deployment branches limited to `main`, and **turn off "Allow administrators to bypass
+   configured protection rules"** — otherwise the reviewer gate does not bind admins. If a branch
+   ruleset covers `gh-pages`, it must let the workflow's `github-actions` push through. Give it the
+   secrets `NIMBUS_REGISTRY_ROOT_KEY`
+   and `NIMBUS_PUBLISHER_KEY` — each the full contents of its key file — and the variable
+   `NIMBUS_PUBLISHER_ID`, the publisher id to record. Put the keys in the environment, not in the
+   repository's secrets: environment secrets reach only the approved job.
+5. Keep offline backups of both seeds, then delete the plaintext key files. GitHub never shows a
+   secret again, so the environment is not a backup. Encrypt each file with a passphrase
+   (`age -p -o <key>.age <key>`) and keep the `.age` files on two offline drives in different
+   places. Each seed is a single 44-character line, so a paper copy of the root key in a safe is a
+   good last resort. The root key re-signs the index on every publish, and the publisher key can
+   never be replaced for an id.
+6. **Last**, set the repository variable `OFFICIAL_REGISTRY_ENABLED` to `true` (Settings → Secrets
+   and variables → Actions → Variables) — only after the environment, its secrets and variable,
+   the `gh-pages` branch and Pages are all in place. The environment in particular must already
+   exist, with required reviewers, deployment restricted to `main` and admin bypass off, before
+   you enable: a job
+   that names an environment which does not exist makes GitHub create it, with no protection
+   rules at all.
+
 ## After publishing
 
 The Nimbus gateway consumes this package from npm. It pins it in `packages/gateway/package.json`,

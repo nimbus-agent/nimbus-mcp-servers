@@ -206,3 +206,17 @@ jobs:
           expected-workflow: .github/workflows/release.yml
           expected-sha: ${{ github.sha }}
           severity: gate
+
+  # Sign the Readwise extension and add it to the official Nimbus extension registry (gh-pages).
+  # A no-op unless connectors/readwise/nimbus.extension.json carries a version the registry lacks.
+  # It runs after the npm publish and cannot affect it. Its keys are the official-registry
+  # environment's own secrets, released only on a reviewer's approval, so nothing is passed down:
+  # `secrets: inherit` would hand the release-bot key to a job that has no use for it.
+  publish-registry:
+    needs: [release-please, publish]
+    # OFFICIAL_REGISTRY_ENABLED is a repository variable the owner sets to 'true' last, once the
+    # registry's one-time setup is complete. Until then releases skip this job and stay green.
+    if: needs.release-please.outputs.releases_created == 'true' && vars.OFFICIAL_REGISTRY_ENABLED == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/registry-publish.yml
