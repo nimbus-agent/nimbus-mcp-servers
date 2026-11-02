@@ -269,7 +269,8 @@ jobs:
 
   # Boundary: holds the registry ROOT key only. It checks the one .tgz against the digest package
   # computed, adds it with the (untrusted) scores, and pushes. It builds and installs nothing, so
-  # no repository or dependency code runs where the root key is. A failed or skipped score job
+  # no Readwise code runs here. The only repository code is scripts/publish-registry.ts (which
+  # imports Node builtins only, pinned by its test), and the pinned CLI. A failed or skipped score job
   # skips this one: it needs score, with no always().
   publish:
     needs: [package, score]

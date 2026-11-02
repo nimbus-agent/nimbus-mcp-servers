@@ -113,8 +113,13 @@ baseline and the `evals/` suite in the sandbox and writes `scores.json`, which t
 score is of the bytes `package` signed: one `.tgz`, packed once. A directory is never scored,
 because Node and Bun gzip a directory differently.
 
-**`publish`** needs `package` and `score`, so a score job that fails, times out, or is skipped
-skips it. Nothing is published, the run is red, and the next release tries again. It holds the
+**`publish`** needs `package` and `score`. A `score` job that fails or times out skips it:
+nothing is published, the run is red, and the next release tries again. A skipped `score` is the
+nothing-to-publish case (the version is already in the registry), and that run is green. Two
+things do not stop it. An eval that errors does not fail `score`: its entry carries an error, and
+`maintain add` refuses it in `publish`, after the second approval. And a low score is still
+published, because a score is a stated fact, not a gate. The second approval is the moment to read
+the `score` job's summary. `publish` holds the
 registry root key and never the publisher key. It:
 
 1. waits for a reviewer to approve the `official-registry` environment a second time;
@@ -124,8 +129,9 @@ registry root key and never the publisher key. It:
    `scripts/publish-registry.ts --publish --package-sha256 <hash from package>`. The script refuses
    a `.tgz` whose SHA-256 differs from that hash, because any job in the run can replace an
    artifact. It then runs `nimbus registry maintain add <the .tgz> --scores <scores.json>`, which
-   adds the package, re-signs `index.json`, and signs the scores into it. `scores.json` itself is
-   not trusted; `maintain add` checks it against the package;
+   adds the package, re-signs `index.json`, and signs the scores into it. `maintain add` checks
+   that `scores.json` names exactly this package by its hash and is well formed. It does not
+   check, and cannot check, that the score is true: the number is what the `score` job reported;
 4. deletes the key file, whatever happened, and commits the changed registry to `gh-pages` as
    `registry: add <id>@<version> (sequence N)`.
 
@@ -135,6 +141,14 @@ second environment for the publisher key would still need two approvals, and the
 to set it up. An environment without required reviewers for `package` would let any merge to `main`
 sign with the publisher key without approval.
 
+Both keys live in the one `official-registry` environment, so each secret is available to both
+keyed jobs. Keeping them apart rests on the workflow text and the tests that pin it, not on
+GitHub.
+
+**Releasing without a connectors release.** A change to this repository's publishing (a `docs` or
+`ci` change, for example) causes no release. Publish it by a manual dispatch of `registry-publish`.
+It needs the same two approvals.
+
 `scripts/publish-registry.test.ts` parses the workflow and fails if any of these protections is
 removed: the enable and `main` checks, the per-job permissions, `persist-credentials: false`, the
 `always()` key deletion, each key appearing only in the one job and step that writes it, the
@@ -142,7 +156,8 @@ build-before-keys order, the install flags, the hash check, no `always()` on `pu
 `HEAD:gh-pages` push target.
 
 **What the score says.** The Readwise suite runs offline with no credentials. It tests what each
-tool does when there is no token, and the baseline shows the server starts and lists valid tools.
+tool does when there is no token. The baseline records whether the server starts and lists valid
+tools, and a failed baseline is signed too, as a stated fact.
 The score says nothing about the Readwise service or about real data, and it does not say the
 extension works or is safe. A published version is never re-scored, so the first scored version is
 the next one published.

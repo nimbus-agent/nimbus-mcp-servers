@@ -1700,3 +1700,19 @@ describe("no key-derived value reaches a message", () => {
     ).rejects.toThrow(/publisher id is empty/);
   });
 });
+
+describe("publish-registry.ts imports", () => {
+  test("only node: builtins, so no package code runs beside the root key", () => {
+    const src = readFileSync(
+      join(fileURLToPath(import.meta.url), "..", "publish-registry.ts"),
+      "utf8",
+    );
+    const specs = [
+      ...src.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+["']([^"']+)["']/gms),
+      ...src.matchAll(/^\s*import\s+["']([^"']+)["']/gm),
+      ...src.matchAll(/\b(?:import|require)\(\s*["']([^"']+)["']\s*\)/g),
+    ].map((m) => m[1]);
+    expect(specs.length).toBeGreaterThan(0);
+    expect(specs.filter((s) => !s?.startsWith("node:"))).toEqual([]);
+  });
+});
