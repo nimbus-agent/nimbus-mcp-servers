@@ -387,8 +387,9 @@ function copyEvals(connectorDir: string, stageDir: string): void {
 
 /**
  * Lay out the package in `stageDir`: the staged manifest, `dist/`, the connector's README, its
- * `evals/` when it has one, and a LICENSE. The AGPL requires the licence text to travel with the code, so a connector without a
- * LICENSE of its own ships the repository's (`licenseFile`, default {@link ROOT_LICENSE}).
+ * `evals/` when it has one, and a LICENSE. The AGPL requires the licence text to travel with the
+ * code, so a connector without a LICENSE of its own ships the repository's (`licenseFile`,
+ * default {@link ROOT_LICENSE}).
  */
 export async function stagePackage(args: {
   connectorDir: string;
@@ -600,6 +601,7 @@ export async function addToRegistry(
   }
   return { status: "published", id, version, sequence: after.sequence ?? 0 };
 }
+
 // ---------------------------------------------------------------------------------------------
 // Command line
 // ---------------------------------------------------------------------------------------------

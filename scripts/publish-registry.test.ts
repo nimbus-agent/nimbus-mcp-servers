@@ -262,6 +262,68 @@ describe("stagePackage", () => {
     expect(readFileSync(join(stage, "evals", "nested", "b.eval.json"), "utf8")).toBe("{}\n");
   });
 
+  test("stages nothing from the connector directory beyond the expected files", async () => {
+    const connector = fakeConnector();
+    mkdirSync(join(connector, "evals"), { recursive: true });
+    writeFileSync(join(connector, "evals", "a.eval.json"), "{}\n");
+    mkdirSync(join(connector, "src"), { recursive: true });
+    writeFileSync(join(connector, "src", "secret.ts"), "export {};\n");
+    writeFileSync(join(connector, ".env"), "TOKEN=x\n");
+    const stage = join(scratch, "stage");
+    await stagePackage({
+      connectorDir: connector,
+      stageDir: stage,
+      publisher: PUBLISHER,
+      build: fakeBuild,
+    });
+    expect(readdirSync(stage).sort()).toEqual([
+      "LICENSE",
+      "README.md",
+      "dist",
+      "evals",
+      "nimbus.extension.json",
+    ]);
+  });
+
+  test("refuses evals/ itself being a symlink", async () => {
+    const connector = fakeConnector();
+    const elsewhere = join(scratch, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "a.eval.json"), "{}\n");
+    try {
+      symlinkSync(elsewhere, join(connector, "evals"), "dir");
+    } catch {
+      return; // Creating symlinks needs a privilege on Windows; the POSIX legs cover this.
+    }
+    await expect(
+      stagePackage({
+        connectorDir: connector,
+        stageDir: join(scratch, "stage"),
+        publisher: PUBLISHER,
+        build: fakeBuild,
+      }),
+    ).rejects.toThrow(/not a regular directory/);
+  });
+
+  test("refuses a symlink nested inside evals/", async () => {
+    const connector = fakeConnector();
+    mkdirSync(join(connector, "evals", "nested"), { recursive: true });
+    writeFileSync(join(scratch, "target"), "secret");
+    try {
+      symlinkSync(join(scratch, "target"), join(connector, "evals", "nested", "leak.json"));
+    } catch {
+      return; // Creating symlinks needs a privilege on Windows; the POSIX legs cover this.
+    }
+    await expect(
+      stagePackage({
+        connectorDir: connector,
+        stageDir: join(scratch, "stage"),
+        publisher: PUBLISHER,
+        build: fakeBuild,
+      }),
+    ).rejects.toThrow(/is a symlink/);
+  });
+
   test("a connector without evals/ stages none", async () => {
     const stage = join(scratch, "stage");
     await stagePackage({
@@ -658,18 +720,53 @@ describe("the registry workflow", () => {
   // not count as the protection.
   const parsed = Bun.YAML.parse(workflow) as Workflow;
   const preflight = parsed.jobs["preflight"];
+  const pack = parsed.jobs["package"];
+  const score = parsed.jobs["score"];
   const publish = parsed.jobs["publish"];
   const preflightSteps = preflight?.steps ?? [];
+  const packSteps = pack?.steps ?? [];
+  const scoreSteps = score?.steps ?? [];
   const publishSteps = publish?.steps ?? [];
+  const allSteps = [...preflightSteps, ...packSteps, ...scoreSteps, ...publishSteps];
   const stepNamed = (steps: Step[], name: string): Step | undefined =>
     steps.find((s) => s.name === name);
   const indexNamed = (steps: Step[], name: string): number =>
     steps.findIndex((s) => s.name === name);
+  const isDownload = (s: Step): boolean => (s.uses ?? "").startsWith("actions/download-artifact@");
+  const isUpload = (s: Step): boolean => (s.uses ?? "").startsWith("actions/upload-artifact@");
+  const ASSET = "nimbus-gateway-linux-x64";
 
-  test("has exactly the two jobs these assertions are about", () => {
-    expect(Object.keys(parsed.jobs).sort()).toEqual(["preflight", "publish"]);
+  test("has exactly the four jobs these assertions are about, in order", () => {
+    expect(Object.keys(parsed.jobs)).toEqual(["preflight", "package", "score", "publish"]);
     expect(preflightSteps.length).toBeGreaterThan(3);
+    expect(packSteps.length).toBeGreaterThan(5);
+    expect(scoreSteps.length).toBeGreaterThan(3);
     expect(publishSteps.length).toBeGreaterThan(5);
+  });
+
+  test("the jobs chain preflight, package, score, publish; publish has no always()", () => {
+    expect(pack?.needs).toBe("preflight");
+    expect(pack?.if).toBe("needs.preflight.outputs.publish == 'true'");
+    expect(score?.needs).toBe("package");
+    expect(score?.if).toBe("needs.package.outputs.packed == 'true'");
+    expect(publish?.needs).toEqual(["package", "score"]);
+    expect(publish?.if).toBe("needs.package.outputs.packed == 'true'");
+    // A failed or skipped score job must skip publish: nothing may override that.
+    const withAlways = publishSteps
+      .filter((s) => (s.if ?? "").includes("always()"))
+      .map((s) => s.name);
+    expect(withAlways).toEqual(["Delete the signing keys"]);
+    expect(publish?.if ?? "").not.toMatch(/always|failure|cancelled|success/);
+  });
+
+  test("package outputs the digest, id, version and whether it packed", () => {
+    expect(pack?.outputs).toEqual({
+      package_sha256: gha("steps.pack.outputs.package_sha256"),
+      id: gha("steps.pack.outputs.id"),
+      version: gha("steps.pack.outputs.version"),
+      packed: gha("steps.pack.outputs.packed"),
+    });
+    expect(stepNamed(packSteps, "Sign and pack the extension")?.id).toBe("pack");
   });
 
   test("preflight holds no environment and refuses unless OFFICIAL_REGISTRY_ENABLED is 'true'", () => {
@@ -685,97 +782,246 @@ describe("the registry workflow", () => {
     expect(step?.run).toMatch(/if \[ "\$REF" != "refs\/heads\/main" \]; then[\s\S]*exit 1/);
   });
 
-  test("preflight decides keylessly, and publish runs only when it says there is work", () => {
+  test("preflight decides keylessly", () => {
     const check = stepNamed(preflightSteps, "Is there anything to publish?");
     expect(check?.id).toBe("check");
     expect(check?.run).toMatch(/^bun scripts\/publish-registry\.ts --check\s*$/);
     expect(preflight?.outputs?.["publish"]).toBe(gha("steps.check.outputs.publish"));
-    expect(publish?.needs).toBe("preflight");
-    expect(publish?.if).toBe("needs.preflight.outputs.publish == 'true'");
-    expect(publish?.environment).toBe("official-registry");
   });
 
-  test("per-job permissions: preflight reads, publish holds contents: write and nothing else", () => {
+  test("the two keyed jobs use the environment; score uses none and holds no secret", () => {
+    expect(pack?.environment).toBe("official-registry");
+    expect(publish?.environment).toBe("official-registry");
+    expect(score?.environment).toBeUndefined();
+    expect(JSON.stringify(score)).not.toMatch(/secrets\./);
+    expect(JSON.stringify(score)).not.toMatch(/KEY/);
+    expect(JSON.stringify(preflight)).not.toMatch(/secrets\./);
+  });
+
+  test("per-job permissions: package and score read, publish holds contents: write", () => {
     expect(parsed.permissions).toEqual({ contents: "read" });
     expect([{}, { contents: "read" }]).toContainEqual(preflight?.permissions ?? "missing");
+    expect(pack?.permissions).toEqual({ contents: "read" });
+    expect(score?.permissions).toEqual({ contents: "read" });
     expect(publish?.permissions).toEqual({ contents: "write" });
   });
 
-  test("every checkout sets persist-credentials: false", () => {
-    const checkouts = [...preflightSteps, ...publishSteps].filter((s) =>
-      (s.uses ?? "").startsWith("actions/checkout@"),
-    );
-    expect(checkouts).toHaveLength(4);
-    expect(checkouts.map((s) => s.with?.["persist-credentials"])).toEqual([
-      false,
-      false,
-      false,
-      false,
-    ]);
+  test("score is bounded to 20 minutes, publish keeps the registry concurrency group", () => {
+    expect(score?.["timeout-minutes"]).toBe(20);
+    expect(publish?.concurrency).toEqual({
+      group: "official-registry",
+      "cancel-in-progress": false,
+    });
   });
 
-  test("the key-deletion step runs always()", () => {
-    const step = stepNamed(publishSteps, "Delete the signing keys");
-    expect(step?.if).toBe("always()");
-    expect(step?.run).toMatch(/rm -rf "\$RUNNER_TEMP\/nimbus-keys"/);
+  test("every checkout sets persist-credentials: false; score has none", () => {
+    const checkoutsOf = (steps: Step[]): Step[] =>
+      steps.filter((s) => (s.uses ?? "").startsWith("actions/checkout@"));
+    expect(checkoutsOf(preflightSteps)).toHaveLength(2);
+    expect(checkoutsOf(packSteps)).toHaveLength(2);
+    expect(checkoutsOf(scoreSteps)).toHaveLength(0);
+    expect(checkoutsOf(publishSteps)).toHaveLength(2);
+    const all = checkoutsOf(allSteps);
+    expect(all).toHaveLength(6);
+    expect(all.map((s) => s.with?.["persist-credentials"])).toEqual(Array(6).fill(false));
   });
 
-  test("the key secrets appear only in the step that writes them", () => {
-    const writer = stepNamed(publishSteps, "Write the signing keys");
-    expect(writer?.env?.["ROOT_KEY"]).toBe(gha("secrets.NIMBUS_REGISTRY_ROOT_KEY"));
-    expect(writer?.env?.["PUBLISHER_KEY"]).toBe(gha("secrets.NIMBUS_PUBLISHER_KEY"));
-    // The whole workflow — top level, both jobs, every other step — with only the writer removed.
-    const withoutWriter = {
-      ...parsed,
-      jobs: {
-        preflight,
-        publish: { ...publish, steps: publishSteps.filter((s) => s !== writer) },
-      },
-    };
-    expect(JSON.stringify(withoutWriter)).not.toMatch(/secrets\./);
+  test("both key-deletion steps run always()", () => {
+    for (const steps of [packSteps, publishSteps]) {
+      const step = stepNamed(steps, "Delete the signing keys");
+      expect(step?.if).toBe("always()");
+      expect(step?.run).toMatch(/rm -rf "\$RUNNER_TEMP\/nimbus-keys"/);
+    }
   });
 
-  test("the keys are written after the build, immediately before the step that reads them", () => {
-    const build = indexNamed(publishSteps, "Build the extension bundle");
-    const install = indexNamed(publishSteps, "Install");
-    const write = indexNamed(publishSteps, "Write the signing keys");
-    const sign = indexNamed(publishSteps, "Sign and add to the registry");
+  test("each key appears only in its own job, in the step that writes it", () => {
+    const packWriter = stepNamed(packSteps, "Write the publisher key");
+    const publishWriter = stepNamed(publishSteps, "Write the registry root key");
+    expect(packWriter?.env?.["PUBLISHER_KEY"]).toBe(gha("secrets.NIMBUS_PUBLISHER_KEY"));
+    expect(publishWriter?.env?.["ROOT_KEY"]).toBe(gha("secrets.NIMBUS_REGISTRY_ROOT_KEY"));
+    expect(packWriter?.env?.["ROOT_KEY"]).toBeUndefined();
+    expect(publishWriter?.env?.["PUBLISHER_KEY"]).toBeUndefined();
+    const without = (job: object, steps: Step[], writer: Step | undefined): string =>
+      JSON.stringify({ ...job, steps: steps.filter((s) => s !== writer) });
+    // Everything but the writer, per job and for the rest of the workflow, names no secret at all.
+    expect(without(pack ?? {}, packSteps, packWriter)).not.toMatch(/secrets\./);
+    expect(without(publish ?? {}, publishSteps, publishWriter)).not.toMatch(/secrets\./);
+    expect(JSON.stringify({ ...parsed, jobs: { preflight, score } })).not.toMatch(/secrets\./);
+    // NIMBUS_PUBLISHER_KEY only in package; NIMBUS_REGISTRY_ROOT_KEY only in publish.
+    expect(JSON.stringify(pack)).not.toMatch(/ROOT_KEY|root\.key/);
+    expect(JSON.stringify(publish)).not.toMatch(/PUBLISHER_KEY|publisher\.key/);
+    expect(packWriter?.run).toContain(`> "$keys/${LAYOUT.publisherKey}"`);
+    expect(publishWriter?.run).toContain(`> "$keys/${LAYOUT.rootKey}"`);
+  });
+
+  test("package writes the publisher key right before the step that reads it", () => {
+    const install = indexNamed(packSteps, "Install");
+    const build = indexNamed(packSteps, "Build the extension bundle");
+    const write = indexNamed(packSteps, "Write the publisher key");
+    const sign = indexNamed(packSteps, "Sign and pack the extension");
     expect(install).toBeGreaterThan(-1);
     expect(build).toBeGreaterThan(install);
     expect(write).toBeGreaterThan(build);
     expect(sign).toBe(write + 1);
-    // The script takes no path from argv: only the publisher id.
-    expect(publishSteps[sign]?.run).toMatch(
-      /^bun scripts\/publish-registry\.ts --publisher-id "\$PUBLISHER_ID"\s*$/,
+    expect(packSteps[sign]?.env?.["PUBLISHER_ID"]).toBe(gha("vars.NIMBUS_PUBLISHER_ID"));
+    expect(packSteps[sign]?.run).toMatch(
+      /^bun scripts\/publish-registry\.ts --pack --publisher-id "\$PUBLISHER_ID"\s*$/,
+    );
+    expect(indexNamed(packSteps, "Delete the signing keys")).toBeGreaterThan(sign);
+  });
+
+  test("publish writes the root key right before the step that reads it", () => {
+    const download = indexNamed(publishSteps, "Download and verify the Nimbus CLI");
+    const write = indexNamed(publishSteps, "Write the registry root key");
+    const add = indexNamed(publishSteps, "Add to the registry");
+    expect(download).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(download);
+    expect(add).toBe(write + 1);
+    expect(publishSteps[add]?.id).toBe("publish");
+    expect(publishSteps[add]?.env?.["PACKAGE_SHA256"]).toBe(
+      gha("needs.package.outputs.package_sha256"),
+    );
+    expect(publishSteps[add]?.run).toMatch(
+      /^bun scripts\/publish-registry\.ts --publish --package-sha256 "\$PACKAGE_SHA256"\s*$/,
+    );
+    expect(indexNamed(publishSteps, "Delete the signing keys")).toBeGreaterThan(add);
+    // No repository code is built or installed where the root key is.
+    expect(indexNamed(publishSteps, "Install")).toBe(-1);
+    expect(indexNamed(publishSteps, "Build the extension bundle")).toBe(-1);
+  });
+
+  test("every artifact download lands under runner.temp; uploads fail on a missing file", () => {
+    const downloads = allSteps.filter(isDownload);
+    expect(downloads).toHaveLength(3);
+    for (const step of downloads) {
+      expect(String(step.with?.["path"])).toStartWith(gha("runner.temp"));
+    }
+    const uploads = allSteps.filter(isUpload);
+    expect(uploads).toHaveLength(2);
+    for (const step of uploads) expect(step.with?.["if-no-files-found"]).toBe("error");
+  });
+
+  test("package uploads the one .tgz that publish later hashes", () => {
+    const upload = packSteps.find(isUpload);
+    expect(upload?.with?.["name"]).toBe("readwise-package");
+    expect(upload?.with?.["path"]).toBe(
+      `${gha("runner.temp")}/${LAYOUT.packageDir}/${LAYOUT.packageFile}`,
+    );
+    expect(upload?.if).toBe("steps.pack.outputs.packed == 'true'");
+  });
+
+  test("score downloads the package, runs the action on the .tgz and uploads scores.json", () => {
+    expect(scoreSteps.map((s) => s.name)).toEqual([
+      "Harden Runner",
+      "Download the package",
+      "Set up the sandbox",
+      "Download the Nimbus gateway",
+      "Score the package",
+      "Upload the scores",
+    ]);
+    expect(stepNamed(scoreSteps, "Download the package")?.with).toEqual({
+      name: "readwise-package",
+      path: `${gha("runner.temp")}/readwise-package`,
+    });
+    const action = stepNamed(scoreSteps, "Score the package");
+    expect(action?.uses).toMatch(
+      /^nimbus-agent\/Nimbus\/packages\/github-actions\/registry-action@[0-9a-f]{40}$/,
+    );
+    // `scores` is left unset so the action writes scores.json in the workspace.
+    expect(action?.with).toEqual({
+      mode: "score-package",
+      package: `${gha("runner.temp")}/readwise-package/package.tgz`,
+      "nimbus-gateway": `${gha("github.workspace")}/${ASSET}`,
+    });
+    expect(stepNamed(scoreSteps, "Upload the scores")?.with).toEqual({
+      name: "registry-scores",
+      path: "scores.json",
+      "if-no-files-found": "error",
+    });
+  });
+
+  test("score sets up the sandbox as the generated template does, probing as the runner user", () => {
+    const run = stepNamed(scoreSteps, "Set up the sandbox")?.run ?? "";
+    expect(run).toContain("install -y -qq bubblewrap");
+    const lines = run.split("\n").map((l) => l.trim());
+    const sysctl = lines.findIndex((l) =>
+      l.startsWith("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"),
+    );
+    const probe = lines.findIndex((l) => l.startsWith("bwrap --unshare-user"));
+    expect(sysctl).toBeGreaterThan(-1);
+    expect(probe).toBeGreaterThan(sysctl);
+    // Root bypasses the userns restriction, so a probe under sudo would prove nothing.
+    expect(lines.filter((l) => l.includes("bwrap")).every((l) => !l.includes("sudo"))).toBe(true);
+  });
+
+  test("the gateway is pinned to v10.15.0, checked against a literal and its SHA256SUMS line", () => {
+    expect(score?.env?.["NIMBUS_GATEWAY_VERSION"]).toBe("v10.15.0");
+    expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
+    const run = stepNamed(scoreSteps, "Download the Nimbus gateway")?.run ?? "";
+    expect(run).toMatch(/\/releases\/download\/\$\{NIMBUS_GATEWAY_VERSION\}"/);
+    expect(run).toContain(`"$base/${ASSET}"`);
+    expect(run).toContain('"$NIMBUS_GATEWAY_SHA256"');
+    expect(run).toContain("sha256sum --check --strict");
+    expect(run).toContain("SHA256SUMS");
+    expect(run).toContain(`'^[0-9a-f]{64}  ${ASSET}$'`);
+    expect(run).toContain("sha256sum -c CHECKSUM.txt");
+  });
+
+  test("the CLI is v10.15.0 with a 64-hex literal in both keyed jobs, the action by 40 hex", () => {
+    for (const job of [pack, publish]) {
+      expect(job?.env?.["NIMBUS_CLI_VERSION"]).toBe("v10.15.0");
+      expect(job?.env?.["NIMBUS_CLI_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
+      expect(stepNamed(job?.steps ?? [], "Download and verify the Nimbus CLI")?.run).toContain(
+        "sha256sum --check --strict",
+      );
+    }
+    // The version comment is not in the parsed tree; read it from the text.
+    expect(workflow).toMatch(
+      /uses: nimbus-agent\/Nimbus\/packages\/github-actions\/registry-action@[0-9a-f]{40} # v10\.15\.0(?: |$)/m,
     );
   });
 
   test("the steps put every file where the script's fixed layout looks for it", () => {
-    const registryCheckouts = [...preflightSteps, ...publishSteps].filter(
-      (s) => s.with?.["ref"] === "gh-pages",
-    );
+    const registryCheckouts = allSteps.filter((s) => s.with?.["ref"] === "gh-pages");
     expect(registryCheckouts.map((s) => s.with?.["path"])).toEqual([
       LAYOUT.registry,
       LAYOUT.registry,
+      LAYOUT.registry,
     ]);
-    expect(stepNamed(publishSteps, "Build the extension bundle")?.run).toBe(
+    expect(stepNamed(packSteps, "Build the extension bundle")?.run).toBe(
       "bun connectors/readwise/scripts/build-extension.ts",
     );
     expect(LAYOUT.bundle.replaceAll("\\", "/")).toBe("connectors/readwise/dist/server.js");
-    const download = stepNamed(publishSteps, "Download and verify the Nimbus CLI")?.run ?? "";
-    expect(download).toContain('dir="$RUNNER_TEMP/nimbus-cli"');
-    expect(download).toContain('-o "$dir/nimbus"');
-    const writer = stepNamed(publishSteps, "Write the signing keys")?.run ?? "";
-    expect(writer).toContain(`keys="$RUNNER_TEMP/${LAYOUT.keyDir}"`);
-    expect(writer).toContain(`> "$keys/${LAYOUT.rootKey}"`);
-    expect(writer).toContain(`> "$keys/${LAYOUT.publisherKey}"`);
+    for (const steps of [packSteps, publishSteps]) {
+      const download = stepNamed(steps, "Download and verify the Nimbus CLI")?.run ?? "";
+      expect(download).toContain('dir="$RUNNER_TEMP/nimbus-cli"');
+      expect(download).toContain('-o "$dir/nimbus"');
+      const writer =
+        stepNamed(steps, "Write the publisher key") ??
+        stepNamed(steps, "Write the registry root key");
+      expect(writer?.run).toContain(`keys="$RUNNER_TEMP/${LAYOUT.keyDir}"`);
+    }
+    // publish downloads both artifacts to the places the script's LAYOUT reads.
+    expect(publishSteps.filter(isDownload).map((s) => s.with)).toEqual([
+      { name: "readwise-package", path: `${gha("runner.temp")}/${LAYOUT.packageDir}` },
+      { name: "registry-scores", path: `${gha("runner.temp")}/${LAYOUT.scoresDir}` },
+    ]);
+    expect(LAYOUT.packageFile).toBe("package.tgz");
+    expect(LAYOUT.scoresFile).toBe("scores.json");
   });
 
   test("install uses the frozen lockfile and runs no lifecycle scripts", () => {
-    const run = stepNamed(publishSteps, "Install")?.run ?? "";
+    const run = stepNamed(packSteps, "Install")?.run ?? "";
     expect(run).toMatch(/^bun install\b/);
     expect(run).toContain("--frozen-lockfile");
     expect(run).toContain("--ignore-scripts");
+  });
+
+  test("Harden Runner, in audit mode, is the first step of every job", () => {
+    for (const steps of [preflightSteps, packSteps, scoreSteps, publishSteps]) {
+      expect(steps[0]?.uses).toMatch(/^step-security\/harden-runner@[0-9a-f]{40}$/);
+      expect(steps[0]?.with).toEqual({ "egress-policy": "audit" });
+    }
   });
 
   test("the push targets gh-pages and nothing else", () => {
@@ -805,6 +1051,9 @@ interface Workflow {
       if?: string;
       environment?: unknown;
       permissions?: unknown;
+      concurrency?: unknown;
+      "timeout-minutes"?: number;
+      env?: Record<string, string>;
       outputs?: Record<string, string>;
       steps?: Step[];
     }
