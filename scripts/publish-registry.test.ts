@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -15,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  addToRegistry,
+  assertOutside,
   type CliIo,
   checkedPath,
   checkPublish,
@@ -23,10 +26,11 @@ import {
   fixedLayout,
   isInside,
   LAYOUT,
+  type Layout,
   loadIndex,
   type PublishDeps,
+  packForRegistry,
   planPublish,
-  publishRegistry,
   type RegistryIndex,
   runCli,
   stageManifest,
@@ -241,6 +245,34 @@ describe("stagePackage", () => {
     expect(readFileSync(join(stage, "LICENSE")).equals(rootLicense)).toBe(true);
   });
 
+  test("copies evals/ when the connector has one, each suite byte-identical", async () => {
+    const connector = fakeConnector();
+    mkdirSync(join(connector, "evals", "nested"), { recursive: true });
+    const suite = Buffer.from([0x7b, 0x0a, 0xc3, 0xa9, 0x0d, 0x0a, 0x7d]);
+    writeFileSync(join(connector, "evals", "a.eval.json"), suite);
+    writeFileSync(join(connector, "evals", "nested", "b.eval.json"), "{}\n");
+    const stage = join(scratch, "stage");
+    await stagePackage({
+      connectorDir: connector,
+      stageDir: stage,
+      publisher: PUBLISHER,
+      build: fakeBuild,
+    });
+    expect(readFileSync(join(stage, "evals", "a.eval.json")).equals(suite)).toBe(true);
+    expect(readFileSync(join(stage, "evals", "nested", "b.eval.json"), "utf8")).toBe("{}\n");
+  });
+
+  test("a connector without evals/ stages none", async () => {
+    const stage = join(scratch, "stage");
+    await stagePackage({
+      connectorDir: fakeConnector(),
+      stageDir: stage,
+      publisher: PUBLISHER,
+      build: fakeBuild,
+    });
+    expect(existsSync(join(stage, "evals"))).toBe(false);
+  });
+
   test("the real readwise connector has no LICENSE of its own, so it relies on the root one", () => {
     expect(
       readdirSync(join(ROOT, "connectors", "readwise")).filter((n) => /^LICENSE/i.test(n)),
@@ -280,142 +312,310 @@ describe("stagePackage", () => {
   });
 });
 
-describe("publishRegistry", () => {
-  function setup(index: RegistryIndex | undefined) {
-    const registry = join(scratch, "registry");
-    mkdirSync(registry);
-    if (index !== undefined) {
-      writeFileSync(join(registry, "index.json"), JSON.stringify(index));
-    }
-    const keys = join(scratch, "keys");
-    mkdirSync(keys);
-    writeFileSync(join(keys, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
-    writeFileSync(join(keys, "root.key"), `${OTHER_SEED_B64}\n`, { mode: 0o600 });
-    return {
-      registry,
-      options: {
-        cli: "/opt/nimbus",
-        registryDir: registry,
-        publisherKeyFile: join(keys, "publisher.key"),
-        rootKeyFile: join(keys, "root.key"),
-        publisherId: "nimbus",
-        connectorDir: fakeConnector(),
-      },
-    };
-  }
+const PACKED_BYTES = "pretend-tgz-bytes";
+const sha256Of = (text: string | Buffer): string => createHash("sha256").update(text).digest("hex");
 
-  /** A CLI stand-in: records argv, and `maintain add` writes the version into the index. */
-  function fakeDeps(registry: string, calls: string[][], stages: string[]): PublishDeps {
+/** Registry, key files, package and scores dirs for the two keyed steps, all in the scratch dir. */
+function keyedSetup(index: RegistryIndex | undefined) {
+  const registry = join(scratch, "registry");
+  mkdirSync(registry);
+  if (index !== undefined) {
+    writeFileSync(join(registry, "index.json"), JSON.stringify(index));
+  }
+  const keys = join(scratch, "keys");
+  mkdirSync(keys);
+  writeFileSync(join(keys, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
+  writeFileSync(join(keys, "root.key"), `${OTHER_SEED_B64}\n`, { mode: 0o600 });
+  const packageDir = join(scratch, "package");
+  const scoresDir = join(scratch, "scores");
+  mkdirSync(packageDir);
+  mkdirSync(scoresDir);
+  const packageFile = join(packageDir, "package.tgz");
+  const scoresFile = join(scoresDir, "scores.json");
+  return {
+    registry,
+    packageFile,
+    scoresFile,
+    pack: {
+      cli: "/opt/nimbus",
+      registryDir: registry,
+      publisherKeyFile: join(keys, "publisher.key"),
+      publisherId: "nimbus",
+      packageFile,
+      connectorDir: fakeConnector(),
+    },
+    add: {
+      cli: "/opt/nimbus",
+      registryDir: registry,
+      rootKeyFile: join(keys, "root.key"),
+      packageFile,
+      scoresFile,
+      packageSha256: sha256Of(PACKED_BYTES),
+      connectorDir: fakeConnector(),
+    },
+  };
+}
+
+describe("packForRegistry", () => {
+  /** A CLI stand-in: records argv; `pack` writes the file at `--out`, whatever it prints. */
+  function packDeps(calls: string[][], stages: string[]): PublishDeps {
     return {
       build: fakeBuild,
       log: () => {},
       run: async (argv) => {
         calls.push(argv);
-        if (argv[1] === "extension") {
-          stages.push(argv[3] ?? "");
-          expect(existsSync(join(argv[3] ?? "", "nimbus.extension.json"))).toBe(true);
-        }
-        if (argv[1] === "registry") {
-          const current = loadIndex(registry);
-          const next: RegistryIndex = {
-            ...current,
-            sequence: (current.sequence ?? 0) + 1,
-            extensions: {
-              ...current.extensions,
-              [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } },
-            },
-          };
-          writeFileSync(join(registry, "index.json"), JSON.stringify(next));
-        }
+        const stage = argv[3] ?? "";
+        stages.push(stage);
+        expect(existsSync(join(stage, "nimbus.extension.json"))).toBe(true);
+        if (argv[2] === "pack") writeFileSync(argv[5] ?? "", PACKED_BYTES);
         return 0;
       },
     };
   }
 
-  test("signs and adds a new version, passing keys only as file paths, then cleans the stage", async () => {
-    const { registry, options } = setup(indexWith({}, 7));
+  test("signs, then packs once to the fixed file; no root key anywhere; the stage is removed", async () => {
+    const s = keyedSetup(indexWith({}, 7));
     const calls: string[][] = [];
     const stages: string[] = [];
-    const result = await publishRegistry(options, fakeDeps(registry, calls, stages));
+    const result = await packForRegistry(s.pack, packDeps(calls, stages));
 
-    expect(result).toEqual({ status: "published", id: ID, version: "0.2.0", sequence: 8 });
+    expect(result).toEqual({
+      status: "packed",
+      id: ID,
+      version: "0.2.0",
+      sha256: sha256Of(PACKED_BYTES),
+    });
     expect(calls).toEqual([
-      ["/opt/nimbus", "extension", "sign", stages[0] ?? "", "--key", options.publisherKeyFile],
-      [
-        "/opt/nimbus",
-        "registry",
-        "maintain",
-        "add",
-        registry,
-        stages[0] ?? "",
-        "--key",
-        options.rootKeyFile,
-      ],
+      ["/opt/nimbus", "extension", "sign", stages[0] ?? "", "--key", s.pack.publisherKeyFile],
+      ["/opt/nimbus", "extension", "pack", stages[0] ?? "", "--out", s.packageFile],
     ]);
     const argvText = calls.flat().join(" ");
     expect(argvText).not.toContain(SEED_B64);
     expect(argvText).not.toContain(OTHER_SEED_B64);
+    expect(argvText).not.toContain("root.key");
     expect(existsSync(stages[0] ?? "")).toBe(false);
   });
 
+  test("the hash is of the bytes on disk, not of anything the CLI printed", async () => {
+    const s = keyedSetup(indexWith({}));
+    const deps: PublishDeps = {
+      ...packDeps([], []),
+      run: async (argv) => {
+        if (argv[2] === "pack") {
+          console.log(`sha256 ${"ab".repeat(32)}`);
+          writeFileSync(argv[5] ?? "", "other bytes");
+        }
+        return 0;
+      },
+    };
+    const result = await packForRegistry(s.pack, deps);
+    expect(result.status === "packed" ? result.sha256 : "").toBe(sha256Of("other bytes"));
+  });
+
   test("an already-published version runs nothing", async () => {
-    const { registry, options } = setup(
-      indexWith({ [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } } }),
-    );
+    const s = keyedSetup(indexWith({ [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } } }));
     const calls: string[][] = [];
-    const result = await publishRegistry(options, fakeDeps(registry, calls, []));
+    const result = await packForRegistry(s.pack, packDeps(calls, []));
     expect(result).toEqual({ status: "skipped", id: ID, version: "0.2.0" });
     expect(calls).toEqual([]);
   });
 
   test("a publisher-key mismatch refuses before running anything", async () => {
-    const { registry, options } = setup(
+    const s = keyedSetup(
       indexWith({
         [ID]: { publisher: { id: "nimbus", key: derivePublicKey(OTHER_SEED_B64) }, versions: {} },
       }),
     );
     const calls: string[][] = [];
-    await expect(publishRegistry(options, fakeDeps(registry, calls, []))).rejects.toThrow(
-      /publisher key/,
-    );
+    await expect(packForRegistry(s.pack, packDeps(calls, []))).rejects.toThrow(/publisher key/);
     expect(calls).toEqual([]);
   });
 
-  test("a root key that does not match the index refuses before running anything", async () => {
-    const { registry, options } = setup({ ...indexWith({}), rootKey: PUB_B64 });
-    const calls: string[][] = [];
-    await expect(publishRegistry(options, fakeDeps(registry, calls, []))).rejects.toThrow(
-      /root key/,
+  test("a publisher-id mismatch refuses before running anything", async () => {
+    const s = keyedSetup(
+      indexWith({ [ID]: { publisher: { id: "someone", key: PUB_B64 }, versions: {} } }),
     );
+    const calls: string[][] = [];
+    await expect(packForRegistry(s.pack, packDeps(calls, []))).rejects.toThrow(/publisher id/);
+    expect(calls).toEqual([]);
+  });
+
+  test("a package already on disk is refused: it is packed once", async () => {
+    const s = keyedSetup(indexWith({}));
+    writeFileSync(s.packageFile, "earlier");
+    const calls: string[][] = [];
+    await expect(packForRegistry(s.pack, packDeps(calls, []))).rejects.toThrow(/already exists/);
     expect(calls).toEqual([]);
   });
 
   test("a missing index fails with the bootstrap instruction", async () => {
-    const { registry, options } = setup(undefined);
-    await expect(publishRegistry(options, fakeDeps(registry, [], []))).rejects.toThrow(
+    const s = keyedSetup(undefined);
+    await expect(packForRegistry(s.pack, packDeps([], []))).rejects.toThrow(
       /nimbus registry maintain init/,
     );
   });
 
-  test("a failing CLI step fails the publish and still cleans the stage", async () => {
-    const { registry, options } = setup(indexWith({}));
+  test("a failing CLI step fails the pack and still cleans the stage", async () => {
+    const s = keyedSetup(indexWith({}));
     const stages: string[] = [];
     const deps: PublishDeps = {
-      ...fakeDeps(registry, [], stages),
+      ...packDeps([], []),
       run: async (argv) => {
         stages.push(argv[3] ?? "");
         return 2;
       },
     };
-    await expect(publishRegistry(options, deps)).rejects.toThrow(/exited 2/);
+    await expect(packForRegistry(s.pack, deps)).rejects.toThrow(/exited 2/);
     expect(stages).toHaveLength(1);
     expect(existsSync(stages[0] ?? "")).toBe(false);
   });
 
+  test("a pack that wrote no file fails", async () => {
+    const s = keyedSetup(indexWith({}));
+    const deps: PublishDeps = { ...packDeps([], []), run: async () => 0 };
+    await expect(packForRegistry(s.pack, deps)).rejects.toThrow(/package .* does not exist/);
+  });
+});
+
+describe("addToRegistry", () => {
+  /** A CLI stand-in: records argv, and `maintain add` writes the version into the index. */
+  function addDeps(registry: string, calls: string[][]): Pick<PublishDeps, "run" | "log"> {
+    return {
+      log: () => {},
+      run: async (argv) => {
+        calls.push(argv);
+        const current = loadIndex(registry);
+        const next: RegistryIndex = {
+          ...current,
+          sequence: (current.sequence ?? 0) + 1,
+          extensions: {
+            ...current.extensions,
+            [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } },
+          },
+        };
+        writeFileSync(join(registry, "index.json"), JSON.stringify(next));
+        return 0;
+      },
+    };
+  }
+
+  function ready(index: RegistryIndex | null = indexWith({}, 7)) {
+    const s = keyedSetup(index ?? undefined);
+    writeFileSync(s.packageFile, PACKED_BYTES);
+    writeFileSync(s.scoresFile, "{}");
+    return s;
+  }
+
+  test("adds the package with its scores under the root key, and nothing else", async () => {
+    const s = ready();
+    const calls: string[][] = [];
+    const result = await addToRegistry(s.add, addDeps(s.registry, calls));
+    expect(result).toEqual({ status: "published", id: ID, version: "0.2.0", sequence: 8 });
+    expect(calls).toEqual([
+      [
+        "/opt/nimbus",
+        "registry",
+        "maintain",
+        "add",
+        s.registry,
+        s.packageFile,
+        "--scores",
+        s.scoresFile,
+        "--key",
+        s.add.rootKeyFile,
+      ],
+    ]);
+    expect(calls.flat().join(" ")).not.toContain("publisher.key");
+  });
+
+  test("a package whose hash differs from --package-sha256 is refused before anything runs", async () => {
+    const s = ready();
+    const calls: string[][] = [];
+    await expect(
+      addToRegistry(
+        { ...s.add, packageSha256: sha256Of("a swapped file") },
+        addDeps(s.registry, calls),
+      ),
+    ).rejects.toThrow(/SHA-256/);
+    expect(calls).toEqual([]);
+  });
+
+  test("a missing scores file is refused before anything runs", async () => {
+    const s = ready();
+    rmSync(s.scoresFile);
+    const calls: string[][] = [];
+    await expect(addToRegistry(s.add, addDeps(s.registry, calls))).rejects.toThrow(/scores file/);
+    expect(calls).toEqual([]);
+  });
+
+  test("a missing package is refused before anything runs", async () => {
+    const s = ready();
+    rmSync(s.packageFile);
+    const calls: string[][] = [];
+    await expect(addToRegistry(s.add, addDeps(s.registry, calls))).rejects.toThrow(
+      /package .* does not exist/,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("a hash that is not 64 lowercase hex is refused, without repeating a long value", async () => {
+    const s = ready();
+    const calls: string[][] = [];
+    const long = "A".repeat(500);
+    for (const bad of [long, sha256Of("x").toUpperCase(), sha256Of("x").slice(1), ""]) {
+      let message = "";
+      try {
+        await addToRegistry({ ...s.add, packageSha256: bad }, addDeps(s.registry, calls));
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toMatch(/64 lowercase hex/);
+      expect(message).not.toContain(long);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("a root key that does not match the index refuses before running anything", async () => {
+    const s = ready({ ...indexWith({}), rootKey: PUB_B64 });
+    const calls: string[][] = [];
+    await expect(addToRegistry(s.add, addDeps(s.registry, calls))).rejects.toThrow(/root key/);
+    expect(calls).toEqual([]);
+  });
+
+  test("an already-published version runs nothing", async () => {
+    const s = ready(indexWith({ [ID]: { publisher: PUBLISHER, versions: { "0.2.0": {} } } }));
+    const calls: string[][] = [];
+    const result = await addToRegistry(s.add, addDeps(s.registry, calls));
+    expect(result).toEqual({ status: "skipped", id: ID, version: "0.2.0" });
+    expect(calls).toEqual([]);
+  });
+
+  test("a missing index fails with the bootstrap instruction", async () => {
+    const s = ready(null);
+    await expect(addToRegistry(s.add, addDeps(s.registry, []))).rejects.toThrow(
+      /nimbus registry maintain init/,
+    );
+  });
+
+  test("a failing add fails the step", async () => {
+    const s = ready();
+    await expect(addToRegistry(s.add, { log: () => {}, run: async () => 3 })).rejects.toThrow(
+      /exited 3/,
+    );
+  });
+
   test("an add that does not land the version in the index fails", async () => {
-    const { registry, options } = setup(indexWith({}));
-    const deps: PublishDeps = { ...fakeDeps(registry, [], []), run: async () => 0 };
-    await expect(publishRegistry(options, deps)).rejects.toThrow(/not in index.json/);
+    const s = ready();
+    await expect(addToRegistry(s.add, { log: () => {}, run: async () => 0 })).rejects.toThrow(
+      /not in index.json/,
+    );
+  });
+
+  test("a publisher key file is never needed or read", async () => {
+    const s = ready();
+    rmSync(join(scratch, "keys", "publisher.key"));
+    const result = await addToRegistry(s.add, addDeps(s.registry, []));
+    expect(result.status).toBe("published");
   });
 });
 
@@ -717,8 +917,9 @@ describe("checkedPath", () => {
 describe("runCli", () => {
   /**
    * scratch/work is the workspace (registry checkout, prebuilt bundle); scratch/tmp stands in for
-   * $RUNNER_TEMP (the CLI and the keys). Every file sits where fixedLayout puts it. The CLI is a
-   * stand-in that records argv and lands the version in the index.
+   * $RUNNER_TEMP (the CLI, the keys, the package, the scores). Every file sits where fixedLayout
+   * puts it. The CLI is a stand-in that records argv, writes the packed file for `extension pack`
+   * and lands the version in the index for `registry maintain add`.
    */
   function world(index: RegistryIndex | undefined = indexWith({}, 4)) {
     const work = join(scratch, "work");
@@ -746,6 +947,7 @@ describe("runCli", () => {
       log: (m) => logs.push(m),
       run: async (argv) => {
         calls.push(argv);
+        if (argv[2] === "pack") writeFileSync(argv[5] ?? "", PACKED_BYTES);
         if (argv[1] === "registry") {
           const current = loadIndex(paths.registryDir);
           const next: RegistryIndex = {
@@ -761,7 +963,25 @@ describe("runCli", () => {
         return 0;
       },
     };
-    return { work, temp, paths, out, logs, calls, io, args: ["--publisher-id", "nimbus"] };
+    /** What the keyless job leaves for the publish step: the packed file and its scores. */
+    const stageForPublish = (paths_: Layout = paths): void => {
+      mkdirSync(join(paths_.packageFile, ".."), { recursive: true });
+      mkdirSync(join(paths_.scoresFile, ".."), { recursive: true });
+      writeFileSync(paths_.packageFile, PACKED_BYTES);
+      writeFileSync(paths_.scoresFile, "{}");
+    };
+    return {
+      work,
+      temp,
+      paths,
+      out,
+      logs,
+      calls,
+      io,
+      stageForPublish,
+      packArgs: ["--pack", "--publisher-id", "nimbus"],
+      publishArgs: ["--publish", "--package-sha256", sha256Of(PACKED_BYTES)],
+    };
   }
 
   const label = `${READWISE.id}@${READWISE.version}`;
@@ -776,6 +996,10 @@ describe("runCli", () => {
       cli: join("T", "nimbus-cli", process.platform === "win32" ? "nimbus.exe" : "nimbus"),
       publisherKeyFile: join("T", "nimbus-keys", "publisher.key"),
       rootKeyFile: join("T", "nimbus-keys", "root.key"),
+      packageDir: join("T", "nimbus-package"),
+      packageFile: join("T", "nimbus-package", "package.tgz"),
+      scoresDir: join("T", "registry-scores"),
+      scoresFile: join("T", "registry-scores", "scores.json"),
     });
   });
 
@@ -787,6 +1011,8 @@ describe("runCli", () => {
       "--publisher-key-file",
       "--root-key-file",
       "--prebuilt",
+      "--package",
+      "--scores",
     ]) {
       await expect(runCli([flag, "x"], w.io)).rejects.toThrow(/Unknown option/);
     }
@@ -817,95 +1043,289 @@ describe("runCli", () => {
     );
   });
 
-  test("publishes the prebuilt bundle, and never logs or passes key material", async () => {
-    const w = world();
-    await runCli(w.args, w.io);
-    expect(readFileSync(w.out, "utf8")).toBe(
-      `published=true\nid=${READWISE.id}\nversion=${READWISE.version}\nsequence=5\n`,
+  describe("the mode flags", () => {
+    test("--check, --pack and --publish are mutually exclusive", async () => {
+      const w = world();
+      for (const modes of [
+        ["--check", "--pack"],
+        ["--check", "--publish"],
+        ["--pack", "--publish"],
+        ["--check", "--pack", "--publish"],
+      ]) {
+        await expect(runCli(modes, w.io)).rejects.toThrow(/mutually exclusive/);
+      }
+      expect(w.calls).toHaveLength(0);
+    });
+
+    test("the old single-step invocation is refused, naming the new flags", async () => {
+      const w = world();
+      const error = await runCli(["--publisher-id", "nimbus"], w.io).then(
+        () => "",
+        (e: Error) => e.message,
+      );
+      expect(error).toContain("--pack");
+      expect(error).toContain("--publish");
+      expect(w.calls).toHaveLength(0);
+      expect(readFileSync(w.out, "utf8")).toBe("");
+    });
+
+    test("no mode at all is refused", async () => {
+      const w = world();
+      await expect(runCli([], w.io)).rejects.toThrow(/--check, --pack or --publish/);
+    });
+
+    test("a flag belonging to the other mode is refused", async () => {
+      const w = world();
+      await expect(
+        runCli(["--publish", "--publisher-id", "nimbus", ...w.publishArgs.slice(1)], w.io),
+      ).rejects.toThrow(/--publisher-id belongs to --pack/);
+      await expect(
+        runCli([...w.packArgs, "--package-sha256", sha256Of("x")], w.io),
+      ).rejects.toThrow(/--package-sha256 belongs to --publish/);
+      expect(w.calls).toHaveLength(0);
+    });
+  });
+
+  describe("--pack", () => {
+    test("signs and packs the prebuilt bundle; reports the hash of the file; no secret leaks", async () => {
+      const w = world();
+      await runCli(w.packArgs, w.io);
+      expect(readFileSync(w.out, "utf8")).toBe(
+        `package_sha256=${sha256Of(PACKED_BYTES)}\nid=${READWISE.id}\nversion=${READWISE.version}\npacked=true\n`,
+      );
+      expect(w.logs).toEqual([`${label}: packed.`]);
+      expect(w.calls.map((c) => c.slice(0, 3))).toEqual([
+        [realpathSync(w.paths.cli), "extension", "sign"],
+        [realpathSync(w.paths.cli), "extension", "pack"],
+      ]);
+      expect(w.calls[0]?.at(-1)).toBe(realpathSync(w.paths.publisherKeyFile));
+      expect(w.calls[1]?.at(-1)).toBe(join(realpathSync(w.paths.packageDir), "package.tgz"));
+      const everything = [...w.logs, ...w.calls.flat(), readFileSync(w.out, "utf8")].join("\n");
+      for (const secretish of [
+        SEED_B64,
+        OTHER_SEED_B64,
+        PUB_B64,
+        derivePublicKey(OTHER_SEED_B64),
+      ]) {
+        expect(everything).not.toContain(secretish);
+      }
+      expect(everything).not.toContain(realpathSync(w.paths.rootKeyFile));
+    });
+
+    test("needs no root key file", async () => {
+      const w = world();
+      rmSync(w.paths.rootKeyFile);
+      await runCli(w.packArgs, w.io);
+      expect(readFileSync(w.out, "utf8")).toContain("packed=true");
+    });
+
+    test("an already-published version is a no-op: packed=false and no hash", async () => {
+      const w = world(publishedIndex());
+      await runCli(w.packArgs, w.io);
+      expect(w.calls).toHaveLength(0);
+      expect(readFileSync(w.out, "utf8")).toBe(
+        `package_sha256=\nid=${READWISE.id}\nversion=${READWISE.version}\npacked=false\n`,
+      );
+    });
+
+    test("requires a non-empty --publisher-id", async () => {
+      const w = world();
+      await expect(runCli(["--pack"], w.io)).rejects.toThrow(
+        "missing required flag --publisher-id",
+      );
+      await expect(runCli(["--pack", "--publisher-id", " "], w.io)).rejects.toThrow(
+        /--publisher-id/,
+      );
+    });
+
+    test("refuses to pack without a prebuilt bundle, rather than building", async () => {
+      const w = world();
+      rmSync(w.paths.bundle);
+      await expect(runCli(w.packArgs, w.io)).rejects.toThrow(/prebuilt bundle .*build-extension/);
+      expect(w.calls).toHaveLength(0);
+    });
+
+    test("refuses a missing publisher key file or CLI before running anything", async () => {
+      for (const which of ["publisherKeyFile", "cli"] as const) {
+        const w = world();
+        rmSync(w.paths[which]);
+        await expect(runCli(w.packArgs, w.io)).rejects.toThrow(/does not exist/);
+        expect(w.calls).toHaveLength(0);
+        rmSync(scratch, { recursive: true, force: true });
+        mkdirSync(scratch);
+      }
+    });
+
+    test("refuses a publisher key file inside the registry, when the temp dir is the workspace", async () => {
+      const w = world();
+      // The temp base is the registry checkout itself, so the key directory lands inside it.
+      const io: CliIo = { ...w.io, tempDir: w.paths.registryDir };
+      const inside = fixedLayout(w.work, w.paths.registryDir);
+      mkdirSync(join(inside.publisherKeyFile, ".."), { recursive: true });
+      mkdirSync(join(inside.cli, ".."), { recursive: true });
+      writeFileSync(inside.cli, "");
+      writeFileSync(inside.publisherKeyFile, `${SEED_B64}\n`, { mode: 0o600 });
+      await expect(runCli(w.packArgs, io)).rejects.toThrow(/is inside the registry/);
+      expect(w.calls).toHaveLength(0);
+    });
+
+    test.skipIf(process.platform === "win32")(
+      "refuses a publisher key file readable by group or others",
+      async () => {
+        const w = world();
+        chmodSync(w.paths.publisherKeyFile, 0o644);
+        await expect(runCli(w.packArgs, w.io)).rejects.toThrow(/readable by group or others/);
+        expect(w.calls).toHaveLength(0);
+      },
     );
-    expect(w.logs).toEqual([`${label}: published.`]);
-    expect(w.calls.map((c) => c.slice(0, 3))).toEqual([
-      [realpathSync(w.paths.cli), "extension", "sign"],
-      [realpathSync(w.paths.cli), "registry", "maintain"],
-    ]);
-    expect(w.calls[0]?.at(-1)).toBe(realpathSync(w.paths.publisherKeyFile));
-    expect(w.calls[1]?.at(-1)).toBe(realpathSync(w.paths.rootKeyFile));
-    const everything = [...w.logs, ...w.calls.flat(), readFileSync(w.out, "utf8")].join("\n");
-    for (const secretish of [SEED_B64, OTHER_SEED_B64, PUB_B64, derivePublicKey(OTHER_SEED_B64)]) {
-      expect(everything).not.toContain(secretish);
-    }
-  });
 
-  test("an already-published version is a logged no-op", async () => {
-    const w = world(publishedIndex());
-    await runCli(w.args, w.io);
-    expect(w.calls).toHaveLength(0);
-    expect(readFileSync(w.out, "utf8")).toStartWith("published=false\n");
-  });
-
-  test("requires a non-empty --publisher-id", async () => {
-    const w = world();
-    await expect(runCli([], w.io)).rejects.toThrow("missing required flag --publisher-id");
-    await expect(runCli(["--publisher-id", " "], w.io)).rejects.toThrow(/--publisher-id/);
-  });
-
-  test("refuses to publish without a prebuilt bundle, rather than building", async () => {
-    const w = world();
-    rmSync(w.paths.bundle);
-    await expect(runCli(w.args, w.io)).rejects.toThrow(/prebuilt bundle .*build-extension/);
-    expect(w.calls).toHaveLength(0);
-  });
-
-  test("refuses a missing key file or CLI before running anything", async () => {
-    for (const which of ["rootKeyFile", "publisherKeyFile", "cli"] as const) {
+    test("refuses a key directory that is a symlink", async () => {
       const w = world();
-      rmSync(w.paths[which]);
-      await expect(runCli(w.args, w.io)).rejects.toThrow(/does not exist/);
+      const keyDir = join(w.paths.publisherKeyFile, "..");
+      const elsewhere = join(scratch, "elsewhere");
+      mkdirSync(elsewhere);
+      rmSync(keyDir, { recursive: true });
+      try {
+        symlinkSync(elsewhere, keyDir, "dir");
+      } catch {
+        return; // Creating symlinks needs a privilege on Windows; the POSIX legs cover this.
+      }
+      writeFileSync(join(elsewhere, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
+      await expect(runCli(w.packArgs, w.io)).rejects.toThrow(/outside/);
       expect(w.calls).toHaveLength(0);
-      rmSync(scratch, { recursive: true, force: true });
-      mkdirSync(scratch);
-    }
-  });
+    });
 
-  test("refuses a key file inside the registry, when the temp dir is the workspace", async () => {
-    const w = world();
-    // The temp base is the registry checkout itself, so the key directory lands inside it.
-    const io: CliIo = { ...w.io, tempDir: w.paths.registryDir };
-    const inside = fixedLayout(w.work, w.paths.registryDir);
-    mkdirSync(join(inside.publisherKeyFile, ".."), { recursive: true });
-    mkdirSync(join(inside.cli, ".."), { recursive: true });
-    writeFileSync(inside.cli, "");
-    writeFileSync(inside.publisherKeyFile, `${SEED_B64}\n`, { mode: 0o600 });
-    writeFileSync(inside.rootKeyFile, `${OTHER_SEED_B64}\n`, { mode: 0o600 });
-    await expect(runCli(w.args, io)).rejects.toThrow(/is inside the registry/);
-    expect(w.calls).toHaveLength(0);
-  });
-
-  test.skipIf(process.platform === "win32")(
-    "refuses a key file readable by group or others",
-    async () => {
+    test("refuses a package already on disk", async () => {
       const w = world();
-      chmodSync(w.paths.rootKeyFile, 0o644);
-      await expect(runCli(w.args, w.io)).rejects.toThrow(/readable by group or others/);
+      w.stageForPublish();
+      await expect(runCli(w.packArgs, w.io)).rejects.toThrow(/already exists/);
       expect(w.calls).toHaveLength(0);
-    },
-  );
+    });
+  });
 
-  test("refuses a key directory that is a symlink", async () => {
-    const w = world();
-    const keyDir = join(w.paths.publisherKeyFile, "..");
-    const elsewhere = join(scratch, "elsewhere");
-    mkdirSync(elsewhere);
-    rmSync(keyDir, { recursive: true });
-    try {
-      symlinkSync(elsewhere, keyDir, "dir");
-    } catch {
-      return; // Creating symlinks needs a privilege on Windows; the POSIX legs cover this.
-    }
-    writeFileSync(join(elsewhere, "publisher.key"), `${SEED_B64}\n`, { mode: 0o600 });
-    writeFileSync(join(elsewhere, "root.key"), `${OTHER_SEED_B64}\n`, { mode: 0o600 });
-    await expect(runCli(w.args, w.io)).rejects.toThrow(/outside/);
-    expect(w.calls).toHaveLength(0);
+  describe("--publish", () => {
+    test("adds the package with its scores under the root key; reads no publisher key", async () => {
+      const w = world();
+      w.stageForPublish();
+      rmSync(w.paths.publisherKeyFile);
+      await runCli(w.publishArgs, w.io);
+      expect(readFileSync(w.out, "utf8")).toBe(
+        `published=true\nid=${READWISE.id}\nversion=${READWISE.version}\nsequence=5\n`,
+      );
+      expect(w.logs).toEqual([`${label}: published.`]);
+      expect(w.calls).toEqual([
+        [
+          realpathSync(w.paths.cli),
+          "registry",
+          "maintain",
+          "add",
+          realpathSync(w.paths.registryDir),
+          realpathSync(w.paths.packageFile),
+          "--scores",
+          realpathSync(w.paths.scoresFile),
+          "--key",
+          realpathSync(w.paths.rootKeyFile),
+        ],
+      ]);
+      const everything = [...w.logs, ...w.calls.flat(), readFileSync(w.out, "utf8")].join("\n");
+      for (const secretish of [
+        SEED_B64,
+        OTHER_SEED_B64,
+        PUB_B64,
+        derivePublicKey(OTHER_SEED_B64),
+      ]) {
+        expect(everything).not.toContain(secretish);
+      }
+    });
+
+    test("an already-published version is a logged no-op", async () => {
+      const w = world(publishedIndex());
+      w.stageForPublish();
+      await runCli(w.publishArgs, w.io);
+      expect(w.calls).toHaveLength(0);
+      expect(readFileSync(w.out, "utf8")).toStartWith("published=false\n");
+    });
+
+    test("requires --package-sha256 of exactly 64 lowercase hex, refused before anything runs", async () => {
+      const w = world();
+      w.stageForPublish();
+      await expect(runCli(["--publish"], w.io)).rejects.toThrow(
+        "missing required flag --package-sha256",
+      );
+      const long = "z".repeat(400);
+      for (const bad of [long, sha256Of("x").toUpperCase(), "abc", ""]) {
+        const message = await runCli(["--publish", "--package-sha256", bad], w.io).then(
+          () => "",
+          (e: Error) => e.message,
+        );
+        expect(message).toMatch(/64 lowercase hex/);
+        expect(message).not.toContain(long);
+      }
+      expect(w.calls).toHaveLength(0);
+    });
+
+    test("a swapped package is refused before anything runs", async () => {
+      const w = world();
+      w.stageForPublish();
+      writeFileSync(w.paths.packageFile, "swapped by another job");
+      await expect(runCli(w.publishArgs, w.io)).rejects.toThrow(/SHA-256/);
+      expect(w.calls).toHaveLength(0);
+    });
+
+    test("refuses a missing package, scores, key file or CLI before running anything", async () => {
+      for (const which of ["packageFile", "scoresFile", "rootKeyFile", "cli"] as const) {
+        const w = world();
+        w.stageForPublish();
+        rmSync(w.paths[which]);
+        await expect(runCli(w.publishArgs, w.io)).rejects.toThrow(/does not exist/);
+        expect(w.calls).toHaveLength(0);
+        rmSync(scratch, { recursive: true, force: true });
+        mkdirSync(scratch);
+      }
+    });
+
+    test("refuses a root key file inside the registry, when the temp dir is the workspace", async () => {
+      const w = world();
+      const io: CliIo = { ...w.io, tempDir: w.paths.registryDir };
+      const inside = fixedLayout(w.work, w.paths.registryDir);
+      mkdirSync(join(inside.rootKeyFile, ".."), { recursive: true });
+      mkdirSync(join(inside.cli, ".."), { recursive: true });
+      writeFileSync(inside.cli, "");
+      writeFileSync(inside.rootKeyFile, `${OTHER_SEED_B64}\n`, { mode: 0o600 });
+      w.stageForPublish(inside);
+      await expect(runCli(w.publishArgs, io)).rejects.toThrow(/is inside the registry/);
+      expect(w.calls).toHaveLength(0);
+    });
+
+    test.skipIf(process.platform === "win32")(
+      "refuses a root key file readable by group or others",
+      async () => {
+        const w = world();
+        w.stageForPublish();
+        chmodSync(w.paths.rootKeyFile, 0o644);
+        await expect(runCli(w.publishArgs, w.io)).rejects.toThrow(/readable by group or others/);
+        expect(w.calls).toHaveLength(0);
+      },
+    );
+  });
+
+  test("a key or scores file inside the package dir (or a key in the scores dir) is refused", () => {
+    const pkg = join(scratch, "pkg");
+    const scores = join(scratch, "scores");
+    const dirs: Array<[string, string]> = [
+      [pkg, "the package directory"],
+      [scores, "the scores directory"],
+    ];
+    expect(() => assertOutside(join(pkg, "root.key"), dirs, "the root key file")).toThrow(
+      /inside the package directory/,
+    );
+    expect(() => assertOutside(join(scores, "root.key"), dirs, "the root key file")).toThrow(
+      /inside the scores directory/,
+    );
+    expect(() =>
+      assertOutside(join(pkg, "scores.json"), [[pkg, "the package directory"]], "the scores file"),
+    ).toThrow(/inside the package directory/);
+    expect(() => assertOutside(join(scratch, "keys", "root.key"), dirs, "the key")).not.toThrow();
   });
 });
 
@@ -921,27 +1341,16 @@ describe("no key-derived value reaches a message", () => {
   });
 
   test("a root-key refusal does not name the key derived from the supplied seed", async () => {
-    const registry = join(scratch, "registry");
-    mkdirSync(registry);
+    const s = keyedSetup(undefined);
     writeFileSync(
-      join(registry, "index.json"),
+      join(s.registry, "index.json"),
       JSON.stringify({ ...indexWith({}), rootKey: PUB_B64 }),
     );
-    writeFileSync(join(scratch, "p.key"), SEED_B64, { mode: 0o600 });
-    writeFileSync(join(scratch, "r.key"), OTHER_SEED_B64, { mode: 0o600 });
+    writeFileSync(s.packageFile, PACKED_BYTES);
+    writeFileSync(s.scoresFile, "{}");
     let message = "";
     try {
-      await publishRegistry(
-        {
-          cli: "nimbus",
-          registryDir: registry,
-          publisherKeyFile: join(scratch, "p.key"),
-          rootKeyFile: join(scratch, "r.key"),
-          publisherId: "nimbus",
-          connectorDir: fakeConnector(),
-        },
-        { build: fakeBuild, log: () => {}, run: async () => 0 },
-      );
+      await addToRegistry(s.add, { log: () => {}, run: async () => 0 });
     } catch (e) {
       message = (e as Error).message;
     }
@@ -951,44 +1360,21 @@ describe("no key-derived value reaches a message", () => {
   });
 
   test("a key file that is not a seed is refused without quoting it", async () => {
-    const registry = join(scratch, "registry");
-    mkdirSync(registry);
-    writeFileSync(join(registry, "index.json"), JSON.stringify(indexWith({})));
-    writeFileSync(join(scratch, "p.key"), "pretend-this-is-secret", { mode: 0o600 });
-    writeFileSync(join(scratch, "r.key"), OTHER_SEED_B64, { mode: 0o600 });
-    const run = publishRegistry(
-      {
-        cli: "nimbus",
-        registryDir: registry,
-        publisherKeyFile: join(scratch, "p.key"),
-        rootKeyFile: join(scratch, "r.key"),
-        publisherId: "nimbus",
-        connectorDir: fakeConnector(),
-      },
-      { build: fakeBuild, log: () => {}, run: async () => 0 },
-    );
+    const s = keyedSetup(indexWith({}));
+    writeFileSync(s.pack.publisherKeyFile, "pretend-this-is-secret", { mode: 0o600 });
+    const run = packForRegistry(s.pack, { build: fakeBuild, log: () => {}, run: async () => 0 });
     await expect(run).rejects.toThrow(/is not one line of base64/);
     await expect(run).rejects.not.toThrow(/pretend-this-is-secret/);
   });
 
   test("a key path that is a directory or missing is refused", async () => {
-    const registry = join(scratch, "registry");
-    mkdirSync(registry);
-    writeFileSync(join(registry, "index.json"), JSON.stringify(indexWith({})));
-    const base = {
-      cli: "nimbus",
-      registryDir: registry,
-      rootKeyFile: join(scratch, "nope.key"),
-      publisherId: "nimbus",
-      connectorDir: fakeConnector(),
-    };
+    const s = keyedSetup(indexWith({}));
     const deps = { build: fakeBuild, log: () => {}, run: async () => 0 };
-    await expect(publishRegistry({ ...base, publisherKeyFile: registry }, deps)).rejects.toThrow(
-      /not a regular file/,
-    );
-    writeFileSync(join(scratch, "p.key"), SEED_B64, { mode: 0o600 });
     await expect(
-      publishRegistry({ ...base, publisherKeyFile: join(scratch, "p.key") }, deps),
+      packForRegistry({ ...s.pack, publisherKeyFile: s.registry }, deps),
+    ).rejects.toThrow(/not a regular file/);
+    await expect(
+      addToRegistry({ ...s.add, rootKeyFile: join(scratch, "nope.key") }, deps),
     ).rejects.toThrow(/root key file .* does not exist/);
   });
 
@@ -999,13 +1385,13 @@ describe("no key-derived value reaches a message", () => {
 
   test("an empty publisher id is refused", async () => {
     await expect(
-      publishRegistry(
+      packForRegistry(
         {
           cli: "nimbus",
           registryDir: scratch,
           publisherKeyFile: "x",
-          rootKeyFile: "y",
           publisherId: " ",
+          packageFile: join(scratch, "p.tgz"),
           connectorDir: fakeConnector(),
         },
         { build: fakeBuild, log: () => {}, run: async () => 0 },

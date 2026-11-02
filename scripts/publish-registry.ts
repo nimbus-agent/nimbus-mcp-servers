@@ -1,10 +1,17 @@
 /**
- * Sign the Readwise extension and add it to the official Nimbus extension registry.
- *
- * Run by `.github/workflows/registry-publish.yml` on every connectors release; runnable by hand:
+ * Sign the Readwise extension and add it to the official Nimbus extension registry, in two keyed
+ * steps with a keyless one between them. Run by `.github/workflows/registry-publish.yml` on every
+ * connectors release; runnable by hand:
  *
  *   bun scripts/publish-registry.ts --check
- *   bun scripts/publish-registry.ts --publisher-id <id>
+ *   bun scripts/publish-registry.ts --pack --publisher-id <id>
+ *   bun scripts/publish-registry.ts --publish --package-sha256 <64 lowercase hex>
+ *
+ * `--pack` holds the PUBLISHER key only: it stages the package (with its `evals/`), signs it and
+ * packs it ONCE with `nimbus extension pack`, so the bytes a keyless job scores are the bytes that
+ * were signed. `--publish` holds the ROOT key only: it checks the packed file against the SHA-256
+ * the pack step reported, then runs `nimbus registry maintain add` with the scores file. The two
+ * never run in one process, and the old single-step invocation is refused.
  *
  * It takes NO path from argv. Every file it touches sits at a fixed place under a base it
  * determines itself — the working directory (the repository root) or the temp directory
@@ -15,16 +22,18 @@
  *   <temp>/nimbus-cli/nimbus[.exe]                     the Nimbus CLI (pinned, hash-checked by CI)
  *   <temp>/nimbus-keys/publisher.key                   the publisher's Ed25519 seed, base64
  *   <temp>/nimbus-keys/root.key                        the registry root's Ed25519 seed, base64
+ *   <temp>/nimbus-package/package.tgz                  the packed, signed package
+ *   <temp>/registry-scores/scores.json                 the scores for that package
  *
  * `--check` needs no key: it reads the registry's `index.json` and the Readwise manifest, and says
- * whether there is anything to publish (`publish=true|false` in `GITHUB_OUTPUT`). CI runs it in a
- * job without the signing environment, so a release with nothing to publish never asks for an
- * approval. The publish never builds: the bundle is built in its own step, before the keys exist,
- * so the process that reads the keys runs no build.
+ * whether there is anything to publish (`publish=true|false` in `GITHUB_OUTPUT`). `--pack` writes
+ * `package_sha256`, `id`, `version` and `packed=true|false` (false on an already-published no-op);
+ * `--publish` writes `published`, `id`, `version` and `sequence`. Neither builds: the bundle is
+ * built in its own step, before the keys exist.
  *
  * Each path must exist as the expected kind and must not be a symlink. The key files must be
- * readable by their owner only on POSIX, and never inside the registry — a key in the workspace is
- * one `git add -A` away from being published.
+ * readable by their owner only on POSIX, and never inside the registry, the package dir or the
+ * scores dir — a key in the workspace is one `git add -A` away from being published.
  *
  * It publishes only when the version in `connectors/readwise/nimbus.extension.json` is not yet in
  * the registry's `index.json`; any other release is a no-op. It never bootstraps a registry —
@@ -32,16 +41,17 @@
  *
  * Keys travel only as FILE PATHS. Nothing read from a key file, or derived from one — not even the
  * public key — reaches argv, a log line or an error message. When `GITHUB_OUTPUT` is set, the
- * outcome is written there for the commit step.
+ * outcome is written there for the next step.
  *
  * This file is repo tooling, not shipped code, so it is outside the spawn chokepoint's scope and
  * starts the CLI with `Bun.spawn` and an argv array — never a shell.
  */
 
-import { createPrivateKey, createPublicKey } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import {
   appendFileSync,
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -55,7 +65,7 @@ import {
 } from "node:fs";
 import { copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -84,12 +94,30 @@ export type PublishResult =
   | { status: "skipped"; id: string; version: string }
   | { status: "published"; id: string; version: string; sequence: number };
 
-export interface PublishOptions {
+export type PackResult =
+  | { status: "skipped"; id: string; version: string }
+  | { status: "packed"; id: string; version: string; sha256: string };
+
+/** The publisher-key step: stage, sign, pack. Holds no root key. */
+export interface PackOptions {
   cli: string;
   registryDir: string;
   publisherKeyFile: string;
-  rootKeyFile: string;
   publisherId: string;
+  /** Where `nimbus extension pack` writes the `.tgz`; it must not exist yet. */
+  packageFile: string;
+  connectorDir?: string;
+}
+
+/** The root-key step: check the package hash, then add to the registry with scores. */
+export interface AddOptions {
+  cli: string;
+  registryDir: string;
+  rootKeyFile: string;
+  packageFile: string;
+  scoresFile: string;
+  /** 64 lowercase hex: the SHA-256 the pack step reported. */
+  packageSha256: string;
   connectorDir?: string;
 }
 
@@ -337,9 +365,29 @@ function manifestIdVersion(connectorDir: string): { id: string; version: string 
 /** The repository's AGPL-3.0 licence text. */
 export const ROOT_LICENSE = join(ROOT, "LICENSE");
 
+/** Copy `<connectorDir>/evals/` into the stage, byte for byte. A symlink inside it is refused. */
+function copyEvals(connectorDir: string, stageDir: string): void {
+  const from = join(connectorDir, "evals");
+  const stats = lstatOrNull(from);
+  if (stats === null) return;
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(`${from} is not a regular directory`);
+  }
+  const refuseLinks = (dir: string): void => {
+    for (const name of readdirSync(dir)) {
+      const entry = join(dir, name);
+      const st = lstatSync(entry);
+      if (st.isSymbolicLink()) throw new Error(`${entry} is a symlink`);
+      if (st.isDirectory()) refuseLinks(entry);
+    }
+  };
+  refuseLinks(from);
+  cpSync(from, join(stageDir, "evals"), { recursive: true });
+}
+
 /**
- * Lay out the package in `stageDir`: the staged manifest, `dist/`, the connector's README, and a
- * LICENSE. The AGPL requires the licence text to travel with the code, so a connector without a
+ * Lay out the package in `stageDir`: the staged manifest, `dist/`, the connector's README, its
+ * `evals/` when it has one, and a LICENSE. The AGPL requires the licence text to travel with the code, so a connector without a
  * LICENSE of its own ships the repository's (`licenseFile`, default {@link ROOT_LICENSE}).
  */
 export async function stagePackage(args: {
@@ -359,6 +407,7 @@ export async function stagePackage(args: {
       if (/^LICENSE/i.test(name)) hasLicense = true;
     }
   }
+  copyEvals(connectorDir, stageDir);
   if (!hasLicense) {
     const licenseFile = args.licenseFile ?? ROOT_LICENSE;
     if (!existsSync(licenseFile)) {
@@ -416,10 +465,35 @@ async function runStep(run: PublishDeps["run"], argv: string[]): Promise<void> {
   }
 }
 
-export async function publishRegistry(
-  options: PublishOptions,
+/** The SHA-256 of a regular file, as 64 lowercase hex. */
+function sha256OfFile(file: string, what: string): string {
+  const stats = lstatOrNull(file);
+  if (stats === null) throw new Error(`${what} ${file} does not exist`);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`${what} ${file} is not a regular file`);
+  }
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** Refuse anything but 64 lowercase hex. The message never repeats the value. */
+export function assertSha256Hex(value: string): void {
+  if (!SHA256_HEX.test(value)) {
+    throw new Error(
+      `--package-sha256 must be exactly 64 lowercase hex characters (got ${value.length} characters)`,
+    );
+  }
+}
+
+/**
+ * Stage the package (with `evals/`), sign it with the publisher key and pack it once. Needs no
+ * root key. An already-published version is a no-op that runs nothing.
+ */
+export async function packForRegistry(
+  options: PackOptions,
   deps: PublishDeps,
-): Promise<PublishResult> {
+): Promise<PackResult> {
   const connectorDir = options.connectorDir ?? READWISE_DIR;
   const { id, version } = manifestIdVersion(connectorDir);
   if (options.publisherId.trim() === "") throw new Error("the publisher id is empty");
@@ -428,15 +502,7 @@ export async function publishRegistry(
     id: options.publisherId,
     key: derivePublicKey(readSeedFile(options.publisherKeyFile, "publisher key")),
   };
-  const rootKey = derivePublicKey(readSeedFile(options.rootKeyFile, "root key"));
-
-  const index = loadIndex(options.registryDir);
-  if (index.rootKey !== undefined && index.rootKey !== rootKey) {
-    throw new Error(
-      `the root key supplied does not match the registry's rootKey (${index.rootKey})`,
-    );
-  }
-  const plan = planPublish(index, id, version, publisher);
+  const plan = planPublish(loadIndex(options.registryDir), id, version, publisher);
   if (plan.action === "refuse") {
     throw new Error(`refusing to publish ${id}@${version}: ${plan.reason}`);
   }
@@ -444,11 +510,14 @@ export async function publishRegistry(
     deps.log(plan.reason);
     return { status: "skipped", id, version };
   }
+  if (lstatOrNull(options.packageFile) !== null) {
+    throw new Error(`${options.packageFile} already exists; a package is packed once`);
+  }
 
   const stageDir = mkdtempSync(join(tmpdir(), "nimbus-extension-stage-"));
   try {
     await stagePackage({ connectorDir, stageDir, publisher, build: deps.build });
-    // Sequential, and in this order: `add` packs the signature `sign` writes.
+    // Sequential, and in this order: `pack` packs the signature `sign` writes.
     await runStep(deps.run, [
       options.cli,
       "extension",
@@ -459,17 +528,71 @@ export async function publishRegistry(
     ]);
     await runStep(deps.run, [
       options.cli,
-      "registry",
-      "maintain",
-      "add",
-      options.registryDir,
+      "extension",
+      "pack",
       stageDir,
-      "--key",
-      options.rootKeyFile,
+      "--out",
+      options.packageFile,
     ]);
   } finally {
     rmSync(stageDir, { recursive: true, force: true });
   }
+  // Hashed from the bytes on disk, never from what the CLI printed.
+  return {
+    status: "packed",
+    id,
+    version,
+    sha256: sha256OfFile(options.packageFile, "the package"),
+  };
+}
+
+/**
+ * Check the packed file against the hash the pack step reported, then add it to the registry with
+ * its scores under the root key. Reads no publisher key.
+ */
+export async function addToRegistry(
+  options: AddOptions,
+  deps: Pick<PublishDeps, "run" | "log">,
+): Promise<PublishResult> {
+  const connectorDir = options.connectorDir ?? READWISE_DIR;
+  const { id, version } = manifestIdVersion(connectorDir);
+  assertSha256Hex(options.packageSha256);
+
+  const rootKey = derivePublicKey(readSeedFile(options.rootKeyFile, "root key"));
+  const index = loadIndex(options.registryDir);
+  if (index.rootKey !== undefined && index.rootKey !== rootKey) {
+    throw new Error(
+      `the root key supplied does not match the registry's rootKey (${index.rootKey})`,
+    );
+  }
+  if (Object.hasOwn(index.extensions[id]?.versions ?? {}, version)) {
+    deps.log(`${id}@${version} is already published; nothing to do.`);
+    return { status: "skipped", id, version };
+  }
+
+  const actual = sha256OfFile(options.packageFile, "the package");
+  if (actual !== options.packageSha256) {
+    throw new Error(
+      `the package's SHA-256 (${actual}) is not the one the pack step reported; refusing to add it`,
+    );
+  }
+  const scores = lstatOrNull(options.scoresFile);
+  if (scores === null || scores.isSymbolicLink() || !scores.isFile()) {
+    throw new Error(`the scores file ${options.scoresFile} is missing; refusing to add without it`);
+  }
+
+  await runStep(deps.run, [
+    options.cli,
+    "registry",
+    "maintain",
+    "add",
+    options.registryDir,
+    options.packageFile,
+    "--scores",
+    options.scoresFile,
+    "--key",
+    options.rootKeyFile,
+  ]);
 
   const after = loadIndex(options.registryDir);
   if (!Object.hasOwn(after.extensions[id]?.versions ?? {}, version)) {
@@ -477,7 +600,6 @@ export async function publishRegistry(
   }
   return { status: "published", id, version, sequence: after.sequence ?? 0 };
 }
-
 // ---------------------------------------------------------------------------------------------
 // Command line
 // ---------------------------------------------------------------------------------------------
@@ -501,6 +623,10 @@ export const LAYOUT = {
   keyDir: "nimbus-keys",
   publisherKey: "publisher.key",
   rootKey: "root.key",
+  packageDir: "nimbus-package",
+  packageFile: "package.tgz",
+  scoresDir: "registry-scores",
+  scoresFile: "scores.json",
 } as const;
 
 export interface Layout {
@@ -509,6 +635,10 @@ export interface Layout {
   cli: string;
   publisherKeyFile: string;
   rootKeyFile: string;
+  packageDir: string;
+  packageFile: string;
+  scoresDir: string;
+  scoresFile: string;
 }
 
 /** Every path the script uses: constant names joined onto the two bases. Nothing from argv. */
@@ -519,6 +649,10 @@ export function fixedLayout(workspace: string, tempDir: string): Layout {
     cli: join(tempDir, LAYOUT.cli),
     publisherKeyFile: join(tempDir, LAYOUT.keyDir, LAYOUT.publisherKey),
     rootKeyFile: join(tempDir, LAYOUT.keyDir, LAYOUT.rootKey),
+    packageDir: join(tempDir, LAYOUT.packageDir),
+    packageFile: join(tempDir, LAYOUT.packageDir, LAYOUT.packageFile),
+    scoresDir: join(tempDir, LAYOUT.scoresDir),
+    scoresFile: join(tempDir, LAYOUT.scoresDir, LAYOUT.scoresFile),
   };
 }
 
@@ -528,19 +662,83 @@ function writeOutputs(file: string | undefined, lines: string[]): void {
 }
 
 /**
- * Run the script with `argv` (no program name). Argv carries only the mode and the publisher id;
- * every path comes from {@link fixedLayout} and is checked before anything reads it.
+ * Refuse a key or scores file that sits inside a directory it must never be in: a key in the
+ * registry is one `git add -A` from published; one in the package dir would be packed.
  */
-export async function runCli(argv: string[], io: CliIo): Promise<void> {
+export function assertOutside(
+  file: string,
+  dirs: Array<[dir: string, name: string]>,
+  what: string,
+): void {
+  for (const [dir, name] of dirs) {
+    if (isInside(dir, file)) throw new Error(`${what} is inside ${name}`);
+  }
+}
+
+/** Resolve `dir` under `tempDir`, creating it first when it is absent. */
+function tempSubdir(dir: string, io: CliIo, what: string): string {
+  if (lstatOrNull(dir) === null) mkdirSync(dir, { recursive: true });
+  return checkedPath(dir, { cwd: io.tempDir, kind: "directory", what, base: io.tempDir });
+}
+
+/** Validate the flag combination before anything is read. Returns the mode. */
+function parseMode(argv: string[]): {
+  mode: "check" | "pack" | "publish";
+  publisherId?: string;
+  packageSha256?: string;
+} {
   const { values } = parseArgs({
     args: argv,
     options: {
       check: { type: "boolean" },
+      pack: { type: "boolean" },
+      publish: { type: "boolean" },
       "publisher-id": { type: "string" },
+      "package-sha256": { type: "string" },
     },
     strict: true,
     allowPositionals: false,
   });
+  const chosen = (["check", "pack", "publish"] as const).filter((m) => values[m] === true);
+  if (chosen.length > 1) throw new Error("--check, --pack and --publish are mutually exclusive");
+  const mode = chosen[0];
+  if (mode === undefined) {
+    throw new Error(
+      values["publisher-id"] === undefined
+        ? "choose one of --check, --pack or --publish"
+        : "signing and adding in one step is no longer supported: run `--pack --publisher-id <id>` " +
+            "(publisher key), then `--publish --package-sha256 <hex>` (root key)",
+    );
+  }
+  const publisherId = values["publisher-id"];
+  const packageSha256 = values["package-sha256"];
+  if (publisherId !== undefined && mode !== "pack") {
+    throw new Error("--publisher-id belongs to --pack only");
+  }
+  if (packageSha256 !== undefined && mode !== "publish") {
+    throw new Error("--package-sha256 belongs to --publish only");
+  }
+  if (mode === "publish") {
+    if (packageSha256 === undefined) throw new Error("missing required flag --package-sha256");
+    assertSha256Hex(packageSha256);
+  }
+  if (mode === "pack" && (publisherId === undefined || publisherId.trim() === "")) {
+    throw new Error("missing required flag --publisher-id");
+  }
+  return {
+    mode,
+    ...(publisherId === undefined ? {} : { publisherId }),
+    ...(packageSha256 === undefined ? {} : { packageSha256 }),
+  };
+}
+
+/**
+ * Run the script with `argv` (no program name). Argv carries only the mode, the publisher id and
+ * the package hash; every path comes from {@link fixedLayout} and is checked before anything reads
+ * it.
+ */
+export async function runCli(argv: string[], io: CliIo): Promise<void> {
+  const { mode, publisherId, packageSha256 } = parseMode(argv);
   // The label comes from the repository manifest alone, so a log line built from it cannot carry
   // anything read from a key file.
   const { id, version } = manifestIdVersion(READWISE_DIR);
@@ -553,36 +751,77 @@ export async function runCli(argv: string[], io: CliIo): Promise<void> {
     base: io.workspace,
   });
 
-  if (values.check === true) {
+  if (mode === "check") {
     const { publish } = checkPublish(registryDir);
     io.log(publish ? `${label}: not in the registry; publishing.` : `${label}: already published.`);
     writeOutputs(io.githubOutput, [`publish=${publish}`, `id=${id}`, `version=${version}`]);
     return;
   }
 
-  const publisherId = values["publisher-id"];
-  if (publisherId === undefined || publisherId.trim() === "") {
-    throw new Error("missing required flag --publisher-id");
-  }
-  const bundle = checkedPath(paths.bundle, {
-    cwd: io.workspace,
-    kind: "file",
-    what: "the prebuilt bundle (run `bun connectors/readwise/scripts/build-extension.ts` first)",
-    base: io.workspace,
-  });
-  const inTemp = (file: string, what: string): string => {
-    const real = checkedPath(file, { cwd: io.tempDir, kind: "file", what, base: io.tempDir });
-    if (isInside(registryDir, real)) throw new Error(`${what} is inside the registry`);
-    return real;
-  };
+  const inTemp = (file: string, what: string): string =>
+    checkedPath(file, { cwd: io.tempDir, kind: "file", what, base: io.tempDir });
   const cli = inTemp(paths.cli, "the Nimbus CLI");
-  const publisherKeyFile = inTemp(paths.publisherKeyFile, "the publisher key file");
-  const rootKeyFile = inTemp(paths.rootKeyFile, "the root key file");
 
-  const result = await publishRegistry(
-    { cli, registryDir, publisherKeyFile, rootKeyFile, publisherId },
-    // The bundle was built before the keys existed; this process only copies it.
-    { build: (outFile) => copyFile(bundle, outFile), run: io.run, log: io.log },
+  if (mode === "pack") {
+    const bundle = checkedPath(paths.bundle, {
+      cwd: io.workspace,
+      kind: "file",
+      what: "the prebuilt bundle (run `bun connectors/readwise/scripts/build-extension.ts` first)",
+      base: io.workspace,
+    });
+    const publisherKeyFile = inTemp(paths.publisherKeyFile, "the publisher key file");
+    const packageDir = tempSubdir(paths.packageDir, io, "the package directory");
+    const scoresDir = tempSubdir(paths.scoresDir, io, "the scores directory");
+    assertOutside(
+      publisherKeyFile,
+      [
+        [registryDir, "the registry"],
+        [packageDir, "the package directory"],
+        [scoresDir, "the scores directory"],
+      ],
+      "the publisher key file",
+    );
+    const result = await packForRegistry(
+      {
+        cli,
+        registryDir,
+        publisherKeyFile,
+        publisherId: publisherId ?? "",
+        packageFile: join(packageDir, LAYOUT.packageFile),
+      },
+      // The bundle was built before the keys existed; this process only copies it.
+      { build: (outFile) => copyFile(bundle, outFile), run: io.run, log: io.log },
+    );
+    const packed = result.status === "packed";
+    if (packed) io.log(`${label}: packed.`);
+    writeOutputs(io.githubOutput, [
+      `package_sha256=${packed ? result.sha256 : ""}`,
+      `id=${id}`,
+      `version=${version}`,
+      `packed=${packed}`,
+    ]);
+    return;
+  }
+
+  // --publish: the root key only; no publisher key file is read.
+  const rootKeyFile = inTemp(paths.rootKeyFile, "the root key file");
+  const packageFile = inTemp(paths.packageFile, "the package");
+  const scoresFile = inTemp(paths.scoresFile, "the scores file");
+  const packageDir = dirname(packageFile);
+  const scoresDir = dirname(scoresFile);
+  assertOutside(
+    rootKeyFile,
+    [
+      [registryDir, "the registry"],
+      [packageDir, "the package directory"],
+      [scoresDir, "the scores directory"],
+    ],
+    "the root key file",
+  );
+  assertOutside(scoresFile, [[packageDir, "the package directory"]], "the scores file");
+  const result = await addToRegistry(
+    { cli, registryDir, rootKeyFile, packageFile, scoresFile, packageSha256: packageSha256 ?? "" },
+    { run: io.run, log: io.log },
   );
   const published = result.status === "published";
   if (published) io.log(`${label}: published.`);
