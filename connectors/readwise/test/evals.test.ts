@@ -14,8 +14,8 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { buildReadOnlyMcpConnector } from "../../../shared/run-read-only-mcp-connector.ts";
 import { withEnv } from "../../../scripts/connector-tool-harness.ts";
+import { buildReadOnlyMcpConnector } from "../../../shared/run-read-only-mcp-connector.ts";
 import { registerReadwiseSyncTool } from "../src/sync-tool.ts";
 import { registerReadwiseTools } from "../src/tools.ts";
 
