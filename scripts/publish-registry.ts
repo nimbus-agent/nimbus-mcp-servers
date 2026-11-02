@@ -325,7 +325,7 @@ export function planPublish(
  * The manifest as it ships in the package: the repo manifest plus the publisher block and the
  * `entry` shim. Returns a new object; the input is not touched.
  *
- * COMPATIBILITY SHIM — `entry`: the pinned CLI (v9.2.1) reads only `entry` and otherwise falls
+ * COMPATIBILITY SHIM — `entry`: older Nimbus CLIs read only `entry` and otherwise fall
  * back to `dist/index.js`; `entrypoint` support (registry-format `parseEntry`) landed on Nimbus
  * main after it. The gateway reads `entry` first, so setting both to the same value changes
  * nothing for it. Remove once the pinned CLI is a release containing that support.
