@@ -31,6 +31,7 @@ import {
   type PublishDeps,
   packForRegistry,
   planPublish,
+  READWISE_DIR,
   type RegistryIndex,
   runCli,
   stageManifest,
@@ -229,6 +230,26 @@ describe("stagePackage", () => {
       "nimbus.extension.json",
     ]);
     expect(existsSync(join(stage, "dist", "server.js"))).toBe(true);
+  });
+
+  test("the real Readwise connector has an offline eval suite, and staging copies it byte for byte", async () => {
+    const suiteFile = join(READWISE_DIR, "evals", "offline.eval.json");
+    expect(existsSync(suiteFile)).toBe(true);
+    const stage = join(scratch, "stage");
+    await stagePackage({
+      connectorDir: READWISE_DIR,
+      stageDir: stage,
+      publisher: PUBLISHER,
+      build: fakeBuild,
+    });
+    expect(
+      readFileSync(join(stage, "evals", "offline.eval.json")).equals(readFileSync(suiteFile)),
+    ).toBe(true);
+    // The package version and the manifest's agree: the version that is published is the one tested.
+    const pkg = readJsonObject(join(READWISE_DIR, "package.json"));
+    expect(pkg["version"]).toBe(
+      readJsonObject(join(READWISE_DIR, "nimbus.extension.json"))["version"],
+    );
   });
 
   test("a connector without a LICENSE ships the repository's AGPL text", async () => {
@@ -948,10 +969,41 @@ describe("the registry workflow", () => {
       l.startsWith("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"),
     );
     const probe = lines.findIndex((l) => l.startsWith("bwrap --unshare-user"));
+    const probeLine = lines[probe];
     expect(sysctl).toBeGreaterThan(-1);
     expect(probe).toBeGreaterThan(sysctl);
     // Root bypasses the userns restriction, so a probe under sudo would prove nothing.
     expect(lines.filter((l) => l.includes("bwrap")).every((l) => !l.includes("sudo"))).toBe(true);
+    // The rest of the block, pinned: without it a good package is signed `no-listing` for good.
+    expect(lines).toContain(
+      "sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*",
+    );
+    expect(lines).toContain("sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0");
+    expect(lines).toContain("sudo sysctl -w kernel.unprivileged_userns_clone=1 || true");
+    expect(probeLine).toBe(
+      [
+        "bwrap --unshare-user --unshare-net --new-session --ro-bind /usr /usr --ro-bind /etc /etc",
+        '--ro-bind /lib /lib "$' + '{lib64[@]}" --proc /proc --dev /dev --tmpfs /tmp /usr/bin/true',
+      ].join(" "),
+    );
+    expect(lines).toContain("if [ -d /lib64 ]; then lib64=(--ro-bind /lib64 /lib64); fi");
+    expect(lines.findIndex((l) => l.startsWith("sudo rm -f"))).toBeLessThan(
+      lines.findIndex((l) => l.includes("apt-get") && l.includes(" update ")),
+    );
+  });
+
+  test("no pinned SHA-256 or commit is all zeros", () => {
+    const pins = [
+      ...workflow.matchAll(/"([0-9a-f]{64})"/g),
+      ...workflow.matchAll(/@([0-9a-f]{40})/g),
+    ].map((m) => m[1] ?? "");
+    // Two CLI literals, one gateway literal, and every pinned action (including the Nimbus one).
+    expect(pins.length).toBeGreaterThanOrEqual(4);
+    for (const pin of pins) expect(pin).not.toMatch(/^0+$/);
+    for (const job of [pack, publish]) {
+      expect(job?.env?.["NIMBUS_CLI_SHA256"]).not.toMatch(/^0+$/);
+    }
+    expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).not.toMatch(/^0+$/);
   });
 
   test("the gateway is pinned to v10.15.0, checked against a literal and its SHA256SUMS line", () => {

@@ -1,0 +1,89 @@
+{
+  "format": 1,
+  "name": "offline",
+  "cases": [
+    {
+      "name": "list without a token is an error",
+      "tool": "readwise_list",
+      "input": {},
+      "expect": {
+        "rubric": "exact",
+        "value": "READWISE_TOKEN is not set",
+        "error": true
+      }
+    },
+    {
+      "name": "get without a token is an error",
+      "tool": "readwise_get",
+      "input": {
+        "id": "1"
+      },
+      "expect": {
+        "rubric": "exact",
+        "value": "READWISE_TOKEN is not set",
+        "error": true
+      }
+    },
+    {
+      "name": "search without a token is an error",
+      "tool": "readwise_search",
+      "input": {
+        "query": "retries"
+      },
+      "expect": {
+        "rubric": "exact",
+        "value": "READWISE_TOKEN is not set",
+        "error": true
+      }
+    },
+    {
+      "name": "books list without a token is an error",
+      "tool": "readwise_books_list",
+      "input": {},
+      "expect": {
+        "rubric": "exact",
+        "value": "READWISE_TOKEN is not set",
+        "error": true
+      }
+    },
+    {
+      "name": "book get without a token is an error",
+      "tool": "readwise_book_get",
+      "input": {
+        "id": "1"
+      },
+      "expect": {
+        "rubric": "exact",
+        "value": "READWISE_TOKEN is not set",
+        "error": true
+      }
+    },
+    {
+      "name": "books search without a token is an error",
+      "tool": "readwise_books_search",
+      "input": {
+        "query": "retries"
+      },
+      "expect": {
+        "rubric": "exact",
+        "value": "READWISE_TOKEN is not set",
+        "error": true
+      }
+    },
+    {
+      "name": "sync without a token reports unauthenticated",
+      "tool": "__nimbus_sync",
+      "input": {
+        "cursor": null,
+        "depth": "full"
+      },
+      "expect": {
+        "rubric": "json-match",
+        "value": {
+          "status": "unauthenticated"
+        },
+        "error": false
+      }
+    }
+  ]
+}

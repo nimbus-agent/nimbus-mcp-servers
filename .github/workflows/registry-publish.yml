@@ -109,8 +109,8 @@ jobs:
       # The CLI is not on npm. Pinned to a release and to the SHA-256 of its linux binary, checked
       # here as a literal: SHA256SUMS comes from the same release as the binary, so it cannot be
       # the only check.
-      NIMBUS_CLI_VERSION: v10.15.0 # Task 3 fills in the release pin
-      NIMBUS_CLI_SHA256: "0000000000000000000000000000000000000000000000000000000000000000" # Task 3 fills in the release pin
+      NIMBUS_CLI_VERSION: v10.15.0
+      NIMBUS_CLI_SHA256: "27c57c381e71c3dd968f9d5775de260e9495606bb91b02956857024d320e4a04"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -211,8 +211,8 @@ jobs:
     env:
       # The gateway of the same release, checked as a literal and against its own line of
       # SHA256SUMS (both come from the release, so neither alone is a pin).
-      NIMBUS_GATEWAY_VERSION: v10.15.0 # Task 3 fills in the release pin
-      NIMBUS_GATEWAY_SHA256: "0000000000000000000000000000000000000000000000000000000000000000" # Task 3 fills in the release pin
+      NIMBUS_GATEWAY_VERSION: v10.15.0
+      NIMBUS_GATEWAY_SHA256: "d6db7b01fdcc82c4389b25d79740c50ec6a7df96df4e8e309551eef0aca2d749"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -254,7 +254,7 @@ jobs:
 
       # `scores` is left unset, so the action writes scores.json in the workspace.
       - name: Score the package
-        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@0000000000000000000000000000000000000000 # v10.15.0 Task 3 fills in the commit
+        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@d25dcdb9406fc89b755464b5430425419774f2d9 # v10.15.0
         with:
           mode: score-package
           package: ${{ runner.temp }}/readwise-package/package.tgz
@@ -286,8 +286,8 @@ jobs:
       group: official-registry
       cancel-in-progress: false
     env:
-      NIMBUS_CLI_VERSION: v10.15.0 # Task 3 fills in the release pin
-      NIMBUS_CLI_SHA256: "0000000000000000000000000000000000000000000000000000000000000000" # Task 3 fills in the release pin
+      NIMBUS_CLI_VERSION: v10.15.0
+      NIMBUS_CLI_SHA256: "27c57c381e71c3dd968f9d5775de260e9495606bb91b02956857024d320e4a04"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
