@@ -60,6 +60,17 @@ describe("the registry liveness workflow", () => {
     expect(Object.keys(parsed.jobs).sort()).toEqual(["check", "sign"]);
   });
 
+  // Until the owner has enabled the registry and named a liveness public key, a scheduled run
+  // skips both jobs: `sign` never starts, so GitHub never auto-creates an unprotected
+  // `registry-liveness` environment, and the weekly run is not red before setup.
+  test("check runs only once the registry is enabled and a liveness key is named; sign needs it", () => {
+    expect((check as Record<string, unknown>)["if"]).toBe(
+      "vars.OFFICIAL_REGISTRY_ENABLED == 'true' && vars.NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY != ''",
+    );
+    expect(sign.needs).toBe("check");
+    expect((sign as Record<string, unknown>)["if"]).toBeUndefined();
+  });
+
   describe("check", () => {
     const jobText = text.slice(text.indexOf("\n  check:"), text.indexOf("\n  sign:"));
 

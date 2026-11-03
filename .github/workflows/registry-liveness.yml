@@ -28,6 +28,10 @@ concurrency:
 jobs:
   check:
     name: Check hosts and suites
+    # Skipped (and so is sign, which needs this job) until the owner has enabled the registry and
+    # set the liveness public key: before that, sign would fail, and naming the environment would
+    # make GitHub create it unprotected. See docs/publishing.md § Liveness checks.
+    if: vars.OFFICIAL_REGISTRY_ENABLED == 'true' && vars.NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Runs extension code: no environment, no secret, no token beyond read-only contents.

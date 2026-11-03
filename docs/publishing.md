@@ -273,7 +273,12 @@ environment. It runs `nimbus registry maintain set-liveness-key` with the root k
 `gh-pages`.
 
 `registry-liveness` has no required reviewers on purpose. A leaked liveness key can sign only dated
-check lines. It cannot sign an index, a package or a score (invariant I51).
+check lines. It cannot sign an index, a package or a score, and clients only display those lines:
+no install, update or start depends on them (invariant I51).
+
+Both liveness jobs are skipped until the repository variable `OFFICIAL_REGISTRY_ENABLED` is
+`true` and the variable `NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY` is set, so a scheduled run before setup does
+nothing, and the `registry-liveness` environment is never created by a run.
 
 `maintain add` from Nimbus v10.17.0 carries `livenessKey` through every later publish. Do not move
 the pin in `registry-publish.yml` back below v10.17.0, or the next publish drops the key.
@@ -307,7 +312,8 @@ the pin in `registry-publish.yml` back below v10.17.0, or the next publish drops
    `index.json` at `sequence + 1` with the new key recorded.
 5. Run **Registry liveness** once. From then on it runs every Monday at 05:23 UTC.
 
-A liveness run before step 4 fails in `sign`. That failure means step 4 is not done yet.
+A liveness run after step 3 but before step 4 fails in `sign`. That failure means step 4 is not
+done yet.
 
 To rotate the key, repeat steps 1 to 4 with a new key.
 

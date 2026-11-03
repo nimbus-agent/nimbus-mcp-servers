@@ -212,7 +212,7 @@ jobs:
       # The gateway of the same release, checked as a literal and against its own line of
       # SHA256SUMS (both come from the release, so neither alone is a pin).
       NIMBUS_GATEWAY_VERSION: v10.17.0
-      NIMBUS_GATEWAY_SHA256: "9fc1640a305a1a7c4b421f2b42371ddd2e075c1aafcd3c04a17b0072ac7318"
+      NIMBUS_GATEWAY_SHA256: "9fc1640a4a305a1a7c4b421f2b42371ddd2e075c1aafcd3c04a17b0072ac7318"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1

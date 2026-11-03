@@ -1008,8 +1008,10 @@ describe("the registry workflow", () => {
 
   test("the gateway is pinned to v10.17.0, checked against a literal and its SHA256SUMS line", () => {
     expect(score?.env?.["NIMBUS_GATEWAY_VERSION"]).toBe("v10.17.0");
+    // The shape check stays beside the literal: a literal copied short must still fail here.
+    expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
     expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).toBe(
-      "9fc1640a305a1a7c4b421f2b42371ddd2e075c1aafcd3c04a17b0072ac7318",
+      "9fc1640a4a305a1a7c4b421f2b42371ddd2e075c1aafcd3c04a17b0072ac7318",
     );
     const run = stepNamed(scoreSteps, "Download the Nimbus gateway")?.run ?? "";
     expect(run).toMatch(/\/releases\/download\/\$\{NIMBUS_GATEWAY_VERSION\}"/);
@@ -1024,6 +1026,7 @@ describe("the registry workflow", () => {
   test("the CLI is v10.17.0 with a 64-hex literal in both keyed jobs, the action by 40 hex", () => {
     for (const job of [pack, publish]) {
       expect(job?.env?.["NIMBUS_CLI_VERSION"]).toBe("v10.17.0");
+      expect(job?.env?.["NIMBUS_CLI_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
       expect(job?.env?.["NIMBUS_CLI_SHA256"]).toBe(
         "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2",
       );
