@@ -1,6 +1,7 @@
 // Decides, without any secret, whether the registry index still has to be re-signed to name the
 // liveness public key. Imports Node builtins only (pinned by its test), like publish-registry.ts.
 import { appendFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const VARIABLE = "NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY";
 const KEY_SHAPE = /^[A-Za-z0-9+/]{43}=$/;
@@ -27,21 +28,32 @@ export function checkLivenessKey(indexText: string, key: string): { needed: bool
   return { needed: current !== key };
 }
 
-if (import.meta.main) {
+/**
+ * The script's whole behaviour, in process so tests cover it: read `<cwd>/registry/index.json`,
+ * decide, append `needed=` to `GITHUB_OUTPUT` when set, and log one line. Returns the exit code.
+ */
+export function runLivenessKeyCheck(
+  env: Record<string, string | undefined>,
+  cwd: string,
+  log: (line: string) => void,
+): number {
   try {
     const { needed } = checkLivenessKey(
-      readFileSync("registry/index.json", "utf8"),
-      process.env["KEY"] ?? "",
+      readFileSync(join(cwd, "registry", "index.json"), "utf8"),
+      env["KEY"] ?? "",
     );
-    const out = process.env["GITHUB_OUTPUT"];
+    const out = env["GITHUB_OUTPUT"];
     if (out) appendFileSync(out, `needed=${needed}\n`);
-    console.log(
+    log(
       needed
         ? "the index does not name this liveness key yet; the set-key job will run"
         : "the index already names this liveness key; nothing to do",
     );
+    return 0;
   } catch (error) {
-    console.log(`::error::${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
+    log(`::error::${error instanceof Error ? error.message : String(error)}`);
+    return 1;
   }
 }
+
+if (import.meta.main) process.exit(runLivenessKeyCheck(process.env, process.cwd(), console.log));

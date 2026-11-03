@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLivenessKey } from "./liveness-key-check.ts";
+import { checkLivenessKey, runLivenessKeyCheck } from "./liveness-key-check.ts";
 
 const SCRIPT = join(fileURLToPath(import.meta.url), "..", "liveness-key-check.ts");
 const KEY = `${"A".repeat(43)}=`;
@@ -34,6 +34,69 @@ describe("checkLivenessKey", () => {
     expect(() => checkLivenessKey("not json", KEY)).toThrow();
     expect(() => checkLivenessKey("[]", KEY)).toThrow();
     expect(() => checkLivenessKey("null", KEY)).toThrow();
+  });
+});
+
+describe("runLivenessKeyCheck", () => {
+  const withIndex = (body: string | undefined, fn: (dir: string, out: string) => void): void => {
+    const dir = mkdtempSync(join(tmpdir(), "liveness-run-"));
+    try {
+      if (body !== undefined) {
+        mkdirSync(join(dir, "registry"));
+        writeFileSync(join(dir, "registry", "index.json"), body);
+      }
+      const out = join(dir, "output.txt");
+      writeFileSync(out, "");
+      fn(dir, out);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("a new key: needed=true, exit 0, says the set-key job will run", () => {
+    withIndex(JSON.stringify({ sequence: 1 }), (dir, out) => {
+      const lines: string[] = [];
+      expect(runLivenessKeyCheck({ KEY, GITHUB_OUTPUT: out }, dir, (l) => lines.push(l))).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe("needed=true\n");
+      expect(lines).toEqual([expect.stringContaining("set-key job will run")]);
+    });
+  });
+
+  test("the key already named: needed=false, exit 0", () => {
+    withIndex(JSON.stringify({ livenessKey: KEY }), (dir, out) => {
+      const lines: string[] = [];
+      expect(runLivenessKeyCheck({ KEY, GITHUB_OUTPUT: out }, dir, (l) => lines.push(l))).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe("needed=false\n");
+      expect(lines).toEqual([expect.stringContaining("nothing to do")]);
+    });
+  });
+
+  test("no GITHUB_OUTPUT still decides and logs", () => {
+    withIndex(JSON.stringify({}), (dir, out) => {
+      const lines: string[] = [];
+      expect(runLivenessKeyCheck({ KEY }, dir, (l) => lines.push(l))).toBe(0);
+      expect(readFileSync(out, "utf8")).toBe("");
+      expect(lines).toHaveLength(1);
+    });
+  });
+
+  test("an unset KEY: exit 1, an ::error:: line naming the variable, no output", () => {
+    withIndex(JSON.stringify({}), (dir, out) => {
+      const lines: string[] = [];
+      expect(runLivenessKeyCheck({ GITHUB_OUTPUT: out }, dir, (l) => lines.push(l))).toBe(1);
+      expect(lines).toEqual([
+        expect.stringMatching(/^::error::.*NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY/),
+      ]);
+      expect(readFileSync(out, "utf8")).toBe("");
+    });
+  });
+
+  test("a missing index: exit 1 with an ::error:: line", () => {
+    withIndex(undefined, (dir, out) => {
+      const lines: string[] = [];
+      expect(runLivenessKeyCheck({ KEY, GITHUB_OUTPUT: out }, dir, (l) => lines.push(l))).toBe(1);
+      expect(lines[0]).toStartWith("::error::");
+    });
   });
 });
 
