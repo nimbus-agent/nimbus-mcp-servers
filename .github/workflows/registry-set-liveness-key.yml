@@ -1,0 +1,176 @@
+name: Registry set liveness key
+
+# Re-signs the official Nimbus registry's index.json (the gh-pages branch) so that it names the
+# liveness public key, the repository variable NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY. Dispatch it by
+# hand once, after setting that variable, and again only to rotate the key. The registry root key
+# is held only in `set-key`, behind the environment's required reviewers, and only for the one CLI
+# call that signs the index. `preflight` decides a no-op (the index already names the key) with no
+# secret, before any approval is requested. The liveness PRIVATE key is never used here.
+#
+# The protections here are pinned by scripts/registry-set-liveness-key.test.ts, which parses this file.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs WITHOUT the environment and without any secret, so a refusal or a no-op here happens
+  # before any approval prompt.
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # Read the repository and its gh-pages branch. Nothing else.
+      contents: read
+    outputs:
+      needed: ${{ steps.check.outputs.needed }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The owner sets OFFICIAL_REGISTRY_ENABLED=true last, once the environment (with required
+      # reviewers, deployment restricted to main), its secrets, gh-pages and Pages are all in place.
+      # release.yml skips this workflow until then; a manual dispatch is refused here.
+      - name: Refuse unless the registry is enabled
+        env:
+          ENABLED: ${{ vars.OFFICIAL_REGISTRY_ENABLED }}
+        run: |
+          if [ "$ENABLED" != "true" ]; then
+            echo "::error::repository variable OFFICIAL_REGISTRY_ENABLED is not 'true'. Finish the one-time registry setup in docs/publishing.md (§ Publishing to the official Nimbus registry) and set the variable last."
+            exit 1
+          fi
+
+      # Only main's code may hold the keys. The environment's deployment-branch rule is the
+      # boundary; this is defence in depth, and it refuses before an approval is requested.
+      - name: Refuse a ref other than main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::registry publishing runs from refs/heads/main only, not $REF"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout the registry (gh-pages)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: registry
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3"
+
+      # Keyless. Fails on an unset or malformed variable, so an empty value never reads as
+      # "already set". Needs no install: the script imports only Node builtins.
+      - name: Is the liveness key already named?
+        id: check
+        env:
+          KEY: ${{ vars.NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY }}
+        run: bun scripts/liveness-key-check.ts
+
+  # Boundary: holds the registry ROOT key only. It installs nothing and runs no repository code;
+  # the only program that sees the key is the pinned CLI.
+  set-key:
+    needs: preflight
+    if: needs.preflight.outputs.needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The protected environment holds the root key and requires a reviewer's approval.
+    environment: official-registry
+    permissions:
+      # Push to gh-pages. Nothing else.
+      contents: write
+    concurrency:
+      group: official-registry
+      cancel-in-progress: false
+    env:
+      NIMBUS_CLI_VERSION: v10.17.0
+      NIMBUS_CLI_SHA256: "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2"
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # No persisted credential: the CLI runs before the push, and does not need one. The push step
+      # supplies the token itself.
+      - name: Checkout the registry (gh-pages)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: registry
+          persist-credentials: false
+
+      - name: Download and verify the Nimbus CLI
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/nimbus-cli"
+          mkdir -p "$dir"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 \
+            -o "$dir/nimbus" \
+            "https://github.com/nimbus-agent/Nimbus/releases/download/${NIMBUS_CLI_VERSION}/nimbus-cli-linux-x64"
+          printf '%s  %s\n' "$NIMBUS_CLI_SHA256" "$dir/nimbus" | sha256sum --check --strict -
+          chmod +x "$dir/nimbus"
+
+      # The key reaches the disk through env and the `printf` builtin — never argv, never a traced
+      # shell — into a 0700 directory with umask 077, immediately before the one step that reads it.
+      - name: Write the registry root key
+        env:
+          ROOT_KEY: ${{ secrets.NIMBUS_REGISTRY_ROOT_KEY }}
+        run: |
+          set -eu
+          umask 077
+          missing=""
+          [ -n "${ROOT_KEY:-}" ] || missing="$missing secret:NIMBUS_REGISTRY_ROOT_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::the official-registry environment is missing:$missing"
+            exit 1
+          fi
+          keys="$RUNNER_TEMP/nimbus-keys"
+          mkdir -m 700 "$keys"
+          printf '%s' "$ROOT_KEY" > "$keys/root.key"
+
+      - name: Name the liveness key
+        env:
+          KEY: ${{ vars.NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY }}
+        run: |
+          "$RUNNER_TEMP/nimbus-cli/nimbus" registry maintain set-liveness-key registry "$KEY" --key "$RUNNER_TEMP/nimbus-keys/root.key"
+
+      # Remove the key before anything talks to the network again.
+      - name: Delete the signing keys
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/nimbus-keys"
+
+      - name: Commit and push the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: registry
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::error::the index did not change; set-liveness-key always re-signs it, so something is wrong"
+            exit 1
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "registry: name the liveness key" -m "From ${GITHUB_REPOSITORY}@${GITHUB_SHA}, run ${GITHUB_RUN_ID}."
+          # The token goes to git through GIT_CONFIG_* env, not argv and not .git/config.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git push "https://github.com/${GITHUB_REPOSITORY}.git" HEAD:gh-pages
