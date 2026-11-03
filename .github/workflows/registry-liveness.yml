@@ -1,0 +1,140 @@
+name: Registry liveness
+
+# Weekly dated facts about each package's newest stable version in the official Nimbus extension
+# registry (the gh-pages branch): do its declared hosts still answer, and do its eval suites still
+# pass against the latest Nimbus release. A line says what was observed on that date; it never says
+# the extension works. The procedure is in docs/publishing.md § Liveness checks.
+#
+# Two jobs, two boundaries:
+#   check  runs extension code (it starts each server and runs its suites) and holds no secret, no
+#          environment and a read-only token, used once to resolve the latest Nimbus release.
+#   sign   holds only the liveness key (never the registry root key), runs no shell and reads the
+#          check job's results file as untrusted input.
+#
+# The protections here are pinned by scripts/registry-liveness.test.ts, which parses this file.
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-liveness
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check hosts and suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Runs extension code: no environment, no secret, no token beyond read-only contents.
+    permissions:
+      contents: read
+    outputs:
+      nimbus-version: ${{ steps.gateway.outputs.version }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # Full history so the action can read each package's newest stable version; no persisted
+      # credential, since nothing in this job pushes.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up the sandbox
+        # System changes need root. The probe must NOT run as root: root bypasses the userns
+        # restriction, so a probe under sudo would pass even if the sysctl writes did not apply.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o Acquire::Retries=3 update -qq < /dev/null
+          sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -o Acquire::Retries=3 install -y -qq bubblewrap < /dev/null
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          lib64=()
+          if [ -d /lib64 ]; then lib64=(--ro-bind /lib64 /lib64); fi
+          bwrap --unshare-user --unshare-net --new-session --ro-bind /usr /usr --ro-bind /etc /etc --ro-bind /lib /lib "${lib64[@]}" --proc /proc --dev /dev --tmpfs /tmp /usr/bin/true
+
+      # The tag is resolved at run time (the one step that uses the job's token), validated as a
+      # plain x.y.z, and only that tag's own line of SHA256SUMS is checked.
+      - name: Download the latest Nimbus gateway
+        id: gateway
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --repo nimbus-agent/Nimbus --json tagName -q .tagName)"
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "the latest release has no plain x.y.z version; refusing" >&2
+            exit 1
+          fi
+          base="https://github.com/nimbus-agent/Nimbus/releases/download/${tag}"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o nimbus-gateway-linux-x64 "$base/nimbus-gateway-linux-x64"
+          curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o SHA256SUMS "$base/SHA256SUMS"
+          grep -E '^[0-9a-f]{64}  nimbus-gateway-linux-x64$' SHA256SUMS > CHECKSUM.txt
+          test "$(wc -l < CHECKSUM.txt)" -eq 1
+          sha256sum -c CHECKSUM.txt
+          chmod +x nimbus-gateway-linux-x64
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # `results` is left unset, so the action writes liveness-results.json in the workspace.
+      - name: Check
+        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669 # v10.17.0
+        with:
+          mode: liveness-check
+          default-branch: "main"
+          nimbus-gateway: ${{ github.workspace }}/nimbus-gateway-linux-x64
+          nimbus-version: ${{ steps.gateway.outputs.version }}
+
+      - name: Upload the results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: registry-liveness
+          path: liveness-results.json
+          if-no-files-found: error
+
+  sign:
+    name: Sign and publish liveness.json
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # No required reviewers: a leaked liveness key can only publish false dated check lines.
+    environment: registry-liveness
+    permissions:
+      # Push liveness.json to gh-pages. Nothing else.
+      contents: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The persisted credential is deliberate: the action pushes with it.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: registry-liveness
+          # Outside the checkout: the check job controls this artifact.
+          path: ${{ runner.temp }}/registry-liveness
+
+      - name: Sign
+        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669 # v10.17.0
+        with:
+          mode: liveness-sign
+          default-branch: "main"
+          liveness-key: ${{ secrets.NIMBUS_REGISTRY_LIVENESS_KEY }}
+          # Untrusted input: each entry is re-checked, and the Nimbus version must match this run's.
+          results: ${{ runner.temp }}/registry-liveness/liveness-results.json
+          nimbus-version: ${{ needs.check.outputs.nimbus-version }}
