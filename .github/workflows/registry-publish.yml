@@ -109,8 +109,8 @@ jobs:
       # The CLI is not on npm. Pinned to a release and to the SHA-256 of its linux binary, checked
       # here as a literal: SHA256SUMS comes from the same release as the binary, so it cannot be
       # the only check.
-      NIMBUS_CLI_VERSION: v10.15.0
-      NIMBUS_CLI_SHA256: "27c57c381e71c3dd968f9d5775de260e9495606bb91b02956857024d320e4a04"
+      NIMBUS_CLI_VERSION: v10.17.0
+      NIMBUS_CLI_SHA256: "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -211,8 +211,8 @@ jobs:
     env:
       # The gateway of the same release, checked as a literal and against its own line of
       # SHA256SUMS (both come from the release, so neither alone is a pin).
-      NIMBUS_GATEWAY_VERSION: v10.15.0
-      NIMBUS_GATEWAY_SHA256: "d6db7b01fdcc82c4389b25d79740c50ec6a7df96df4e8e309551eef0aca2d749"
+      NIMBUS_GATEWAY_VERSION: v10.17.0
+      NIMBUS_GATEWAY_SHA256: "9fc1640a305a1a7c4b421f2b42371ddd2e075c1aafcd3c04a17b0072ac7318"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -254,7 +254,7 @@ jobs:
 
       # `scores` is left unset, so the action writes scores.json in the workspace.
       - name: Score the package
-        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@d25dcdb9406fc89b755464b5430425419774f2d9 # v10.15.0
+        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669 # v10.17.0
         with:
           mode: score-package
           package: ${{ runner.temp }}/readwise-package/package.tgz
@@ -287,8 +287,8 @@ jobs:
       group: official-registry
       cancel-in-progress: false
     env:
-      NIMBUS_CLI_VERSION: v10.15.0
-      NIMBUS_CLI_SHA256: "27c57c381e71c3dd968f9d5775de260e9495606bb91b02956857024d320e4a04"
+      NIMBUS_CLI_VERSION: v10.17.0
+      NIMBUS_CLI_SHA256: "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1

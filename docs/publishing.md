@@ -94,7 +94,7 @@ never prompts a reviewer. It holds the publisher key and never the registry root
 1. waits for a reviewer to approve the protected `official-registry` environment;
 2. checks out the release commit and `gh-pages`, with no persisted credential, and runs
    `bun install --frozen-lockfile --ignore-scripts`;
-3. downloads the Nimbus CLI, which is not on npm, from a pinned Nimbus release (v10.15.0) and
+3. downloads the Nimbus CLI, which is not on npm, from a pinned Nimbus release (v10.17.0) and
    verifies it against a SHA-256 written into the workflow as a literal;
 4. builds `dist/server.js` before any key exists;
 5. writes the publisher key to a file under `$RUNNER_TEMP` (mode 0600) and, in the very next step,
@@ -106,7 +106,7 @@ never prompts a reviewer. It holds the publisher key and never the registry root
 
 **`score`** runs the package's own code, so it has no environment, no secret, no checkout, and
 `contents: read` only. It downloads the `.tgz`, sets up the Linux sandbox the same way the Nimbus
-registry template does, downloads the Nimbus gateway of the same release (v10.15.0, checked against
+registry template does, downloads the Nimbus gateway of the same release (v10.17.0, checked against
 a SHA-256 written into the workflow as a literal and against the release's `SHA256SUMS`), and runs
 the registry action's `score-package` mode from that release on the `.tgz`. The action runs the
 baseline and the `evals/` suite in the sandbox and writes `scores.json`, which the job uploads. The
@@ -244,6 +244,72 @@ bootstrap run in CI would either fail or replace the root of trust.
    you enable: a job
    that names an environment which does not exist makes GitHub create it, with no protection
    rules at all.
+7. Liveness checks are a second, optional setup. See [Liveness checks](#liveness-checks).
+
+## Liveness checks
+
+The registry can also publish a dated line for each extension saying what its runner observed.
+The file is `liveness.json`, signed with its own key. A line records what the registry's runner
+observed on that date and nothing more. It does not say that an extension works.
+
+The full description is in the Nimbus docs:
+[Liveness checks](https://github.com/nimbus-agent/Nimbus/blob/main/docs/registry-hosting.md#liveness-checks).
+
+### What the workflows do
+
+**Registry liveness** (`registry-liveness.yml`) runs on Mondays at 05:23 UTC, and by hand.
+
+- `check` holds no key and no secret. It runs the checks under the pinned registry action and
+  uploads the result. It runs the latest Nimbus release, not the pinned one. A later release that
+  changes the reply of the eval role could make an older pin sign "tests could not be run (run
+  failed)" until the pin is updated. That risk is accepted.
+- `sign` runs in the environment `registry-liveness`. It holds the liveness key
+  (`NIMBUS_REGISTRY_LIVENESS_KEY`), signs the result and publishes `liveness.json` to `gh-pages`.
+
+**Registry set liveness key** (`registry-set-liveness-key.yml`) is run by hand, once. A keyless
+preflight compares the public key in the repository variable `NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY`
+with the one in `index.json`. The `set-key` job runs in the protected `official-registry`
+environment. It runs `nimbus registry maintain set-liveness-key` with the root key and pushes
+`gh-pages`.
+
+`registry-liveness` has no required reviewers on purpose. A leaked liveness key can sign only dated
+check lines. It cannot sign an index, a package or a score (invariant I51).
+
+`maintain add` from Nimbus v10.17.0 carries `livenessKey` through every later publish. Do not move
+the pin in `registry-publish.yml` back below v10.17.0, or the next publish drops the key.
+
+### One-time setup (the owner)
+
+1. Generate the liveness key with Nimbus v10.17.0 or later:
+   `nimbus extension keygen --out <path outside every clone>`. The command writes the seed to the
+   file and prints the base64 public key. Back the seed up as for the other keys: encrypt it with
+   `age` and keep two offline copies.
+2. Create the environment `registry-liveness` with no required reviewers and its deployment
+   branches limited to `main`. Store the seed in it:
+
+   ```sh
+   gh secret set NIMBUS_REGISTRY_LIVENESS_KEY --env registry-liveness --repo nimbus-agent/nimbus-mcp-servers < <path>
+   ```
+
+   In PowerShell:
+
+   ```powershell
+   Get-Content -Raw <path> | gh secret set NIMBUS_REGISTRY_LIVENESS_KEY --env registry-liveness --repo nimbus-agent/nimbus-mcp-servers
+   ```
+
+3. Set the public key, the line step 1 printed:
+
+   ```sh
+   gh variable set NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY --repo nimbus-agent/nimbus-mcp-servers --body '<public key>'
+   ```
+
+4. Run **Registry set liveness key** and approve its `official-registry` deployment. It re-signs
+   `index.json` at `sequence + 1` with the new key recorded.
+5. Run **Registry liveness** once. From then on it runs every Monday at 05:23 UTC.
+
+A liveness run before step 4 fails in `sign`. That failure means step 4 is not done yet.
+
+To rotate the key, repeat steps 1 to 4 with a new key.
 
 ## After publishing
 
