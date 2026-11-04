@@ -1,8 +1,8 @@
 {
   "format": 1,
   "rootKey": "tBHSfVjFZzyMoSVR69FbZfMyUstbLdUcfGwHKIaY/qA=",
-  "sequence": 2,
-  "generatedAt": "2026-10-22T09:07:13.425Z",
+  "sequence": 3,
+  "generatedAt": "2026-11-04T07:45:01.204Z",
   "extensions": {
     "com.nimbus.readwise": {
       "publisher": {
@@ -24,5 +24,6 @@
       }
     }
   },
-  "signature": "dk6nU4PjhU/QLDeswMb6dDt+/+PrAZFb4ksU3JIZNijLc9J1NTQlGi31ThlWI+PSGszaZnpoTbKI9iIbv9/4BQ=="
+  "livenessKey": "SDmbdq5LPTH/r7jfCBod2L/igvNQdFeBiiDRnWI53qc=",
+  "signature": "aV7hbRumb9rfIX4CsUcc8Syb23yw7JWMyMOAmqiYsYUrJs6WHpoFumdVxpUT7dsdSeNO8MHKZRogAwC9hzYRBw=="
 }
