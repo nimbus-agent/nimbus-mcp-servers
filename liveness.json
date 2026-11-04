@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "livenessKey": "SDmbdq5LPTH/r7jfCBod2L/igvNQdFeBiiDRnWI53qc=",
+  "sequence": 1,
+  "generatedAt": "2026-11-04T07:46:25.761Z",
+  "nimbusVersion": "10.18.0",
+  "extensions": {
+    "com.nimbus.readwise@0.2.0": {
+      "checkedAt": "2026-11-04T07:46:02.691Z",
+      "hosts": {
+        "declared": 1,
+        "answered": 1
+      },
+      "baseline": {
+        "scorer": 1,
+        "passed": true,
+        "tools": 7
+      }
+    }
+  },
+  "signature": "nqAQd0MEBjGPCjg328SCRf/ZyBnjnmjkHbw2+JJVItB1JF/yk2Dj3RoyNDD6fMPiLEHN24PylCtWNnqOZ5qxBQ=="
+}
