@@ -187,7 +187,10 @@ function walkForVaults(dir: string, out: VaultEntry[]): void {
     const sub = join(dir, e);
     let isDir = false;
     try {
-      const st = statSync(sub);
+      // lstat, not stat: stat follows a link, so its isSymbolicLink() was always false and
+      // discovery used to find a vault through a symlink or junction outside the configured root.
+      // Every link below a root is skipped, so a discovered vault is physically under its root.
+      const st = lstatSync(sub);
       isDir = st.isDirectory() && !st.isSymbolicLink();
     } catch {
       continue;

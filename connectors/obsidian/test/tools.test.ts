@@ -913,3 +913,39 @@ describe("obsidian_get, obsidian_list and obsidian_search: realpath containment"
     expect(hits.map((h) => h.path)).toEqual(["kept.md"]);
   });
 });
+
+describe("vault discovery does not follow links under a configured root", () => {
+  /** Notes as `vault_name:path`, over every vault discovery found. */
+  async function discovered(configured: CapturedTools): Promise<string[]> {
+    const out = (await configured.callJson("obsidian_list", {})) as {
+      vault_name: string;
+      path: string;
+    }[];
+    return out.map((n) => `${n.vault_name}:${n.path}`).sort();
+  }
+
+  it("does not discover a vault outside the root reached through a junction or symlink", async () => {
+    const outside = outsideDir();
+    mkdirSync(join(outside, "elsewhere", ".obsidian"), { recursive: true });
+    writeFileSync(join(outside, "elsewhere", "secret.md"), "# Secret\n", "utf8");
+
+    const root = mkdtempSync(join(tmpdir(), "obsidian-root-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "team", ".obsidian"), { recursive: true });
+    writeFileSync(join(root, "team", "plan.md"), "# Plan\n", "utf8");
+    // A link straight to the outside vault, and one to a folder that CONTAINS it.
+    dirLink(join(outside, "elsewhere"), join(root, "linked-vault"));
+    dirLink(outside, join(root, "linked-parent"));
+
+    expect(await discovered(configure(root))).toEqual(["team:plan.md"]);
+  });
+
+  it("does not discover a vault inside the root twice through a link to it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "obsidian-root-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "team", ".obsidian"), { recursive: true });
+    writeFileSync(join(root, "team", "plan.md"), "# Plan\n", "utf8");
+    dirLink(join(root, "team"), join(root, "alias"));
+    expect(await discovered(configure(root))).toEqual(["team:plan.md"]);
+  });
+});
