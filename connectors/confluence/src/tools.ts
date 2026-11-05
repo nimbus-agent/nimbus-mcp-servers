@@ -11,6 +11,7 @@ import { parseCitationsJson } from "../../../shared/kb-markdown.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
+  mcpJsonResult,
   mcpJsonResultFromTextIfOk,
 } from "../../../shared/mcp-tool-kit.ts";
 import { buildConfluenceKbPageBody } from "./kb-append.ts";
@@ -40,6 +41,33 @@ async function confFetch(
   return fetchAtlassianBasicAuthJsonText(url, email, token, init);
 }
 
+/** The parts of a page `confluence_page_append` reads and writes back. */
+interface PageSnapshot {
+  readonly type: string;
+  readonly title: string;
+  readonly version: number;
+  readonly html: string;
+}
+
+/** Parse `GET /content/{id}?expand=body.storage,version`; throws, quoting Confluence, on a failure. */
+function readPageSnapshot(res: { ok: boolean; status: number; text: string }): PageSnapshot {
+  if (!res.ok) {
+    throw new Error(`Confluence ${String(res.status)}: ${res.text.slice(0, 400)}`);
+  }
+  const page = JSON.parse(res.text) as {
+    type?: string;
+    title?: string;
+    version?: { number?: number };
+    body?: { storage?: { value?: string } };
+  };
+  return {
+    type: page.type ?? "page",
+    title: page.title ?? "",
+    version: page.version?.number ?? 0,
+    html: page.body?.storage?.value ?? "",
+  };
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const CONFLUENCE_TOOL_NAMES = [
   "confluence_space_list",
@@ -52,6 +80,7 @@ export const CONFLUENCE_TOOL_NAMES = [
   "confluence_kb_append",
   "confluence_page_update",
   "confluence_comment_add",
+  "confluence_page_append",
 ] as const;
 
 export function registerConfluenceTools(
@@ -315,6 +344,65 @@ export function registerConfluenceTools(
         body: JSON.stringify(body),
       });
       return mcpJsonResultFromTextIfOk("Confluence", res);
+    },
+  );
+
+  const confluencePageAppendSchema = z.object({
+    pageId: z.string().min(1),
+    storageHtml: z.string().min(1).max(65_000),
+  });
+
+  registerWriteTool(
+    "confluence_page_append",
+    {
+      mutates: "confluence.page.append",
+      // Confluence keeps every version of a page, so the previous body is one click away. No
+      // capturePreState on purpose: it would run once, before a retry, and describe a version that
+      // may not be the one this call changes.
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "page", value: p.pageId }),
+    },
+    "Append storage-format HTML to the END of a Confluence page, keeping everything already on it (GET then PUT /content/{id}); if the page changes while this runs it re-reads and retries once, then fails without writing.",
+    confluencePageAppendSchema,
+    async (parsed) => {
+      const id = encodeURIComponent(parsed.pageId);
+      // The fetch helper returns `{ ok, status, text }` without throwing, so the retry lives here.
+      // Each attempt re-reads the page, so it appends to the body as it is NOW.
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const page = readPageSnapshot(
+          await confFetch(`/content/${id}?expand=body.storage,version`),
+        );
+        const next = page.version + 1;
+        const put = await confFetch(`/content/${id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            type: page.type,
+            title: page.title,
+            version: { number: next, message: "nimbus" },
+            body: {
+              storage: { value: page.html + parsed.storageHtml, representation: "storage" },
+            },
+          }),
+        });
+        if (put.status === 409 && attempt === 1) {
+          continue;
+        }
+        if (put.status === 409) {
+          throw new Error("Confluence: page changed concurrently; nothing appended");
+        }
+        if (!put.ok) {
+          throw new Error(`Confluence ${String(put.status)}: ${put.text.slice(0, 400)}`);
+        }
+        let version = next;
+        try {
+          const written = JSON.parse(put.text) as { version?: { number?: number } };
+          version = written.version?.number ?? next;
+        } catch {
+          // A non-JSON success body: the version we sent is the one that was written.
+        }
+        return mcpJsonResult({ ok: true, pageId: parsed.pageId, version });
+      }
+      throw new Error("Confluence: page changed concurrently; nothing appended");
     },
   );
 }

@@ -219,3 +219,173 @@ describe("confluence writes (gateway mode)", () => {
     ]);
   });
 });
+
+describe("confluence_page_append", () => {
+  const PAGE = "4242";
+  const pageJson = (html: string | undefined, version: number): string =>
+    JSON.stringify({
+      id: PAGE,
+      type: "page",
+      title: "Runbook",
+      version: { number: version },
+      ...(html === undefined
+        ? {}
+        : { body: { storage: { value: html, representation: "storage" } } }),
+    });
+
+  /** Call the tool on a configured site; resolves to its JSON answer. */
+  async function append(storageHtml = "<p>new</p>"): Promise<unknown> {
+    let out: unknown;
+    await configured(async () => {
+      out = await tools.callJson("confluence_page_append", { pageId: PAGE, storageHtml });
+    });
+    return out;
+  }
+
+  const puts = (stub: FetchStub): RecordedRequest[] => stub.calls.filter((c) => c.method === "PUT");
+
+  it("reads the page, then PUTs the next version with the old body followed by the new", async () => {
+    const stub = serve((req) =>
+      req.method === "GET" ? pageJson("<p>old</p>", 7) : pageJson("<p>old</p><p>new</p>", 8),
+    );
+    expect(await append()).toEqual({ ok: true, pageId: PAGE, version: 8 });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${API}/content/${PAGE}?expand=body.storage,version`,
+      `PUT ${API}/content/${PAGE}`,
+    ]);
+    expect(JSON.parse(stub.calls[1]?.body ?? "null")).toEqual({
+      type: "page",
+      title: "Runbook",
+      version: { number: 8, message: "nimbus" },
+      body: { storage: { value: "<p>old</p><p>new</p>", representation: "storage" } },
+    });
+  });
+
+  it("appends to a page whose body is empty or missing", async () => {
+    const stub = serve((req) => (req.method === "GET" ? pageJson(undefined, 1) : pageJson("x", 2)));
+    await append("<p>first</p>");
+    expect(JSON.parse(puts(stub)[0]?.body ?? "null").body.storage.value).toBe("<p>first</p>");
+  });
+
+  it("re-reads and retries once on a 409, then succeeds on the newer body", async () => {
+    let gets = 0;
+    const stub = serve((req) => {
+      if (req.method === "GET") {
+        gets += 1;
+        return gets === 1 ? pageJson("<p>a</p>", 3) : pageJson("<p>a</p><p>b</p>", 4);
+      }
+      return puts(stub).length === 1 ? { status: 409, body: "stale" } : pageJson("z", 5);
+    });
+    expect(await append("<p>c</p>")).toEqual({ ok: true, pageId: PAGE, version: 5 });
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "PUT", "GET", "PUT"]);
+    const [first, second] = puts(stub);
+    expect(JSON.parse(first?.body ?? "null").version.number).toBe(4);
+    expect(JSON.parse(first?.body ?? "null").body.storage.value).toBe("<p>a</p><p>c</p>");
+    // The retry built on the page as it now stands, not on the stale read.
+    expect(JSON.parse(second?.body ?? "null").version.number).toBe(5);
+    expect(JSON.parse(second?.body ?? "null").body.storage.value).toBe("<p>a</p><p>b</p><p>c</p>");
+  });
+
+  it("throws after a second 409, having sent exactly one PUT per attempt", async () => {
+    const stub = serve((req) =>
+      req.method === "GET" ? pageJson("<p>a</p>", 3) : { status: 409, body: "stale" },
+    );
+    await expect(append()).rejects.toThrow("page changed concurrently; nothing appended");
+    expect(puts(stub)).toHaveLength(2);
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "PUT", "GET", "PUT"]);
+  });
+
+  it("does not retry any other failure, and quotes Confluence's status and body", async () => {
+    const stub = serve((req) =>
+      req.method === "GET" ? pageJson("<p>a</p>", 3) : { status: 403, body: "no edit permission" },
+    );
+    await expect(append()).rejects.toThrow("Confluence 403: no edit permission");
+    expect(puts(stub)).toHaveLength(1);
+  });
+
+  it("fails on an unreadable page without writing", async () => {
+    const stub = serve({ status: 404, body: "Not Found" });
+    await expect(append()).rejects.toThrow("Confluence 404: Not Found");
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+
+  it("refuses an empty or oversized body, before any request", async () => {
+    const stub = serve("{}");
+    await configured(async () => {
+      for (const storageHtml of ["", "x".repeat(65_001)]) {
+        await expect(
+          tools.call("confluence_page_append", { pageId: PAGE, storageHtml }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("names the missing configuration and sends nothing", async () => {
+    const stub = serve("{}");
+    await withEnv({ CONFLUENCE_BASE_URL: undefined }, async () => {
+      await expect(
+        tools.call("confluence_page_append", { pageId: PAGE, storageHtml: "<p>x</p>" }),
+      ).rejects.toThrow("CONFLUENCE_BASE_URL is not set");
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("never touches confluence_kb_append's registration", () => {
+    expect(tools.names()).toContain("confluence_kb_append");
+    expect(tools.names()).toContain("confluence_page_append");
+  });
+
+  it("runs end to end against a fake server named by CONFLUENCE_BASE_URL", async () => {
+    let body = "<p>old</p>";
+    let version = 1;
+    const seen: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const url = new URL(req.url);
+        seen.push(`${req.method} ${url.pathname}`);
+        if (req.method === "PUT") {
+          const sent = (await req.json()) as {
+            version: { number: number };
+            body: { storage: { value: string } };
+          };
+          body = sent.body.storage.value;
+          version = sent.version.number;
+        }
+        return Response.json({
+          id: PAGE,
+          type: "page",
+          title: "Runbook",
+          version: { number: version },
+          body: { storage: { value: body } },
+        });
+      },
+    });
+    try {
+      await withEnv(
+        {
+          CONFLUENCE_BASE_URL: `http://127.0.0.1:${String(server.port)}`,
+          CONFLUENCE_EMAIL: "ada@example.com",
+          CONFLUENCE_API_TOKEN: "atl-token",
+        },
+        async () => {
+          expect(
+            await tools.callJson("confluence_page_append", {
+              pageId: PAGE,
+              storageHtml: "<p>new</p>",
+            }),
+          ).toEqual({ ok: true, pageId: PAGE, version: 2 });
+        },
+      );
+      expect(body).toBe("<p>old</p><p>new</p>");
+      expect(seen).toEqual([
+        `GET /wiki/rest/api/content/${PAGE}`,
+        `PUT /wiki/rest/api/content/${PAGE}`,
+      ]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});

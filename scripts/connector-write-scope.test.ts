@@ -223,6 +223,7 @@ const WRITES: Readonly<
       ["confluence_kb_append", "confluence.knowledge.write", { spaceKey: "ENG" }, "space:ENG"],
       ["confluence_page_update", "confluence.page.update", { pageId: "1234" }, "page:1234"],
       ["confluence_comment_add", "confluence.comment.add", { pageId: "1234" }, "page:1234"],
+      ["confluence_page_append", "confluence.page.append", { pageId: "1234" }, "page:1234"],
     ],
   },
   discord: {
