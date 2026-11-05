@@ -217,7 +217,9 @@ function walkNotes(currentDir: string, vaultRoot: string, out: string[]): void {
     let isFile = false;
     let isDir = false;
     try {
-      const st = statSync(full);
+      // lstat, not stat: stat follows a link, so its isSymbolicLink() is always false and the
+      // walk used to list notes through a symlink or junction, out of the vault included.
+      const st = lstatSync(full);
       if (st.isSymbolicLink()) continue;
       isFile = st.isFile();
       isDir = st.isDirectory();
@@ -240,6 +242,7 @@ function readNote(
   relPath: string,
 ): { title: string; body: string; raw: string } {
   const abs = assertWithinVault(vaultRoot, relPath);
+  assertRealpathWithinVault(vaultRoot, abs, relPath);
   const raw = readFileSync(abs, "utf8");
   const m = FRONTMATTER_RE.exec(raw);
   const body = m === null ? raw : raw.slice(m[0].length);

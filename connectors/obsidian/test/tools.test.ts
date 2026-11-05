@@ -833,3 +833,83 @@ describe("daily notes: realpath containment", () => {
     },
   );
 });
+
+describe("obsidian_get, obsidian_list and obsidian_search: realpath containment", () => {
+  /** A vault holding `kept.md`, and `linked`: a directory link to an outside folder with a secret note. */
+  function vaultWithOutsideLink(): { root: string; configured: CapturedTools } {
+    const outside = outsideDir();
+    writeFileSync(join(outside, "secret.md"), "# Secret\n\nneedle outside the vault\n", "utf8");
+    const root = vault({ "kept.md": "# Kept\n\nneedle inside\n" });
+    dirLink(outside, join(root, "linked"));
+    return { root, configured: configure(root) };
+  }
+
+  it("refuses obsidian_get through a directory link (a junction on Windows) out of the vault", async () => {
+    const { root, configured } = vaultWithOutsideLink();
+    await expect(
+      configured.call("obsidian_get", { vault: root, path: "linked/secret.md" }),
+    ).rejects.toThrow("Path escapes vault: linked/secret.md");
+  });
+
+  it("refuses obsidian_get by id through the same link", async () => {
+    const { configured } = vaultWithOutsideLink();
+    const listed = (await configured.callJson("obsidian_list", {})) as { id: string }[];
+    const vaultPart = (listed[0]?.id ?? "").split("#")[0] ?? "";
+    await expect(
+      configured.call("obsidian_get", { id: `${vaultPart}#linked/secret.md` }),
+    ).rejects.toThrow("Path escapes vault: linked/secret.md");
+  });
+
+  it("refuses obsidian_get with .. out of the vault, naming the path", async () => {
+    const outside = outsideDir();
+    writeFileSync(join(outside, "secret.md"), "# Secret\n", "utf8");
+    const root = vault({ "kept.md": "# Kept\n" });
+    const rel = `../${outside.split(/[\\/]/).at(-1) ?? ""}/secret.md`;
+    await expect(configure(root).call("obsidian_get", { vault: root, path: rel })).rejects.toThrow(
+      `Path escapes vault: ${rel}`,
+    );
+  });
+
+  it("refuses obsidian_get through a dangling link", async () => {
+    const root = vault({ "kept.md": "# Kept\n" });
+    const gone = outsideDir();
+    dirLink(gone, join(root, "broken"));
+    rmSync(gone, { recursive: true, force: true });
+    await expect(
+      configure(root).call("obsidian_get", { vault: root, path: "broken/x.md" }),
+    ).rejects.toThrow("Path escapes vault: broken/x.md");
+  });
+
+  it.skipIf(!canLinkFiles)(
+    "refuses obsidian_get of a note that is a file symlink out of the vault",
+    async () => {
+      const target = join(outsideDir(), "secret.md");
+      writeFileSync(target, "# Secret\n", "utf8");
+      const root = vault({ "kept.md": "# Kept\n" });
+      symlinkSync(target, join(root, "alias.md"), "file");
+      await expect(
+        configure(root).call("obsidian_get", { vault: root, path: "alias.md" }),
+      ).rejects.toThrow("Path escapes vault: alias.md");
+    },
+  );
+
+  it("still reads a note through a link that stays inside the vault", async () => {
+    const root = vault({ "real/inner.md": "# Inner\n" });
+    dirLink(join(root, "real"), join(root, "alias"));
+    const note = (await configure(root).callJson("obsidian_get", {
+      vault: root,
+      path: "alias/inner.md",
+    })) as { title: string };
+    expect(note.title).toBe("Inner");
+  });
+
+  it("does not list or search notes behind a link out of the vault", async () => {
+    const { configured } = vaultWithOutsideLink();
+    const listed = (await configured.callJson("obsidian_list", {})) as { path: string }[];
+    expect(listed.map((n) => n.path)).toEqual(["kept.md"]);
+    const hits = (await configured.callJson("obsidian_search", { query: "needle" })) as {
+      path: string;
+    }[];
+    expect(hits.map((h) => h.path)).toEqual(["kept.md"]);
+  });
+});
