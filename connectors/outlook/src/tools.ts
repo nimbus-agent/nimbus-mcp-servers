@@ -37,12 +37,54 @@ function graphRequest(
   return makeRestFetcher({ apiBase: GRAPH, token })(pathOrUrl, init);
 }
 
+/** `a@x, ,b@y` as Graph recipients, empty entries dropped. */
+function graphRecipients(list: string): { emailAddress: { address: string } }[] {
+  return list
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((address) => ({ emailAddress: { address } }));
+}
+
+/** What `outlook_mail_send` and `outlook_draft_create` both build the message from. */
+interface MailFields {
+  readonly to: string;
+  readonly subject: string;
+  readonly body: string;
+  readonly contentType?: "text" | "html" | undefined;
+  readonly cc?: string | undefined;
+  readonly bcc?: string | undefined;
+}
+
+/**
+ * The Graph `message` resource: the body of `POST /me/messages` (a draft) and the `message` member
+ * of `POST /me/sendMail`. cc and bcc are left out when absent or empty.
+ */
+function graphMessage(data: MailFields): Record<string, unknown> {
+  const message: Record<string, unknown> = {
+    subject: data.subject,
+    body: {
+      contentType: (data.contentType ?? "text") === "html" ? "HTML" : "Text",
+      content: data.body,
+    },
+    toRecipients: graphRecipients(data.to),
+  };
+  if (data.cc !== undefined && data.cc !== "") {
+    message["ccRecipients"] = graphRecipients(data.cc);
+  }
+  if (data.bcc !== undefined && data.bcc !== "") {
+    message["bccRecipients"] = graphRecipients(data.bcc);
+  }
+  return message;
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const OUTLOOK_TOOL_NAMES = [
   "outlook_mail_folders",
   "outlook_mail_list",
   "outlook_mail_read",
   "outlook_mail_send",
+  "outlook_draft_create",
   "outlook_calendar_list",
   "outlook_calendar_get",
   "outlook_calendar_create",
@@ -170,38 +212,46 @@ export function registerOutlookTools(
       outlookMailSendArgs,
       async (data) => {
         const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");
-        const toList = data.to
-          .split(",")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0);
-        const message: Record<string, unknown> = {
-          subject: data.subject,
-          body: {
-            contentType: (data.contentType ?? "text") === "html" ? "HTML" : "Text",
-            content: data.body,
-          },
-          toRecipients: toList.map((addr) => ({
-            emailAddress: { address: addr },
-          })),
-        };
-        if (data.cc !== undefined && data.cc !== "") {
-          const ccList = data.cc
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0);
-          message["ccRecipients"] = ccList.map((addr) => ({
-            emailAddress: { address: addr },
-          }));
-        }
         const r = await graphRequest(token, "/me/sendMail", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, saveToSentItems: true }),
+          body: JSON.stringify({ message: graphMessage(data), saveToSentItems: true }),
         });
         if (!r.ok) {
           throw new Error(`Graph ${String(r.status)}: ${r.text.slice(0, 200)}`);
         }
         return mcpJsonResult({ ok: true });
+      },
+    );
+  }
+
+  const outlookDraftCreateArgs = outlookMailSendArgs.extend({
+    bcc: headerLine({ max: 2000 }).optional(),
+  });
+
+  if (outlookToolShouldRegister("outlook_draft_create", grantedOutlookScopes)) {
+    registerWriteTool(
+      "outlook_draft_create",
+      {
+        mutates: "outlook.draft.create",
+        // The draft sits in Drafts until the owner deletes or sends it, and nothing is sent.
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
+      },
+      "Save an email as a DRAFT in the owner's Drafts folder via Microsoft Graph; it is not sent, and the owner reviews and sends it from Outlook.",
+      outlookDraftCreateArgs,
+      async (data) => {
+        const token = requireProcessEnv("MICROSOFT_OAUTH_ACCESS_TOKEN");
+        const r = await graphRequest(token, "/me/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(graphMessage(data)),
+        });
+        if (!r.ok) {
+          throw new Error(`Graph ${String(r.status)}: ${r.text.slice(0, 200)}`);
+        }
+        const created = r.json as { id?: unknown; webLink?: unknown } | null;
+        return mcpJsonResult({ id: created?.id, webLink: created?.webLink });
       },
     );
   }

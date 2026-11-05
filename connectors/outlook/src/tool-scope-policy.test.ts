@@ -30,6 +30,13 @@ describe("outlookToolAllowed", () => {
     expect(outlookToolAllowed("outlook_mail_send", ["Mail.ReadWrite"])).toBe(false);
   });
 
+  test("outlook_draft_create needs Mail.ReadWrite: Mail.Send and Mail.Read are not enough", () => {
+    expect(outlookToolAllowed("outlook_draft_create", ["Mail.Send"])).toBe(false);
+    expect(outlookToolAllowed("outlook_draft_create", ["Mail.Read"])).toBe(false);
+    expect(outlookToolAllowed("outlook_draft_create", ["Mail.Send", "Mail.Read"])).toBe(false);
+    expect(outlookToolAllowed("outlook_draft_create", ["Mail.ReadWrite"])).toBe(true);
+  });
+
   test("a tool with no declared minimum scope is allowed whatever was granted", () => {
     expect(outlookToolAllowed("outlook_future_tool", [])).toBe(true);
   });

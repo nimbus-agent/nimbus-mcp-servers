@@ -73,7 +73,13 @@ describe("outlook tool registration", () => {
       "outlook_mail_list",
       "outlook_mail_read",
       "outlook_mail_send",
+      "outlook_draft_create",
     ]);
+    // Mail.Send alone cannot write a draft into the mailbox, so the tool is not offered.
+    expect((await register("Mail.Send")).registrationOrder()).toEqual(["outlook_mail_send"]);
+    expect((await register("Mail.Read Mail.Send")).registrationOrder()).not.toContain(
+      "outlook_draft_create",
+    );
   });
 });
 
@@ -247,6 +253,90 @@ describe("outlook_mail_send", () => {
         }),
       ).rejects.toThrow("must not contain a line break");
     });
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("outlook_draft_create", () => {
+  const CREATED =
+    '{"id":"AAMk-draft","webLink":"https://outlook.office.com/?ItemID=AAMk-draft","other":1}';
+
+  async function draft(args: Record<string, unknown>): Promise<RecordedRequest> {
+    serve({ status: 201, body: CREATED });
+    return only("outlook_draft_create", { subject: "Hi", body: "Hey", ...args });
+  }
+
+  it("POSTs the message itself to /me/messages: no sendMail wrapper, nothing is sent", async () => {
+    const req = await draft({ to: "ana@example.com, ,bo@example.com " });
+    expect(`${req.method} ${req.url}`).toBe(`POST ${GRAPH}/me/messages`);
+    expect(req.headers["content-type"]).toBe("application/json");
+    expect(req.headers["authorization"]).toBe("Bearer graph-token");
+    expect(JSON.parse(req.body ?? "null")).toEqual({
+      subject: "Hi",
+      body: { contentType: "Text", content: "Hey" },
+      toRecipients: [
+        { emailAddress: { address: "ana@example.com" } },
+        { emailAddress: { address: "bo@example.com" } },
+      ],
+    });
+  });
+
+  it("sends HTML and copies cc and bcc, dropping empty entries", async () => {
+    const req = await draft({
+      to: "ana@example.com",
+      contentType: "html",
+      cc: " cy@example.com,,",
+      bcc: "dee@example.com",
+    });
+    const message = JSON.parse(req.body ?? "null") as Record<string, unknown>;
+    expect(message["body"]).toEqual({ contentType: "HTML", content: "Hey" });
+    expect(message["ccRecipients"]).toEqual([{ emailAddress: { address: "cy@example.com" } }]);
+    expect(message["bccRecipients"]).toEqual([{ emailAddress: { address: "dee@example.com" } }]);
+  });
+
+  it("returns only the created draft's id and webLink", async () => {
+    serve({ status: 201, body: CREATED });
+    await withEnv({ MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token" }, async () => {
+      expect(
+        await tools.callJson("outlook_draft_create", {
+          to: "a@example.com",
+          subject: "s",
+          body: "b",
+        }),
+      ).toEqual({ id: "AAMk-draft", webLink: "https://outlook.office.com/?ItemID=AAMk-draft" });
+    });
+  });
+
+  it("throws Graph's status and body when the draft is refused", async () => {
+    serve({ status: 403, body: "ErrorAccessDenied" });
+    await withEnv({ MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token" }, async () => {
+      await expect(
+        tools.call("outlook_draft_create", { to: "a@example.com", subject: "s", body: "b" }),
+      ).rejects.toThrow("Graph 403: ErrorAccessDenied");
+    });
+  });
+
+  it("refuses a header-injected recipient, cc or bcc before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token" }, async () => {
+      for (const extra of [
+        { to: "a@example.com\r\nBcc: eve@example.com" },
+        { to: "a@example.com", cc: "b@example.com\nX: y" },
+        { to: "a@example.com", bcc: "b@example.com\nX: y" },
+      ]) {
+        await expect(
+          tools.call("outlook_draft_create", { subject: "s", body: "b", ...extra }),
+        ).rejects.toThrow("must not contain a line break");
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("names the missing token and sends nothing", async () => {
+    const stub = serve("{}");
+    await expect(
+      tools.call("outlook_draft_create", { to: "a@example.com", subject: "s", body: "b" }),
+    ).rejects.toThrow("MICROSOFT_OAUTH_ACCESS_TOKEN");
     expect(stub.calls).toEqual([]);
   });
 });

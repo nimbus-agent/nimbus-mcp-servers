@@ -494,6 +494,12 @@ const WRITES: Readonly<
       // Pinned as they are: a calendar event is scoped by its subject on create and by its
       // event id on delete, both under the `calendar` kind.
       [
+        "outlook_draft_create",
+        "outlook.draft.create",
+        { to: "ana@example.com" },
+        "recipient:ana@example.com",
+      ],
+      [
         "outlook_calendar_create",
         "outlook.calendar.create",
         { subject: "Standup" },

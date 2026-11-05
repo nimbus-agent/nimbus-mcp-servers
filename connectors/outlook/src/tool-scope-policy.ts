@@ -3,6 +3,9 @@ const OUTLOOK_TOOL_MIN_SCOPES: Readonly<Record<string, readonly string[]>> = {
   outlook_mail_list: ["Mail.Read"],
   outlook_mail_read: ["Mail.Read"],
   outlook_mail_send: ["Mail.Send"],
+  // A draft is written into the mailbox, which Mail.Send alone does not allow. Mail.ReadWrite
+  // (owner ruling 2026-11-05) lets the tool create one; it cannot send it.
+  outlook_draft_create: ["Mail.ReadWrite"],
   outlook_calendar_list: ["Calendars.Read"],
   outlook_calendar_get: ["Calendars.Read"],
   outlook_calendar_create: ["Calendars.ReadWrite"],
