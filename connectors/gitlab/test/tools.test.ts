@@ -270,7 +270,10 @@ describe("gitlab issue and merge request writes (gateway mode)", () => {
       }),
     ).toEqual({ ok: true, assignees: ["ada", "bo"] });
     expect(`${stub.only.method} ${stub.only.url}`).toBe("POST https://gitlab.com/api/graphql");
-    expect(stub.only.headers["private-token"]).toBe("glpat-test");
+    // GitLab documents Authorization: Bearer for /api/graphql; PRIVATE-TOKEN is a REST header.
+    expect(stub.only.headers["authorization"]).toBe("Bearer glpat-test");
+    expect(stub.only.headers["private-token"]).toBeUndefined();
+    expect(stub.only.url).not.toContain("glpat-test");
     const sent = JSON.parse(stub.only.body ?? "null") as { query: string; variables: unknown };
     expect(sent.query).toContain("issueSetAssignees");
     expect(sent.query).toContain("operationMode: APPEND");

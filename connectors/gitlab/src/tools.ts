@@ -384,18 +384,23 @@ export function registerGitlabTools(
     }),
     async (parsed) => {
       const token = requireProcessEnv("GITLAB_PAT");
-      const res = await glFetch(token, graphqlUrl(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: SET_ASSIGNEES_APPEND,
-          variables: {
-            projectPath: parsed.projectPath,
-            iid: String(parsed.issueIid),
-            assigneeUsernames: parsed.assigneeUsernames,
-          },
+      // GitLab documents `Authorization: Bearer` for /api/graphql (PRIVATE-TOKEN is the REST
+      // header), so this one request bypasses glFetch. Never the private_token query parameter:
+      // a token in a URL is logged.
+      const res = await toRestFetchResult(
+        await fetch(graphqlUrl(), {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: SET_ASSIGNEES_APPEND,
+            variables: {
+              projectPath: parsed.projectPath,
+              iid: String(parsed.issueIid),
+              assigneeUsernames: parsed.assigneeUsernames,
+            },
+          }),
         }),
-      });
+      );
       if (!res.ok) {
         throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);
       }
