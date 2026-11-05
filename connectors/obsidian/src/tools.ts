@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   statSync,
   writeSync,
 } from "node:fs";
@@ -52,6 +54,93 @@ function assertWithinVault(vaultRoot: string, relPath: string): string {
     throw new Error(`Path escapes vault: ${relPath}`);
   }
   return candidate;
+}
+
+/** Whether anything, a dangling link included, sits at `p`. */
+function pathEntryExists(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse `abs` (a path `assertWithinVault` already accepted) when the place it really names is
+ * outside the vault: a folder or note that is, or passes through, a symlink or junction out of the
+ * vault. `assertWithinVault` compares strings, so it cannot see a link.
+ *
+ * The note, and the folders above it, may not exist yet (the append creates them), so the check
+ * resolves the deepest part of the path that does exist; whatever is created below it is created
+ * inside it. A dangling link cannot be resolved and is refused. The check and the later open are
+ * two system calls, so a link swapped in between them is not seen here: the gateway's sandbox,
+ * which grants only the vaults, is the boundary (stated bound).
+ */
+export function assertRealpathWithinVault(vaultRoot: string, abs: string, relPath: string): void {
+  const realRoot = realpathSync(resolve(vaultRoot));
+  const prefix = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+  let probe = abs;
+  while (!pathEntryExists(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  let real: string;
+  try {
+    real = realpathSync(probe);
+  } catch {
+    throw new Error(`Path escapes vault: ${relPath}`);
+  }
+  if (real !== realRoot && !real.startsWith(prefix)) {
+    throw new Error(`Path escapes vault: ${relPath}`);
+  }
+}
+
+/** How much of the end of a daily note `obsidian_daily_note_get` returns. */
+export const DAILY_NOTE_TAIL_BYTES = 16 * 1024;
+
+/** The positioned-read signature of `readSync`, injectable so a test can count what is read. */
+export type PositionedRead = (
+  fd: number,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+) => number;
+
+/**
+ * The size of the file at `abs` and its last `maxBytes` bytes, decoded as UTF-8.
+ *
+ * Positioned reads of at most `maxBytes` in all, never the whole file. When the window starts
+ * inside the file, the UTF-8 continuation bytes it begins with (the rest of a character the window
+ * cut) are dropped, so the tail starts on a character boundary.
+ */
+export function readUtf8Tail(
+  abs: string,
+  maxBytes: number,
+  read: PositionedRead = readSync,
+): { size: number; tail: string } {
+  const fd = openSync(abs, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const length = size - start;
+    const buf = Buffer.alloc(length);
+    let got = 0;
+    while (got < length) {
+      const n = read(fd, buf, got, length - got, start + got);
+      if (n <= 0) break;
+      got += n;
+    }
+    let skip = 0;
+    if (start > 0) {
+      while (skip < 3 && skip < got && ((buf[skip] ?? 0) & 0xc0) === 0x80) skip++;
+    }
+    return { size, tail: buf.subarray(skip, got).toString("utf8") };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function loadVaultPaths(): readonly string[] {
@@ -193,6 +282,7 @@ export const OBSIDIAN_TOOL_NAMES = [
   "obsidian_get",
   "obsidian_search",
   "obsidian_append_to_daily_note",
+  "obsidian_daily_note_get",
 ] as const;
 
 /** The date tokens an Obsidian daily-note filename format may contain. */
@@ -400,6 +490,28 @@ export function registerObsidianTools(
     }),
   );
 
+  /**
+   * The vault and the daily note a daily-note tool names: ONE resolution, shared by the append and
+   * the read, so the read shows exactly the note the append would write. String containment
+   * (`assertWithinVault`) and then realpath containment (`assertRealpathWithinVault`).
+   */
+  function resolveDailyNote(parsed: { vault_id: string; date_iso?: string | undefined }): {
+    v: VaultEntry;
+    rel: string;
+    abs: string;
+  } {
+    const v = findVaultByIdOrPathPrefix(VAULTS, parsed.vault_id);
+    if (v === undefined) {
+      throw new Error("Unknown vault_id");
+    }
+    const date =
+      parsed.date_iso === undefined ? new Date() : new Date(`${parsed.date_iso}T00:00:00Z`);
+    const rel = resolveDailyNoteRelativePath(v.root, date);
+    const abs = assertWithinVault(v.root, rel);
+    assertRealpathWithinVault(v.root, abs, rel);
+    return { v, rel, abs };
+  }
+
   const appendDailyNoteSchema = z.object({
     vault_id: z.string().min(1),
     content: z.string().min(1),
@@ -420,15 +532,10 @@ export function registerObsidianTools(
     "Append text to today's Obsidian daily note. Creates the file if it does not exist. Always appends — never overwrites. Adds a leading newline when the existing file does not end in one. Requires HITL `obsidian.note.append`.",
     appendDailyNoteSchema,
     syncToolHandler((parsed) => {
-      const v = findVaultByIdOrPathPrefix(VAULTS, parsed.vault_id);
-      if (v === undefined) {
-        throw new Error("Unknown vault_id");
-      }
-      const date =
-        parsed.date_iso === undefined ? new Date() : new Date(`${parsed.date_iso}T00:00:00Z`);
-      const rel = resolveDailyNoteRelativePath(v.root, date);
-      const abs = assertWithinVault(v.root, rel);
+      const { v, rel, abs } = resolveDailyNote(parsed);
       mkdirSync(dirname(abs), { recursive: true });
+      // Again, now the folders exist: what was created must still be inside the vault.
+      assertRealpathWithinVault(v.root, abs, rel);
 
       const fd = openSync(abs, "a+");
       let bytes = 0;
@@ -460,6 +567,41 @@ export function registerObsidianTools(
         vault_name: v.name,
         path: rel,
         bytes,
+      });
+    }),
+  );
+
+  const dailyNoteGetSchema = z.object({
+    vault_id: z.string().min(1),
+    date_iso: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+  });
+
+  reg(
+    "obsidian_daily_note_get",
+    `Read the end of the Obsidian daily note that obsidian_append_to_daily_note would write for the same vault_id and date_iso (today in UTC when omitted). Returns { vault_id, vault_name, path, exists, size_bytes, tail }: tail is at most the last ${String(DAILY_NOTE_TAIL_BYTES)} bytes, starting on a character boundary; a missing note is exists: false, size_bytes: 0, tail "". Read-only.`,
+    dailyNoteGetSchema,
+    syncToolHandler((parsed) => {
+      const { v, rel, abs } = resolveDailyNote(parsed);
+      let exists = false;
+      let size = 0;
+      let tail = "";
+      if (pathEntryExists(abs)) {
+        if (!statSync(abs).isFile()) {
+          throw new Error(`Daily note is not a file: ${rel}`);
+        }
+        exists = true;
+        ({ size, tail } = readUtf8Tail(abs, DAILY_NOTE_TAIL_BYTES));
+      }
+      return jsonResult({
+        vault_id: v.id,
+        vault_name: v.name,
+        path: rel,
+        exists,
+        size_bytes: size,
+        tail,
       });
     }),
   );
