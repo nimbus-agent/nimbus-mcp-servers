@@ -135,7 +135,13 @@ export function registerGithubActionsTools(
       });
       const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
       if (location !== null) {
-        res = await fetch(new URL(location, url).href, { redirect: "follow" });
+        const target = new URL(location, url);
+        // The Location is the server's to choose: only https (or http when the API base itself
+        // is http, e.g. an internal GHES) is followed, never file:, ftp: or the like.
+        if (target.protocol !== "https:" && target.protocol !== new URL(url).protocol) {
+          throw new Error(`GitHub Actions logs: refusing to follow a ${target.protocol} redirect`);
+        }
+        res = await fetch(target.href, { redirect: "follow" });
       }
       const text = await res.text();
       if (!res.ok) {

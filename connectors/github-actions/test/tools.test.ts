@@ -140,6 +140,31 @@ describe("gha_run_log against GitHub Enterprise Server and its log redirect", ()
     expect(JSON.stringify(fetchStub.calls[1]?.headers)).not.toContain("ghp_test");
   });
 
+  it("refuses a redirect to any scheme but https, without fetching it", async () => {
+    for (const location of ["file:///etc/passwd", "http://blob.example.net/log", "ftp://x/y"]) {
+      fetchStub.restore();
+      fetchStub = stubFetch({ status: 302, body: "", headers: { Location: location } });
+      await expect(tools.call("gha_run_log", { ...REPO, jobId: 42 })).rejects.toThrow(
+        "refusing to follow",
+      );
+      expect(fetchStub.calls).toHaveLength(1);
+    }
+  });
+
+  it("allows an http redirect only when the API base itself is http", async () => {
+    process.env["GITHUB_API_BASE_URL"] = "http://ghe.internal/api/v3";
+    fetchStub.restore();
+    fetchStub = stubFetch((req) =>
+      req.url.startsWith("http://ghe.internal/api/v3")
+        ? { status: 302, body: "", headers: { Location: "http://ghe.internal/logs/42" } }
+        : "log",
+    );
+    expect((await tools.callJson("gha_run_log", { ...REPO, jobId: 42 })) as object).toMatchObject({
+      text: "log",
+    });
+    expect(fetchStub.calls[1]?.headers["authorization"]).toBeUndefined();
+  });
+
   it("fails clearly on a redirect with no Location", async () => {
     fetchStub.restore();
     fetchStub = stubFetch({ status: 302, body: "" });
