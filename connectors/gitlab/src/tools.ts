@@ -76,6 +76,35 @@ const stateListUrl =
       setPaging(q, parsed);
     });
 
+/** `<origin>/api/graphql` for the configured REST base, with or without its `/api/v4` suffix. */
+function graphqlUrl(): string {
+  return `${apiBase().replace(/\/api\/v4$/, "")}/api/graphql`;
+}
+
+/** APPEND is the whole point: REPLACE would drop the assignees already on the issue. */
+const SET_ASSIGNEES_APPEND =
+  "mutation($projectPath: ID!, $iid: String!, $assigneeUsernames: [String!]!) {" +
+  " issueSetAssignees(input: { projectPath: $projectPath, iid: $iid," +
+  " assigneeUsernames: $assigneeUsernames, operationMode: APPEND }) { errors } }";
+
+/** The first GraphQL failure in a response (transport-level or the mutation's own), if any. */
+function graphqlFailure(json: unknown): string | undefined {
+  const body = json as {
+    errors?: readonly { message?: string }[];
+    data?: { issueSetAssignees?: { errors?: readonly string[] } | null } | null;
+  } | null;
+  if (body?.errors !== undefined && body.errors.length > 0) {
+    return body.errors.map((e) => e.message ?? "unknown error").join("; ");
+  }
+  const inner = body?.data?.issueSetAssignees;
+  if (inner === undefined || inner === null) {
+    return "no issueSetAssignees result";
+  }
+  return inner.errors !== undefined && inner.errors.length > 0
+    ? inner.errors.join("; ")
+    : undefined;
+}
+
 /** A CI job's whole plain-text trace; throws, quoting GitLab, on a non-ok status. */
 async function fetchJobTrace(parsed: {
   readonly projectPath: string;
@@ -340,14 +369,42 @@ export function registerGitlabTools(
     (parsed) => jsonBody("PUT", { add_labels: parsed.labels.join(",") }),
   );
 
-  registerGitlabWriteTool(
+  // REST "Update an issue" can only REPLACE assignees (`assignee_ids`), so the add goes through
+  // GraphQL's issueSetAssignees in APPEND mode: one atomic server-side add that removes nobody.
+  registerWriteTool(
     "gitlab_issue_assignees_add",
-    { mutates: "gitlab.issue.assignees.add", recoverable: true },
-    "Add assignees (user ids) to an issue; it only adds, and cannot remove any existing assignee.",
-    gitlabIssueGetSchema.extend({ assigneeIds: z.array(assigneeIdSchema).min(1).max(20) }),
-    issuePath,
-    // GitLab's server-side add: one request, never removes, and cannot clobber a concurrent change.
-    (parsed) => jsonBody("PUT", { add_assignee_ids: parsed.assigneeIds }),
+    {
+      mutates: "gitlab.issue.assignees.add",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
+    },
+    "Add assignees (usernames) to an issue; it only adds, and cannot remove any existing assignee.",
+    gitlabIssueGetSchema.extend({
+      assigneeUsernames: z.array(z.string().min(1).max(255)).min(1).max(20),
+    }),
+    async (parsed) => {
+      const token = requireProcessEnv("GITLAB_PAT");
+      const res = await glFetch(token, graphqlUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: SET_ASSIGNEES_APPEND,
+          variables: {
+            projectPath: parsed.projectPath,
+            iid: String(parsed.issueIid),
+            assigneeUsernames: parsed.assigneeUsernames,
+          },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);
+      }
+      const failure = graphqlFailure(res.json);
+      if (failure !== undefined) {
+        throw new Error(`GitLab GraphQL: ${failure}`);
+      }
+      return jsonResult({ ok: true, assignees: parsed.assigneeUsernames });
+    },
   );
 
   registerGitlabWriteTool(

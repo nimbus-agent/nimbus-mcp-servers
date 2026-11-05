@@ -257,11 +257,132 @@ describe("gitlab issue and merge request writes (gateway mode)", () => {
     expect(out.body).toEqual({ add_labels: "a,b c" });
   });
 
-  it("issue_assignees_add sends add_assignee_ids, never assignee_ids, so nothing is removed", async () => {
-    const out = await write("gitlab_issue_assignees_add", { issueIid: 3, assigneeIds: [5, 6] });
-    expect(out.line).toBe(`PUT ${ENC}/issues/3`);
-    expect(out.body).toEqual({ add_assignee_ids: [5, 6] });
-    expect(Object.keys(out.body as object)).not.toContain("assignee_ids");
+  const GQL_OK =
+    '{"data":{"issueSetAssignees":{"issue":{"assignees":{"nodes":[{"username":"ada"}]}},"errors":[]}}}';
+
+  it("issue_assignees_add APPENDs through GraphQL: one atomic add that cannot replace", async () => {
+    const stub = reply(GQL_OK);
+    expect(
+      await tools.callJson("gitlab_issue_assignees_add", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada", "bo"],
+      }),
+    ).toEqual({ ok: true, assignees: ["ada", "bo"] });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe("POST https://gitlab.com/api/graphql");
+    expect(stub.only.headers["private-token"]).toBe("glpat-test");
+    const sent = JSON.parse(stub.only.body ?? "null") as { query: string; variables: unknown };
+    expect(sent.query).toContain("issueSetAssignees");
+    expect(sent.query).toContain("operationMode: APPEND");
+    expect(sent.query).not.toContain("REPLACE");
+    expect(sent.variables).toEqual({
+      projectPath: "group/repo",
+      iid: "3",
+      assigneeUsernames: ["ada", "bo"],
+    });
+  });
+
+  it("issue_assignees_add derives the GraphQL URL from the configured base", async () => {
+    for (const [base, expected] of [
+      ["https://git.example.com/api/v4", "https://git.example.com/api/graphql"],
+      ["https://git.example.com/api/v4/", "https://git.example.com/api/graphql"],
+      ["https://git.example.com", "https://git.example.com/api/graphql"],
+      ["https://example.com/gitlab/api/v4", "https://example.com/gitlab/api/graphql"],
+    ] as const) {
+      process.env[BASE_ENV] = base;
+      const stub = reply(GQL_OK);
+      await tools.call("gitlab_issue_assignees_add", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada"],
+      });
+      expect(stub.only.url).toBe(expected);
+    }
+  });
+
+  it("issue_assignees_add fails on GraphQL errors, top-level or from the mutation", async () => {
+    for (const body of [
+      '{"errors":[{"message":"Field not found"}]}',
+      '{"data":{"issueSetAssignees":{"issue":null,"errors":["Issue not found"]}}}',
+    ]) {
+      reply(body);
+      await expect(
+        tools.call("gitlab_issue_assignees_add", {
+          ...PROJECT,
+          issueIid: 3,
+          assigneeUsernames: ["ada"],
+        }),
+      ).rejects.toThrow(/GitLab GraphQL/);
+    }
+    reply({ status: 401, body: "unauthorized" });
+    await expect(
+      tools.call("gitlab_issue_assignees_add", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada"],
+      }),
+    ).rejects.toThrow("GitLab 401");
+  });
+
+  it("sends only attributes GitLab documents for each REST endpoint", async () => {
+    // GitLab's REST "Update an issue" has no add_assignee_ids (only assignee_ids, which REPLACES):
+    // an invented key was ignored silently once. Each list is copied from docs.gitlab.com/api.
+    const DOCUMENTED: Record<string, readonly string[]> = {
+      "POST issues": [
+        "title",
+        "description",
+        "labels",
+        "assignee_ids",
+        "assignee_id",
+        "confidential",
+        "created_at",
+        "due_date",
+        "epic_id",
+        "issue_type",
+        "iid",
+        "merge_request_to_resolve_discussions_of",
+        "milestone_id",
+        "weight",
+        "discussion_to_resolve",
+        "epic_iid",
+      ],
+      "PUT issues": [
+        "title",
+        "description",
+        "add_labels",
+        "remove_labels",
+        "labels",
+        "state_event",
+        "assignee_ids",
+        "confidential",
+        "discussion_locked",
+        "due_date",
+        "epic_id",
+        "issue_type",
+        "milestone_id",
+        "updated_at",
+        "weight",
+      ],
+      "POST notes": ["body", "confidential", "internal", "created_at"],
+    };
+    const calls: [string, Record<string, unknown>][] = [
+      ["gitlab_issue_create", { title: "t", description: "d", labels: ["a"], assigneeIds: [1] }],
+      ["gitlab_issue_note_create", { issueIid: 1, body: "b" }],
+      ["gitlab_mr_note_create", { mergeRequestIid: 1, body: "b" }],
+      ["gitlab_issue_labels_add", { issueIid: 1, labels: ["a"] }],
+      ["gitlab_issue_state_set", { issueIid: 1, stateEvent: "close" }],
+    ];
+    for (const [name, args] of calls) {
+      const stub = reply("{}");
+      await tools.call(name, { ...PROJECT, ...args });
+      const key = `${stub.only.method} ${name.includes("note") ? "notes" : "issues"}`;
+      const sent = Object.keys(JSON.parse(stub.only.body ?? "null") as object);
+      const documented = DOCUMENTED[key];
+      expect({ name, undocumented: sent.filter((k) => !documented?.includes(k)) }).toEqual({
+        name,
+        undocumented: [],
+      });
+    }
   });
 
   it("issue_state_set sends state_event", async () => {
@@ -283,7 +404,8 @@ describe("gitlab issue and merge request writes (gateway mode)", () => {
       ["gitlab_mr_note_create", { mergeRequestIid: 1, body: "" }],
       ["gitlab_issue_labels_add", { issueIid: 1, labels: [] }],
       ["gitlab_issue_labels_add", { issueIid: 1, labels: ["a,b"] }],
-      ["gitlab_issue_assignees_add", { issueIid: 1, assigneeIds: [] }],
+      ["gitlab_issue_assignees_add", { issueIid: 1, assigneeUsernames: [] }],
+      ["gitlab_issue_assignees_add", { issueIid: 1, assigneeUsernames: [""] }],
       ["gitlab_issue_state_set", { issueIid: 1, stateEvent: "delete" }],
     ] as const) {
       await expect(tools.call(name, { ...PROJECT, ...args })).rejects.toThrow();
