@@ -356,10 +356,19 @@ export interface RecordedRequest {
   readonly method: string;
   readonly headers: Record<string, string>;
   readonly body: string | undefined;
+  /** The `redirect` mode the caller asked for, when it set one. */
+  readonly redirect?: "follow" | "error" | "manual" | undefined;
 }
 
 /** What the stub should reply with. A bare string is a 200 with that body. */
-export type StubReply = string | { readonly status?: number; readonly body?: string };
+export type StubReply =
+  | string
+  | {
+      readonly status?: number;
+      readonly body?: string;
+      /** Response headers, e.g. a `Location` for a 3xx. */
+      readonly headers?: Record<string, string>;
+    };
 
 export interface FetchStub {
   /** Requests seen so far, in order. */
@@ -434,6 +443,7 @@ export function stubFetch(
       method: init?.method ?? "GET",
       headers: headerRecord(init),
       body: typeof init?.body === "string" ? init.body : undefined,
+      redirect: init?.redirect,
     };
     calls.push(req);
     const chosen = typeof reply === "function" ? reply(req) : reply;
@@ -441,7 +451,10 @@ export function stubFetch(
       throw new Error(`unexpected request: ${req.method} ${req.url}`);
     }
     const spec = typeof chosen === "string" ? { body: chosen } : chosen;
-    return new Response(spec.body ?? "{}", { status: spec.status ?? 200 });
+    return new Response(spec.body ?? "{}", {
+      status: spec.status ?? 200,
+      ...(spec.headers === undefined ? {} : { headers: spec.headers }),
+    });
   };
   const stub = async (input: FetchInput, init?: RequestInit) => answer(input, init); // NOSONAR S7503: real fetch rejects and never throws, so the stub is async only to turn answer's throws (an unexpected request, a throwing reply, a bad status) into that same rejection.
   globalThis.fetch = stub as typeof globalThis.fetch;

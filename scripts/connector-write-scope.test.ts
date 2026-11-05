@@ -270,6 +270,10 @@ const WRITES: Readonly<
       ["github_pr_close", "github.pr.close", GITHUB_REPO, "repo:acme/api"],
       ["github_branch_delete", "github.branch.delete", GITHUB_REPO, "repo:acme/api"],
       ["github_tag_create", "github.tag.create", GITHUB_REPO, "repo:acme/api"],
+      ["github_issue_comment_create", "github.issue.comment.create", GITHUB_REPO, "repo:acme/api"],
+      ["github_issue_labels_add", "github.issue.labels.add", GITHUB_REPO, "repo:acme/api"],
+      ["github_issue_assignees_add", "github.issue.assignees.add", GITHUB_REPO, "repo:acme/api"],
+      ["github_issue_state_set", "github.issue.state.set", GITHUB_REPO, "repo:acme/api"],
     ],
   },
   "github-actions": {

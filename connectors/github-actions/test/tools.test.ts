@@ -109,6 +109,46 @@ describe("github-actions run reads", () => {
   });
 });
 
+describe("gha_run_log against GitHub Enterprise Server and its log redirect", () => {
+  afterEach(() => {
+    delete process.env["GITHUB_API_BASE_URL"];
+  });
+
+  it("requests the log from the GHES API base, with the token and without following redirects", async () => {
+    process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3/";
+    reply("log text");
+    await tools.call("gha_run_log", { ...REPO, jobId: 42 });
+    expect(fetchStub.only.url).toBe(
+      "https://ghe.example.com/api/v3/repos/acme%20co/api%2Fv2/actions/jobs/42/logs",
+    );
+    expect(fetchStub.only.headers["authorization"]).toBe("Bearer ghp_test");
+    expect(fetchStub.only.redirect).toBe("manual");
+  });
+
+  it("fetches a redirect target WITHOUT the Authorization header", async () => {
+    fetchStub.restore();
+    const storage = "https://blob.example.net/logs/42?sig=abc";
+    fetchStub = stubFetch((req) =>
+      req.url === storage ? "the log" : { status: 302, body: "", headers: { Location: storage } },
+    );
+    const out = await tools.callJson("gha_run_log", { ...REPO, jobId: 42 });
+    expect(out).toEqual({ jobId: 42, truncated: false, totalChars: 7, text: "the log" });
+    expect(fetchStub.calls).toHaveLength(2);
+    expect(fetchStub.calls[0]?.headers["authorization"]).toBe("Bearer ghp_test");
+    expect(fetchStub.calls[1]?.url).toBe(storage);
+    expect(fetchStub.calls[1]?.headers["authorization"]).toBeUndefined();
+    expect(JSON.stringify(fetchStub.calls[1]?.headers)).not.toContain("ghp_test");
+  });
+
+  it("fails clearly on a redirect with no Location", async () => {
+    fetchStub.restore();
+    fetchStub = stubFetch({ status: 302, body: "" });
+    await expect(tools.call("gha_run_log", { ...REPO, jobId: 42 })).rejects.toThrow(
+      "GitHub Actions logs 302",
+    );
+  });
+});
+
 describe("github-actions writes (gateway mode)", () => {
   it("gha_run_trigger dispatches the workflow on main with no inputs by default", async () => {
     reply("");

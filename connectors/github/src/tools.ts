@@ -28,6 +28,10 @@ export const GITHUB_TOOL_NAMES = [
   "github_issue_list",
   "github_issue_get",
   "github_issue_create",
+  "github_issue_comment_create",
+  "github_issue_labels_add",
+  "github_issue_assignees_add",
+  "github_issue_state_set",
   "github_ci_runs",
   "github_ci_run_get",
   "github_branch_delete",
@@ -212,6 +216,52 @@ export function registerGithubTools(
     githubIssueCreateSchema,
     (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/issues`,
     (parsed) => jsonInit("POST", { title: parsed.title, body: parsed.body }),
+  );
+
+  const githubIssueNumberSchema = repoSlugArgs.extend({
+    issueNumber: z.number().int().min(1),
+  });
+  const issuePath = (parsed: z.infer<typeof githubIssueNumberSchema>): string =>
+    `${ghRepoPath(parsed.owner, parsed.repo)}/issues/${String(parsed.issueNumber)}`;
+
+  registerGithubWriteTool(
+    "github_issue_comment_create",
+    { mutates: "github.issue.comment.create", recoverable: true },
+    "Add a comment to an issue or a pull request's conversation (pull requests are issues to GitHub); it posts as the authenticated user and changes nothing else.",
+    githubIssueNumberSchema.extend({ body: z.string().min(1).max(65_000) }),
+    (parsed) => `${issuePath(parsed)}/comments`,
+    (parsed) => jsonInit("POST", { body: parsed.body }),
+  );
+
+  registerGithubWriteTool(
+    "github_issue_labels_add",
+    { mutates: "github.issue.labels.add", recoverable: true },
+    "Add labels to an issue or pull request; it only adds, and cannot remove or replace any existing label.",
+    githubIssueNumberSchema.extend({
+      labels: z.array(z.string().min(1).max(50)).min(1).max(100),
+    }),
+    (parsed) => `${issuePath(parsed)}/labels`,
+    (parsed) => jsonInit("POST", { labels: parsed.labels }),
+  );
+
+  registerGithubWriteTool(
+    "github_issue_assignees_add",
+    { mutates: "github.issue.assignees.add", recoverable: true },
+    "Add assignees to an issue or pull request; it only adds, and cannot remove any existing assignee.",
+    githubIssueNumberSchema.extend({
+      assignees: z.array(z.string().min(1).max(39)).min(1).max(10),
+    }),
+    (parsed) => `${issuePath(parsed)}/assignees`,
+    (parsed) => jsonInit("POST", { assignees: parsed.assignees }),
+  );
+
+  registerGithubWriteTool(
+    "github_issue_state_set",
+    { mutates: "github.issue.state.set", recoverable: true },
+    "Open or close an issue (state open or closed); it changes only the state and can be reversed by setting it back.",
+    githubIssueNumberSchema.extend({ state: z.enum(["open", "closed"]) }),
+    issuePath,
+    (parsed) => jsonInit("PATCH", { state: parsed.state }),
   );
 
   const githubCiRunsSchema = repoSlugArgs.extend({

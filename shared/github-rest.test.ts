@@ -4,6 +4,7 @@ import {
   GH_API,
   GH_API_VERSION,
   GH_HEADERS,
+  ghApiBase,
   ghFetch,
   ghQueryPath,
   ghRepoPath,
@@ -103,5 +104,46 @@ describe("ghQueryPath", () => {
         q.set("affiliation", "owner,collaborator");
       }),
     ).toBe("/repos/a%20b/c%2Fd?affiliation=owner%2Ccollaborator");
+  });
+});
+
+describe("ghApiBase (GitHub Enterprise Server)", () => {
+  afterEach(() => {
+    delete process.env["GITHUB_API_BASE_URL"];
+  });
+
+  it("is api.github.com when GITHUB_API_BASE_URL is unset or blank", () => {
+    delete process.env["GITHUB_API_BASE_URL"];
+    expect(ghApiBase()).toBe(GH_API);
+    process.env["GITHUB_API_BASE_URL"] = "  ";
+    expect(ghApiBase()).toBe(GH_API);
+  });
+
+  it("is read per call and loses a trailing slash", () => {
+    process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3/";
+    expect(ghApiBase()).toBe("https://ghe.example.com/api/v3");
+  });
+
+  it("routes ghFetch to the GHES host without doubling the /api/v3 prefix", async () => {
+    process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3";
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      urls.push(typeof input === "string" ? input : String(input));
+      return new Response("{}", { status: 200 });
+    }) as typeof globalThis.fetch;
+    await ghFetch("t", ghRepoPath("o", "r"));
+    await ghFetch(
+      "t",
+      ghQueryPath("/repos/o/r/pulls", (q) => q.set("state", "all")),
+    );
+    expect(urls).toEqual([
+      "https://ghe.example.com/api/v3/repos/o/r",
+      "https://ghe.example.com/api/v3/repos/o/r/pulls?state=all",
+    ]);
+  });
+
+  it("keeps ghQueryPath relative whatever the base is", () => {
+    process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3";
+    expect(ghQueryPath("/user/repos", (q) => q.set("a", "b"))).toBe("/user/repos?a=b");
   });
 });

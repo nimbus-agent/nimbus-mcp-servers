@@ -85,6 +85,87 @@ describe("github write requests (gateway mode)", () => {
   });
 });
 
+describe("github issue writes (gateway mode)", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGithubTools);
+  });
+
+  afterEach(() => {
+    delete process.env["GITHUB_API_BASE_URL"];
+  });
+
+  async function request(name: string, args: Record<string, unknown>): Promise<RecordedRequest> {
+    const stub = serve('{"id":1}');
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await tools.call(name, args);
+    });
+    return stub.only;
+  }
+
+  const ISSUE = { owner: "acme", repo: "api", issueNumber: 12 };
+
+  it("issue_comment_create POSTs the body to the issue's comments", async () => {
+    const req = await request("github_issue_comment_create", { ...ISSUE, body: "LGTM" });
+    expect(`${req.method} ${req.url}`).toBe(`POST ${API}/repos/acme/api/issues/12/comments`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ body: "LGTM" });
+    expect(req.headers["authorization"]).toBe("Bearer ghp_test");
+    expect(req.headers["content-type"]).toBe("application/json");
+  });
+
+  it("issue_labels_add POSTs the labels to the add endpoint, never a replace or delete", async () => {
+    const req = await request("github_issue_labels_add", { ...ISSUE, labels: ["bug", "p1"] });
+    expect(`${req.method} ${req.url}`).toBe(`POST ${API}/repos/acme/api/issues/12/labels`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ labels: ["bug", "p1"] });
+  });
+
+  it("issue_assignees_add POSTs the assignees", async () => {
+    const req = await request("github_issue_assignees_add", { ...ISSUE, assignees: ["octo"] });
+    expect(`${req.method} ${req.url}`).toBe(`POST ${API}/repos/acme/api/issues/12/assignees`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ assignees: ["octo"] });
+  });
+
+  it("issue_state_set PATCHes the state", async () => {
+    const req = await request("github_issue_state_set", { ...ISSUE, state: "closed" });
+    expect(`${req.method} ${req.url}`).toBe(`PATCH ${API}/repos/acme/api/issues/12`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ state: "closed" });
+  });
+
+  it("rejects out-of-range arguments before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      for (const [name, args] of [
+        ["github_issue_comment_create", { ...ISSUE, body: "" }],
+        ["github_issue_comment_create", { ...ISSUE, body: "x".repeat(65_001) }],
+        ["github_issue_comment_create", { ...ISSUE, issueNumber: 0, body: "x" }],
+        ["github_issue_labels_add", { ...ISSUE, labels: [] }],
+        ["github_issue_labels_add", { ...ISSUE, labels: [""] }],
+        ["github_issue_assignees_add", { ...ISSUE, assignees: [] }],
+        ["github_issue_assignees_add", { ...ISSUE, assignees: Array(11).fill("a") }],
+        ["github_issue_state_set", { ...ISSUE, state: "merged" }],
+      ] as const) {
+        await expect(tools.call(name, args)).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("sends the request to a GitHub Enterprise Server base without doubling its prefix", async () => {
+    process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3";
+    const req = await request("github_issue_comment_create", { ...ISSUE, body: "hi" });
+    expect(req.url).toBe("https://ghe.example.com/api/v3/repos/acme/api/issues/12/comments");
+    const list = serve("[]");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await tools.call("github_pr_list", { owner: "acme", repo: "api" });
+    });
+    expect(list.only.url).toBe(
+      "https://ghe.example.com/api/v3/repos/acme/api/pulls?state=open&per_page=30&sort=updated&direction=desc",
+    );
+  });
+});
+
 describe("github branch delete (standalone mode)", () => {
   let auditDir: string;
   let auditLog: string;
