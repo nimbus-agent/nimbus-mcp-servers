@@ -144,6 +144,8 @@ const NEEDS_COLLABORATORS = new Map<string, string>([
 const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   // Jira's transition id is a numeric string (`/^\d+$/`), which no generic string satisfies.
   ["jira", { transitionId: "31" }],
+  // Discord channel ids are snowflakes (17-20 digits).
+  ["discord", { channelId: "123456789012345678" }],
   ["firebase", { appId: "1:1234567890:android:abcdef0123456789" }],
   // CircleCI's pipeline and workflow ids are `z.uuid()`; no generic string
   // satisfies that.

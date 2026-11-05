@@ -38,6 +38,7 @@ import { registerBigeyeTools } from "../connectors/bigeye/src/server.ts";
 import { registerBitbucketTools } from "../connectors/bitbucket/src/tools.ts";
 import { registerCircleciTools } from "../connectors/circleci/src/tools.ts";
 import { registerConfluenceTools } from "../connectors/confluence/src/tools.ts";
+import { registerDiscordTools } from "../connectors/discord/src/tools.ts";
 import { registerFastmailTools } from "../connectors/fastmail/src/tools.ts";
 import { registerFluxTools } from "../connectors/flux/src/server.ts";
 import { registerGcpTools } from "../connectors/gcp/src/tools.ts";
@@ -222,6 +223,17 @@ const WRITES: Readonly<
       ["confluence_kb_append", "confluence.knowledge.write", { spaceKey: "ENG" }, "space:ENG"],
       ["confluence_page_update", "confluence.page.update", { pageId: "1234" }, "page:1234"],
       ["confluence_comment_add", "confluence.comment.add", { pageId: "1234" }, "page:1234"],
+    ],
+  },
+  discord: {
+    register: registerDiscordTools,
+    cases: [
+      [
+        "discord_message_post",
+        "discord.message.post",
+        { channelId: "123456789012345678" },
+        "channel:123456789012345678",
+      ],
     ],
   },
   fastmail: {

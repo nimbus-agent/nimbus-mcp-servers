@@ -440,13 +440,11 @@ describe("eligibility reads both entrypoint files", () => {
   });
 });
 
-describe("discord over-declared and was corrected", () => {
-  test("discord is eligible with no writes at all", () => {
-    // Its manifest declared ["write","delete"] while exposing only discord_guild_list,
-    // discord_channel_list, discord_channel_messages and discord_thread_list — every one a read,
-    // and the file contains no mutating HTTP verb anywhere. Over-declaring is the FAIL-SAFE
-    // direction, so it cost availability rather than safety, but it was still wrong.
-    expect(standaloneEligibility("discord")).toEqual({ eligible: true, reason: "no-writes" });
+describe("discord posts as the bot, behind the consent kit", () => {
+  test("discord is hardened: its one write goes through the write registrar", () => {
+    // It was eligible with "no-writes" while it exposed only reads. discord_message_post is a
+    // mutation, so the manifest now declares it and the consent kit gates it.
+    expect(standaloneEligibility("discord")).toEqual({ eligible: true, reason: "hardened" });
   });
 });
 
