@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.4.0...connectors-v0.5.0) (2026-11-05)
+
+
+### Features
+
+* **connectors:** confluence page ancestors, an obsidian daily-note read, stricter icloud events ([#66](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/66)) ([864574a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/864574a29491af0d474fe79151a34aa35a213446))
+
 ## [0.4.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.3.0...connectors-v0.4.0) (2026-11-05)
 
 
