@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   type FetchStub,
   type StubReply,
@@ -264,5 +268,107 @@ describe("jira tools", () => {
     expect(stub.only.url).toBe(
       "http://jira.internal:8080/rest/agile/1.0/board?startAt=0&maxResults=50",
     );
+  });
+});
+
+describe("jira transitions", () => {
+  const TRANSITIONS = '{"transitions":[{"id":"31","name":"Done","to":{"name":"Done"}}]}';
+
+  it("transitions_list GETs the issue's transitions with their fields expanded", async () => {
+    const req = await request("jira_issue_transitions_list", { issueKey: "OPS 1" }, TRANSITIONS);
+    expect(`${req.method} ${req.url}`).toBe(
+      `GET ${SITE}/rest/api/3/issue/OPS%201/transitions?expand=transitions.fields`,
+    );
+  });
+
+  it("transition POSTs the transition id and reports it", async () => {
+    const stub = serve({ status: 204, body: "" });
+    await onSite(async () => {
+      expect(
+        await tools.callJson("jira_issue_transition", { issueKey: "OPS-7", transitionId: "31" }),
+      ).toEqual({ ok: true, issueKey: "OPS-7", transitionId: "31" });
+    });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(
+      `POST ${SITE}/rest/api/3/issue/OPS-7/transitions`,
+    );
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({ transition: { id: "31" } });
+    expect(stub.only.headers["authorization"]).toBe(BASIC);
+  });
+
+  it("transition throws Jira's status and body when the workflow refuses it", async () => {
+    serve({ status: 400, body: '{"errorMessages":["Transition is not valid"]}' });
+    await onSite(async () => {
+      await expect(
+        tools.call("jira_issue_transition", { issueKey: "OPS-7", transitionId: "99" }),
+      ).rejects.toThrow('Jira 400: {"errorMessages":["Transition is not valid"]}');
+    });
+  });
+
+  it("transition refuses a transition id that is not a number, before any request", async () => {
+    const stub = serve("{}");
+    await onSite(async () => {
+      for (const transitionId of ["", "abc", "3 1", "31/../x", "1".repeat(21)]) {
+        await expect(
+          tools.call("jira_issue_transition", { issueKey: "OPS-7", transitionId }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("transition reads the credentials before the first request", async () => {
+    const stub = serve("{}");
+    await expect(
+      tools.call("jira_issue_transition", { issueKey: "OPS-7", transitionId: "31" }),
+    ).rejects.toThrow("JIRA_BASE_URL is not set");
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("jira transition (standalone mode)", () => {
+  let dir: string;
+  let auditLog: string;
+
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    dir = mkdtempSync(join(tmpdir(), "nimbus-jira-audit-"));
+    auditLog = join(dir, "audit.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is not recoverable: the status is captured before the transition, and audited", async () => {
+    let standalone: CapturedTools | undefined;
+    await withEnv(
+      { NIMBUS_MCP_JIRA_WRITE_SCOPE: "issue:OPS-7", NIMBUS_MCP_AUDIT_LOG: auditLog },
+      () => {
+        standalone = captureStandaloneTools(registerJiraTools, { elicitation: true }).tools;
+      },
+    );
+    const stub = serve((req) =>
+      req.method === "GET"
+        ? '{"fields":{"status":{"name":"In Progress","id":"3"}}}'
+        : { status: 204, body: "" },
+    );
+    await onSite(async () => {
+      await standalone?.call("jira_issue_transition", { issueKey: "OPS-7", transitionId: "31" });
+    });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${SITE}/rest/api/3/issue/OPS-7?fields=status`,
+      `POST ${SITE}/rest/api/3/issue/OPS-7/transitions`,
+    ]);
+    const entries = readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      );
+    expect(entries.find((e) => e.outcome === "executed")?.detail["preState"]).toEqual({
+      status: "In Progress",
+    });
   });
 });

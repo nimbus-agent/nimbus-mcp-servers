@@ -386,6 +386,12 @@ const WRITES: Readonly<
       ["jira_issue_create", "jira.issue.create", { projectKey: "ENG" }, "project:ENG"],
       ["jira_issue_update", "jira.issue.update", { issueKey: "ENG-7" }, "issue:ENG-7"],
       ["jira_comment_add", "jira.comment.add", { issueKey: "ENG-7" }, "issue:ENG-7"],
+      [
+        "jira_issue_transition",
+        "jira.issue.transition",
+        { issueKey: "ENG-7", transitionId: "31" },
+        "issue:ENG-7",
+      ],
     ],
   },
   kubernetes: {

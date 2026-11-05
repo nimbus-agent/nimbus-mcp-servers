@@ -56,6 +56,8 @@ export const JIRA_TOOL_NAMES = [
   "jira_issue_create",
   "jira_issue_update",
   "jira_comment_add",
+  "jira_issue_transitions_list",
+  "jira_issue_transition",
   "jira_board_list",
   "jira_sprint_list",
   "jira_epic_list",
@@ -238,6 +240,74 @@ export function registerJiraTools(
       });
       return mcpJsonResultFromTextIfOk("Jira", res, {
         jsonParseErrorMessage: "Jira: invalid JSON from comment add",
+      });
+    },
+  );
+
+  reg(
+    "jira_issue_transitions_list",
+    "List the workflow transitions available to a Jira issue right now, with their ids and required fields (GET /rest/api/3/issue/{key}/transitions); read this before jira_issue_transition.",
+    jiraIssueKeySchema,
+    async (parsed) => {
+      const { baseUrl, email, token } = requireJiraConfig();
+      const key = encodeURIComponent(parsed.issueKey);
+      const res = await jiraFetch(
+        baseUrl,
+        email,
+        token,
+        `/rest/api/3/issue/${key}/transitions?expand=transitions.fields`,
+      );
+      return mcpJsonResultFromTextIfOk("Jira", res, {
+        jsonParseErrorMessage: "Jira: invalid JSON from transitions list",
+      });
+    },
+  );
+
+  const jiraIssueTransitionSchema = jiraIssueKeySchema.extend({
+    transitionId: z
+      .string()
+      .regex(/^\d{1,20}$/, "transitionId is the numeric id from jira_issue_transitions_list"),
+  });
+
+  registerWriteTool(
+    "jira_issue_transition",
+    {
+      mutates: "jira.issue.transition",
+      // Workflows are often one-way (Done cannot always be left), so the status the issue is in
+      // BEFORE the move is captured: it is the one thing the audit record needs to reverse it.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const { baseUrl, email, token } = requireJiraConfig();
+        const key = encodeURIComponent(parsed.issueKey);
+        const res = await jiraFetch(
+          baseUrl,
+          email,
+          token,
+          `/rest/api/3/issue/${key}?fields=status`,
+        );
+        const json = JSON.parse(res.text) as {
+          fields?: { status?: { name?: string; id?: string } };
+        };
+        return { status: json.fields?.status?.name ?? json.fields?.status?.id };
+      },
+      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueKey }),
+    },
+    "Move a Jira issue through its workflow with a transition id from jira_issue_transitions_list (POST /rest/api/3/issue/{key}/transitions); workflows can be one-way, so this may not be reversible.",
+    jiraIssueTransitionSchema,
+    async (parsed) => {
+      const { baseUrl, email, token } = requireJiraConfig();
+      const key = encodeURIComponent(parsed.issueKey);
+      const res = await jiraFetch(baseUrl, email, token, `/rest/api/3/issue/${key}/transitions`, {
+        method: "POST",
+        body: JSON.stringify({ transition: { id: parsed.transitionId } }),
+      });
+      if (!res.ok) {
+        throw new Error(`Jira ${String(res.status)}: ${res.text.slice(0, 400)}`);
+      }
+      return jsonResult({
+        ok: true,
+        issueKey: parsed.issueKey,
+        transitionId: parsed.transitionId,
       });
     },
   );
