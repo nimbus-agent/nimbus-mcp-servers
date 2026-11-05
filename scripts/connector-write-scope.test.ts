@@ -299,6 +299,23 @@ const WRITES: Readonly<
         { projectPath: "group/repo" },
         "repo:group/repo",
       ],
+      ...(
+        [
+          ["gitlab_issue_create", "gitlab.issue.create"],
+          ["gitlab_issue_note_create", "gitlab.issue.note.create"],
+          ["gitlab_mr_note_create", "gitlab.mr.note.create"],
+          ["gitlab_issue_labels_add", "gitlab.issue.labels.add"],
+          ["gitlab_issue_assignees_add", "gitlab.issue.assignees.add"],
+          ["gitlab_issue_state_set", "gitlab.issue.state.set"],
+        ] as const
+      ).map(
+        ([tool, mutates]): WriteCase => [
+          tool,
+          mutates,
+          { projectPath: "group/repo" },
+          "repo:group/repo",
+        ],
+      ),
     ],
   },
   gmail: {

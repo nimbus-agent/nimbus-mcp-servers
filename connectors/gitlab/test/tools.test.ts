@@ -195,3 +195,134 @@ describe("gitlab merge request merge", () => {
     });
   });
 });
+
+describe("gitlab issue and merge request writes (gateway mode)", () => {
+  const ENC = `${API}/projects/group%2Frepo`;
+
+  /** Call `name`; return `METHOD url` and the parsed JSON body of the one request. */
+  async function write(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ line: string; body: unknown; token: string | undefined }> {
+    const stub = reply('{"id":1}');
+    await tools.call(name, { ...PROJECT, ...args });
+    return {
+      line: `${stub.only.method} ${stub.only.url}`,
+      body: JSON.parse(stub.only.body ?? "null") as unknown,
+      token: stub.only.headers["private-token"],
+    };
+  }
+
+  it("issue_create POSTs title, description, comma-joined labels and assignee_ids", async () => {
+    expect(
+      await write("gitlab_issue_create", {
+        title: "Crash on start",
+        description: "steps",
+        labels: ["bug", "p1"],
+        assigneeIds: [7, 9],
+      }),
+    ).toEqual({
+      line: `POST ${ENC}/issues`,
+      body: {
+        title: "Crash on start",
+        description: "steps",
+        labels: "bug,p1",
+        assignee_ids: [7, 9],
+      },
+      token: "glpat-test",
+    });
+  });
+
+  it("issue_create sends only the title when nothing else is given", async () => {
+    expect((await write("gitlab_issue_create", { title: "t" })).body).toEqual({ title: "t" });
+  });
+
+  it("issue_note_create POSTs the body to the issue's notes", async () => {
+    expect(await write("gitlab_issue_note_create", { issueIid: 3, body: "hello" })).toMatchObject({
+      line: `POST ${ENC}/issues/3/notes`,
+      body: { body: "hello" },
+    });
+  });
+
+  it("mr_note_create POSTs the body to the merge request's notes", async () => {
+    expect(await write("gitlab_mr_note_create", { mergeRequestIid: 4, body: "ok" })).toMatchObject({
+      line: `POST ${ENC}/merge_requests/4/notes`,
+      body: { body: "ok" },
+    });
+  });
+
+  it("issue_labels_add sends add_labels, never labels, so nothing is removed", async () => {
+    const out = await write("gitlab_issue_labels_add", { issueIid: 3, labels: ["a", "b c"] });
+    expect(out.line).toBe(`PUT ${ENC}/issues/3`);
+    expect(out.body).toEqual({ add_labels: "a,b c" });
+  });
+
+  it("issue_assignees_add sends add_assignee_ids, never assignee_ids, so nothing is removed", async () => {
+    const out = await write("gitlab_issue_assignees_add", { issueIid: 3, assigneeIds: [5, 6] });
+    expect(out.line).toBe(`PUT ${ENC}/issues/3`);
+    expect(out.body).toEqual({ add_assignee_ids: [5, 6] });
+    expect(Object.keys(out.body as object)).not.toContain("assignee_ids");
+  });
+
+  it("issue_state_set sends state_event", async () => {
+    expect(
+      await write("gitlab_issue_state_set", { issueIid: 3, stateEvent: "reopen" }),
+    ).toMatchObject({
+      line: `PUT ${ENC}/issues/3`,
+      body: { state_event: "reopen" },
+    });
+  });
+
+  it("refuses arguments out of range before any request", async () => {
+    const stub = reply("{}");
+    for (const [name, args] of [
+      ["gitlab_issue_create", { title: "" }],
+      ["gitlab_issue_create", { title: "t", labels: ["a,b"] }],
+      ["gitlab_issue_create", { title: "t", assigneeIds: [0] }],
+      ["gitlab_issue_note_create", { issueIid: 0, body: "x" }],
+      ["gitlab_mr_note_create", { mergeRequestIid: 1, body: "" }],
+      ["gitlab_issue_labels_add", { issueIid: 1, labels: [] }],
+      ["gitlab_issue_labels_add", { issueIid: 1, labels: ["a,b"] }],
+      ["gitlab_issue_assignees_add", { issueIid: 1, assigneeIds: [] }],
+      ["gitlab_issue_state_set", { issueIid: 1, stateEvent: "delete" }],
+    ] as const) {
+      await expect(tools.call(name, { ...PROJECT, ...args })).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("runs end to end against a fake server named by GITLAB_API_BASE_URL", async () => {
+    const seen: { method: string; path: string; body: string; token: string | null }[] = [];
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      async fetch(req) {
+        const url = new URL(req.url);
+        seen.push({
+          method: req.method,
+          path: url.pathname,
+          body: await req.text(),
+          token: req.headers.get("private-token"),
+        });
+        return Response.json({ id: 42, iid: 3 });
+      },
+    });
+    try {
+      process.env[BASE_ENV] = `http://127.0.0.1:${String(server.port)}/api/v4/`;
+      expect(await tools.callJson("gitlab_issue_create", { ...PROJECT, title: "e2e" })).toEqual({
+        id: 42,
+        iid: 3,
+      });
+      expect(seen).toEqual([
+        {
+          method: "POST",
+          path: "/api/v4/projects/group%2Frepo/issues",
+          body: JSON.stringify({ title: "e2e" }),
+          token: "glpat-test",
+        },
+      ]);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});

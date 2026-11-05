@@ -108,7 +108,22 @@ export function fixtureFor(
     let repaired = false;
     for (const issue of result.error?.issues ?? []) {
       const key = issue.path[0];
-      if (typeof key !== "string" || issue.path.length !== 1) {
+      if (typeof key !== "string") {
+        continue;
+      }
+      // One level deeper is an element of an array argument (`[0]`): a list of numbers is first
+      // seeded with the string every list is, and the element's own complaint fixes its type.
+      const index = issue.path[1];
+      const list = args[key];
+      if (issue.path.length === 2 && typeof index === "number" && Array.isArray(list)) {
+        const element = candidate(issue, list[index]);
+        if (element !== undefined && !Object.is(element, list[index])) {
+          list[index] = element;
+          repaired = true;
+        }
+        continue;
+      }
+      if (issue.path.length !== 1) {
         continue;
       }
       const next = candidate(issue, args[key]);

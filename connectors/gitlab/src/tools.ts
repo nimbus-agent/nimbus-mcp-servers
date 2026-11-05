@@ -100,6 +100,12 @@ export const GITLAB_TOOL_NAMES = [
   "gitlab_mr_merge",
   "gitlab_issue_list",
   "gitlab_issue_get",
+  "gitlab_issue_create",
+  "gitlab_issue_note_create",
+  "gitlab_mr_note_create",
+  "gitlab_issue_labels_add",
+  "gitlab_issue_assignees_add",
+  "gitlab_issue_state_set",
   "gitlab_pipeline_list",
   "gitlab_pipeline_get",
   "gitlab_pipeline_jobs_get",
@@ -268,6 +274,89 @@ export function registerGitlabTools(
     gitlabIssueGetSchema,
     (parsed) =>
       `/projects/${encodeURIComponent(parsed.projectPath)}/issues/${String(parsed.issueIid)}`,
+  );
+
+  /** One label: GitLab joins a label list with commas, so a comma inside one would split it in two. */
+  const labelSchema = z
+    .string()
+    .min(1)
+    .max(255)
+    .refine((l) => !l.includes(","), "a label cannot contain a comma");
+  const assigneeIdSchema = z.number().int().min(1);
+  const noteBodySchema = z.string().min(1).max(65_000);
+  const issuePath = (p: { projectPath: string; issueIid: number }): string =>
+    `/projects/${encodeURIComponent(p.projectPath)}/issues/${String(p.issueIid)}`;
+  const jsonBody = (method: "POST" | "PUT", body: unknown): RequestInit => ({
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  registerGitlabWriteTool(
+    "gitlab_issue_create",
+    { mutates: "gitlab.issue.create", recoverable: true },
+    "Create a new issue in a project, optionally with labels and assignees.",
+    projectPathArg.extend({
+      title: z.string().min(1).max(255),
+      description: z.string().max(65_000).optional(),
+      labels: z.array(labelSchema).max(50).optional(),
+      assigneeIds: z.array(assigneeIdSchema).max(20).optional(),
+    }),
+    (parsed) => `/projects/${encodeURIComponent(parsed.projectPath)}/issues`,
+    (parsed) =>
+      jsonBody("POST", {
+        title: parsed.title,
+        description: parsed.description,
+        labels: parsed.labels?.join(","),
+        assignee_ids: parsed.assigneeIds,
+      }),
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_issue_note_create",
+    { mutates: "gitlab.issue.note.create", recoverable: true },
+    "Add a comment (note) to an issue; it posts as the authenticated user and changes nothing else.",
+    gitlabIssueGetSchema.extend({ body: noteBodySchema }),
+    (parsed) => `${issuePath(parsed)}/notes`,
+    (parsed) => jsonBody("POST", { body: parsed.body }),
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_mr_note_create",
+    { mutates: "gitlab.mr.note.create", recoverable: true },
+    "Add a comment (note) to a merge request; it posts as the authenticated user and changes nothing else.",
+    gitlabMrGetSchema.extend({ body: noteBodySchema }),
+    (parsed) =>
+      `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests/${String(parsed.mergeRequestIid)}/notes`,
+    (parsed) => jsonBody("POST", { body: parsed.body }),
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_issue_labels_add",
+    { mutates: "gitlab.issue.labels.add", recoverable: true },
+    "Add labels to an issue; it only adds, and cannot remove or replace any existing label.",
+    gitlabIssueGetSchema.extend({ labels: z.array(labelSchema).min(1).max(50) }),
+    issuePath,
+    (parsed) => jsonBody("PUT", { add_labels: parsed.labels.join(",") }),
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_issue_assignees_add",
+    { mutates: "gitlab.issue.assignees.add", recoverable: true },
+    "Add assignees (user ids) to an issue; it only adds, and cannot remove any existing assignee.",
+    gitlabIssueGetSchema.extend({ assigneeIds: z.array(assigneeIdSchema).min(1).max(20) }),
+    issuePath,
+    // GitLab's server-side add: one request, never removes, and cannot clobber a concurrent change.
+    (parsed) => jsonBody("PUT", { add_assignee_ids: parsed.assigneeIds }),
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_issue_state_set",
+    { mutates: "gitlab.issue.state.set", recoverable: true },
+    "Close or reopen an issue (stateEvent close or reopen); it changes only the state and can be reversed.",
+    gitlabIssueGetSchema.extend({ stateEvent: z.enum(["close", "reopen"]) }),
+    issuePath,
+    (parsed) => jsonBody("PUT", { state_event: parsed.stateEvent }),
   );
 
   const gitlabPipelineListSchema = projectPathArg.extend({
