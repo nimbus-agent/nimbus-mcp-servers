@@ -2,7 +2,7 @@
   "id": "com.nimbus.obsidian",
   "displayName": "Obsidian",
   "version": "0.1.0",
-  "description": "Local Obsidian vault connector (notes, backlinks). No network. Vault paths come from [[filesystem.roots]] and are merged into permissions.filesystem at spawn time by the Gateway. obsidian_append_to_daily_note requires HITL.",
+  "description": "Local Obsidian vault connector (notes, backlinks, daily notes). No network. Vault paths come from [[filesystem.roots]] and are merged into permissions.filesystem.read at spawn time by the Gateway, which may also add the vaults to permissions.filesystem.write at spawn (only while the owner has approved obsidian_append_to_daily_note for the model). obsidian_append_to_daily_note requires HITL; obsidian_daily_note_get is a read.",
   "author": "Nimbus",
   "entrypoint": "dist/server.js",
   "runtime": "bun",

@@ -3,7 +3,15 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { parseICalendar } from "@nimbus-dev/sdk";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import type { CalDavClient, CalendarRef } from "../src/caldav-core.ts";
-import { registerAppleCalendarTools } from "../src/calendar-tools.ts";
+import {
+  hasControlCharacter,
+  hasWhitespaceOrControl,
+  ICLOUD_ATTENDEE_REFUSAL,
+  ICLOUD_TEXT_REFUSAL,
+  ICLOUD_TIME_REFUSAL,
+  ICLOUD_UID_REFUSAL,
+  registerAppleCalendarTools,
+} from "../src/calendar-tools.ts";
 
 // These cases exercise the TOOL SURFACE, not the consent gate, and pass a minimal fake server.
 // Gateway mode is the shape they were written against: the connector registers everything and
@@ -446,6 +454,174 @@ describe("apple_calendar_event_create", () => {
         uid: "orphan-uid",
       }),
     ).rejects.toThrow('Calendar "NonExistent" not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apple_calendar_event_create: input refused at the schema (R10 d, OR-B4-6, review fixes 1 and 5)
+// ---------------------------------------------------------------------------
+
+describe("apple_calendar_event_create refuses unsafe input before any CalDAV call", () => {
+  const VALID = {
+    summary: "Team Meeting",
+    start: "20260601T100000Z",
+    end: "20260601T110000Z",
+    uid: "ok-uid",
+  };
+
+  /** Call create with `overrides` on a valid event; return the error and whether anything ran. */
+  async function refusal(overrides: Record<string, unknown>): Promise<{
+    message: string;
+    touched: boolean;
+  }> {
+    let listed = 0;
+    const { client, putCalls } = makeFakeCalDavClient({
+      listCalendars: async () => {
+        listed += 1;
+        return [WORK_CAL, HOME_CAL];
+      },
+    });
+    const { server, tools } = stubServer();
+    registerAppleCalendarTools(server as never, {
+      calendar: client,
+      now: () => "20260601T000000Z",
+    });
+    let message = "";
+    try {
+      await tools.apple_calendar_event_create!({ ...VALID, ...overrides });
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    return { message, touched: listed > 0 || putCalls.length > 0 };
+  }
+
+  it("accepts the valid event the cases below start from", async () => {
+    expect(await refusal({})).toEqual({ message: "", touched: true });
+  });
+
+  it("refuses a CRLF-injected attendee, naming the attendee rule", async () => {
+    const out = await refusal({
+      attendees: ["alice@example.com\r\nATTENDEE:mailto:mallory@example.com"],
+    });
+    expect(out.touched).toBe(false);
+    expect(out.message).toContain(ICLOUD_ATTENDEE_REFUSAL);
+  });
+
+  it("refuses an attendee with a space, a TAB, a bare LF or a C1 control", async () => {
+    for (const bad of [
+      "alice @example.com",
+      "alice@example.com\t",
+      "alice@example.com\n",
+      "alice@example.com\u0085",
+    ]) {
+      const out = await refusal({ attendees: ["bob@example.com", bad] });
+      expect({
+        bad,
+        touched: out.touched,
+        named: out.message.includes(ICLOUD_ATTENDEE_REFUSAL),
+      }).toEqual({ bad, touched: false, named: true });
+    }
+  });
+
+  it("refuses a bare CR in the summary, which the SDK's escaping would have left in place", async () => {
+    const out = await refusal({ summary: "Lunch\rATTENDEE:mailto:mallory@example.com" });
+    expect(out.touched).toBe(false);
+    expect(out.message).toContain(ICLOUD_TEXT_REFUSAL);
+    expect(out.message).toContain('"summary"');
+  });
+
+  it("refuses CR, LF, TAB, DEL and C1 controls in every free-text field", async () => {
+    const controls = ["\r", "\n", "\r\n", "\t", "\u0000", "\u007f", "\u0085", "\u009f"];
+    for (const field of ["summary", "description", "location", "calendar"]) {
+      for (const c of controls) {
+        const out = await refusal({ [field]: `Work${c}X` });
+        expect({
+          field,
+          code: c.charCodeAt(0),
+          touched: out.touched,
+          named: out.message.includes(ICLOUD_TEXT_REFUSAL),
+        }).toEqual({ field, code: c.charCodeAt(0), touched: false, named: true });
+      }
+    }
+  });
+
+  it("refuses a DTSTART or DTEND that is not UTC YYYYMMDDTHHMMSSZ", async () => {
+    const bad = [
+      "20260601T100000", // floating
+      "20260601", // all-day
+      "2026-06-01T10:00:00Z", // ISO 8601, not iCalendar
+      "20260601T100000+0200", // an offset
+      "20260601T100000Z\r\nATTENDEE:mailto:mallory@example.com", // injection after a valid time
+      "20260601T100000Z\n",
+      "",
+    ];
+    for (const field of ["start", "end"]) {
+      for (const value of bad) {
+        const out = await refusal({ [field]: value });
+        expect({
+          field,
+          value,
+          touched: out.touched,
+          named: out.message.includes(ICLOUD_TIME_REFUSAL),
+        }).toEqual({ field, value, touched: false, named: true });
+      }
+    }
+  });
+
+  it("refuses a uid outside [A-Za-z0-9._@-]{1,200}, and accepts one inside it", async () => {
+    for (const uid of ["a/b", "a b", "a:b", "../x", "x".repeat(201), "", "u1\r\nX-EVIL:1"]) {
+      const out = await refusal({ uid });
+      expect({
+        uid,
+        touched: out.touched,
+        named: out.message.includes(ICLOUD_UID_REFUSAL),
+      }).toEqual({ uid, touched: false, named: true });
+    }
+    expect(await refusal({ uid: "Meet.2026_06@host-1" })).toEqual({ message: "", touched: true });
+    expect(await refusal({ uid: "x".repeat(200) })).toEqual({ message: "", touched: true });
+  });
+
+  it("puts nothing but the given values on the event's content lines", async () => {
+    const { client, putCalls } = makeFakeCalDavClient();
+    const { server, tools } = stubServer();
+    registerAppleCalendarTools(server as never, {
+      calendar: client,
+      now: () => "20260601T000000Z",
+    });
+    await tools.apple_calendar_event_create!({
+      ...VALID,
+      description: "Agenda; notes, more",
+      location: "Room 4",
+      attendees: ["alice@example.com"],
+    });
+    const lines = (putCalls[0]?.ics ?? "").split("\r\n");
+    expect(lines).toContain("DTSTART:20260601T100000Z");
+    expect(lines).toContain("DTEND:20260601T110000Z");
+    expect(lines.filter((l) => l.startsWith("ATTENDEE:"))).toEqual([
+      "ATTENDEE:mailto:alice@example.com",
+    ]);
+    // No line carries a stray CR or LF of its own.
+    expect(lines.every((l) => !l.includes("\r") && !l.includes("\n"))).toBe(true);
+  });
+});
+
+describe("hasControlCharacter / hasWhitespaceOrControl", () => {
+  it("finds C0 controls, DEL and C1 controls, and nothing in printable text", () => {
+    for (const code of [0x00, 0x09, 0x0a, 0x0d, 0x1f, 0x7f, 0x80, 0x85, 0x9f]) {
+      expect({ code, found: hasControlCharacter(`a${String.fromCharCode(code)}b`) }).toEqual({
+        code,
+        found: true,
+      });
+    }
+    expect(hasControlCharacter("Café — 10:00, Room ä")).toBe(false);
+    expect(hasControlCharacter(String.fromCharCode(0xa0))).toBe(false);
+  });
+
+  it("adds every kind of whitespace for attendees", () => {
+    expect(hasWhitespaceOrControl("a b")).toBe(true);
+    expect(hasWhitespaceOrControl(`a${String.fromCharCode(0xa0)}b`)).toBe(true);
+    expect(hasWhitespaceOrControl(`a${String.fromCharCode(0x2028)}b`)).toBe(true);
+    expect(hasWhitespaceOrControl("alice@example.com")).toBe(false);
   });
 });
 

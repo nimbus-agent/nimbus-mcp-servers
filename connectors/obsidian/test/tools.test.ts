@@ -1,12 +1,29 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CapturedTools, captureTools } from "../../../scripts/connector-tool-harness.ts";
+import {
+  type CapturedTools,
+  captureStandaloneTools,
+  captureTools,
+} from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import {
+  DAILY_NOTE_TAIL_BYTES,
   formatDailyNoteFilename,
   OBSIDIAN_TOOL_NAMES,
+  type PositionedRead,
+  readUtf8Tail,
   registerObsidianTools,
   resolveDailyNoteRelativePath,
 } from "../src/tools.ts";
@@ -473,5 +490,462 @@ describe("obsidian_append_to_daily_note, more shapes", () => {
       setSystemTime();
     }
     expect(readFileSync(join(root, "2026-11-23.md"), "utf8")).toBe("late");
+  });
+});
+
+/** A vault with `daily-notes.json` set to `config`, configured as the only vault. */
+async function dailyVault(
+  config: Record<string, string> | undefined,
+  files: Record<string, string> = {},
+): Promise<{ root: string; configured: CapturedTools; id: string }> {
+  const root = vault({ "seed.md": "# Seed\n", ...files });
+  if (config !== undefined) {
+    writeFileSync(join(root, ".obsidian", "daily-notes.json"), JSON.stringify(config), "utf8");
+  }
+  const configured = configure(root);
+  const listed = (await configured.callJson("obsidian_list", {})) as { vault_id: string }[];
+  return { root, configured, id: listed[0]?.vault_id ?? "" };
+}
+
+/** A fresh directory outside every vault. */
+function outsideDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "obsidian-outside-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+interface DailyNoteReply {
+  vault_id: string;
+  vault_name: string;
+  path: string;
+  exists: boolean;
+  size_bytes: number;
+  tail: string;
+}
+
+describe("obsidian_daily_note_get", () => {
+  it("is a READ: offered to a standalone client that cannot prompt, and runs with no prompt", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const root = vault({ "2026-03-04.md": "standalone read" });
+    process.env["OBSIDIAN_VAULT_PATHS_JSON"] = JSON.stringify([root]);
+    const { tools: offered, prompts } = captureStandaloneTools(registerObsidianTools, {
+      elicitation: false,
+    });
+    // The consent kit withholds every write from a client that cannot prompt; a read stays.
+    expect(offered.names()).toContain("obsidian_daily_note_get");
+    expect(offered.names()).not.toContain("obsidian_append_to_daily_note");
+    const listed = (await offered.callJson("obsidian_list", {})) as { vault_id: string }[];
+    const out = (await offered.callJson("obsidian_daily_note_get", {
+      vault_id: listed[0]?.vault_id ?? "",
+      date_iso: "2026-03-04",
+    })) as DailyNoteReply;
+    expect(out.tail).toBe("standalone read");
+    expect(prompts).toEqual([]);
+  });
+
+  it("returns the whole of a small existing note, with its size", async () => {
+    const { configured, id, root } = await dailyVault(undefined, {
+      "2026-03-04.md": "line one\nline two\n",
+    });
+    const out = (await configured.callJson("obsidian_daily_note_get", {
+      vault_id: id,
+      date_iso: "2026-03-04",
+    })) as DailyNoteReply;
+    expect(out).toEqual({
+      vault_id: id,
+      vault_name: root.split(/[\\/]/).at(-1) ?? "",
+      path: "2026-03-04.md",
+      exists: true,
+      size_bytes: 18,
+      tail: "line one\nline two\n",
+    });
+  });
+
+  it("reports a missing note as exists: false, size_bytes: 0 and an empty tail, creating nothing", async () => {
+    const { configured, id, root } = await dailyVault({ folder: "Journal" });
+    const out = (await configured.callJson("obsidian_daily_note_get", {
+      vault_id: id,
+      date_iso: "2026-03-05",
+    })) as DailyNoteReply;
+    expect(out).toMatchObject({
+      path: "Journal/2026-03-05.md",
+      exists: false,
+      size_bytes: 0,
+      tail: "",
+    });
+    expect(existsSync(join(root, "Journal"))).toBe(false);
+  });
+
+  it("names the note the vault's daily-notes folder and format name, as the append does", async () => {
+    const { configured, id, root } = await dailyVault({
+      folder: "Journal/",
+      format: "YYYY-MM-DD-HHmm",
+    });
+    await configured.call("obsidian_append_to_daily_note", {
+      vault_id: id,
+      content: "appended entry",
+      date_iso: "2026-03-06",
+    });
+    const out = (await configured.callJson("obsidian_daily_note_get", {
+      vault_id: id,
+      date_iso: "2026-03-06",
+    })) as DailyNoteReply;
+    expect(out).toMatchObject({
+      path: "Journal/2026-03-06-0000.md",
+      exists: true,
+      tail: "appended entry",
+    });
+    expect(readFileSync(join(root, "Journal", "2026-03-06-0000.md"), "utf8")).toBe(
+      "appended entry",
+    );
+  });
+
+  it("reads today's note, in UTC, when no date is given", async () => {
+    const { configured, id } = await dailyVault(undefined, { "2026-11-23.md": "today" });
+    setSystemTime(new Date("2026-11-23T23:30:00Z"));
+    try {
+      const out = (await configured.callJson("obsidian_daily_note_get", {
+        vault_id: id,
+      })) as DailyNoteReply;
+      expect(out).toMatchObject({ path: "2026-11-23.md", tail: "today" });
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it("rejects an unknown vault id", async () => {
+    await expect(
+      tools.call("obsidian_daily_note_get", { vault_id: "nope", date_iso: "2026-03-04" }),
+    ).rejects.toThrow("Unknown vault_id");
+  });
+
+  it("rejects a date that is not YYYY-MM-DD", async () => {
+    await expect(
+      tools.call("obsidian_daily_note_get", { vault_id: "x", date_iso: "2026-3-4" }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a daily-note path that is a folder, not a file", async () => {
+    const { configured, id, root } = await dailyVault(undefined);
+    mkdirSync(join(root, "2026-03-08.md"));
+    await expect(
+      configured.call("obsidian_daily_note_get", { vault_id: id, date_iso: "2026-03-08" }),
+    ).rejects.toThrow("Daily note is not a file: 2026-03-08.md");
+  });
+
+  it("returns only the last 16 KiB of a long note, starting on a character boundary", async () => {
+    // 20 000 bytes of "a", then 3-byte characters: the 16 KiB window starts inside one of them.
+    const body = `${"a".repeat(20_000)}${"€".repeat(6000)}END`;
+    const { configured, id } = await dailyVault(undefined, { "2026-03-09.md": body });
+    const out = (await configured.callJson("obsidian_daily_note_get", {
+      vault_id: id,
+      date_iso: "2026-03-09",
+    })) as DailyNoteReply;
+    expect(out.size_bytes).toBe(Buffer.byteLength(body, "utf8"));
+    expect(out.tail.startsWith("€")).toBe(true);
+    expect(out.tail.endsWith("€END")).toBe(true);
+    expect(out.tail).not.toContain("�");
+    const tailBytes = Buffer.byteLength(out.tail, "utf8");
+    expect(tailBytes).toBeLessThanOrEqual(DAILY_NOTE_TAIL_BYTES);
+    expect(tailBytes).toBeGreaterThan(DAILY_NOTE_TAIL_BYTES - 3);
+    expect(body.endsWith(out.tail)).toBe(true);
+  });
+});
+
+describe("readUtf8Tail", () => {
+  it("reads at most the window from a 20 MB note, never the whole file", () => {
+    const file = join(outsideDir(), "big.md");
+    const size = 20 * 1024 * 1024;
+    const buf = Buffer.alloc(size, 0x61);
+    buf.write("THE END", size - 7, "utf8");
+    writeFileSync(file, buf);
+
+    const reads: { length: number; position: number }[] = [];
+    const counting: PositionedRead = (fd, buffer, offset, length, position) => {
+      reads.push({ length, position });
+      return readSync(fd, buffer, offset, length, position);
+    };
+    const out = readUtf8Tail(file, DAILY_NOTE_TAIL_BYTES, counting);
+    expect(out.size).toBe(size);
+    expect(out.tail.length).toBe(DAILY_NOTE_TAIL_BYTES);
+    expect(out.tail.endsWith("THE END")).toBe(true);
+    expect(reads.reduce((n, r) => n + r.length, 0)).toBe(DAILY_NOTE_TAIL_BYTES);
+    expect(reads.every((r) => r.position >= size - DAILY_NOTE_TAIL_BYTES)).toBe(true);
+  });
+
+  it("returns a file shorter than the window whole, and an empty file as empty", () => {
+    const dir = outsideDir();
+    writeFileSync(join(dir, "short.md"), "short", "utf8");
+    writeFileSync(join(dir, "empty.md"), "", "utf8");
+    expect(readUtf8Tail(join(dir, "short.md"), 16)).toEqual({ size: 5, tail: "short" });
+    expect(readUtf8Tail(join(dir, "empty.md"), 16)).toEqual({ size: 0, tail: "" });
+  });
+
+  it("drops only the continuation bytes of the one character the window cut", () => {
+    const file = join(outsideDir(), "cut.md");
+    // "€" is three bytes. A 4-byte window over "x€€" starts inside the first "€": keep the second.
+    writeFileSync(file, "x€€", "utf8");
+    expect(readUtf8Tail(file, 4)).toEqual({ size: 7, tail: "€" });
+    // A window that starts exactly on a character keeps it.
+    expect(readUtf8Tail(file, 6)).toEqual({ size: 7, tail: "€€" });
+  });
+
+  it("stops at a short read rather than looping", () => {
+    const file = join(outsideDir(), "short-read.md");
+    writeFileSync(file, "abcdef", "utf8");
+    const out = readUtf8Tail(file, 16, () => 0);
+    expect(out).toEqual({ size: 6, tail: "" });
+  });
+});
+
+/**
+ * A directory link at `link` to `target`. A junction, so making one needs no privilege on
+ * Windows; on macOS and Linux the type is ignored and it is an ordinary directory symlink. So
+ * every directory-link test below runs on all three systems.
+ */
+function dirLink(target: string, link: string): void {
+  symlinkSync(target, link, "junction");
+}
+
+/**
+ * Whether this process may create a FILE symlink. Windows refuses one without Developer Mode or
+ * the SeCreateSymbolicLink privilege (EPERM), and a junction cannot point at a file, so the one
+ * test that needs a file link is skipped exactly when the OS refuses to make one.
+ */
+const canLinkFiles: boolean = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "obsidian-probe-"));
+  tempDirs.push(dir);
+  writeFileSync(join(dir, "t"), "", "utf8");
+  try {
+    symlinkSync(join(dir, "t"), join(dir, "l"), "file");
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe("daily notes: realpath containment", () => {
+  it("refuses an append whose daily-notes folder is a link out of the vault, writing nothing there", async () => {
+    const outside = outsideDir();
+    const { root, configured, id } = await dailyVault({ folder: "Journal" });
+    dirLink(outside, join(root, "Journal"));
+    await expect(
+      configured.call("obsidian_append_to_daily_note", {
+        vault_id: id,
+        content: "escaped",
+        date_iso: "2026-04-01",
+      }),
+    ).rejects.toThrow("Path escapes vault: Journal/2026-04-01.md");
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses an append whose folder passes THROUGH a link out of the vault, creating nothing", async () => {
+    const outside = outsideDir();
+    const { root, configured, id } = await dailyVault({ folder: "Linked/deeper/Journal" });
+    dirLink(outside, join(root, "Linked"));
+    await expect(
+      configured.call("obsidian_append_to_daily_note", {
+        vault_id: id,
+        content: "escaped",
+        date_iso: "2026-04-02",
+      }),
+    ).rejects.toThrow("Path escapes vault");
+    // The check runs before mkdir, so not even the folders were created outside.
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("refuses the read of a daily note reached through a link out of the vault", async () => {
+    const outside = outsideDir();
+    writeFileSync(join(outside, "2026-04-03.md"), "secret outside the vault", "utf8");
+    const { root, configured, id } = await dailyVault({ folder: "Journal" });
+    dirLink(outside, join(root, "Journal"));
+    await expect(
+      configured.call("obsidian_daily_note_get", { vault_id: id, date_iso: "2026-04-03" }),
+    ).rejects.toThrow("Path escapes vault: Journal/2026-04-03.md");
+  });
+
+  it("refuses a daily-notes folder that climbs out with ..", async () => {
+    const { configured, id } = await dailyVault({ folder: "../outside" });
+    await expect(
+      configured.call("obsidian_append_to_daily_note", {
+        vault_id: id,
+        content: "escaped",
+        date_iso: "2026-04-04",
+      }),
+    ).rejects.toThrow("Path escapes vault");
+    await expect(
+      configured.call("obsidian_daily_note_get", { vault_id: id, date_iso: "2026-04-04" }),
+    ).rejects.toThrow("Path escapes vault");
+  });
+
+  it("refuses a daily-notes folder that is a dangling link", async () => {
+    const { root, configured, id } = await dailyVault({ folder: "Journal" });
+    const gone = outsideDir();
+    dirLink(gone, join(root, "Journal"));
+    rmSync(gone, { recursive: true, force: true });
+    await expect(
+      configured.call("obsidian_append_to_daily_note", {
+        vault_id: id,
+        content: "x",
+        date_iso: "2026-04-05",
+      }),
+    ).rejects.toThrow("Path escapes vault");
+  });
+
+  it("allows a link that stays inside the vault, for the append and the read", async () => {
+    const { root, configured, id } = await dailyVault({ folder: "Journal" });
+    mkdirSync(join(root, "real", "journal"), { recursive: true });
+    dirLink(join(root, "real", "journal"), join(root, "Journal"));
+    await configured.call("obsidian_append_to_daily_note", {
+      vault_id: id,
+      content: "kept inside",
+      date_iso: "2026-04-06",
+    });
+    expect(readFileSync(join(root, "real", "journal", "2026-04-06.md"), "utf8")).toBe(
+      "kept inside",
+    );
+    const out = (await configured.callJson("obsidian_daily_note_get", {
+      vault_id: id,
+      date_iso: "2026-04-06",
+    })) as DailyNoteReply;
+    expect(out).toMatchObject({ exists: true, tail: "kept inside" });
+  });
+
+  it.skipIf(!canLinkFiles)(
+    "refuses a daily note that is itself a file link out of the vault",
+    async () => {
+      const target = join(outsideDir(), "target.md");
+      writeFileSync(target, "outside", "utf8");
+      const { root, configured, id } = await dailyVault(undefined);
+      symlinkSync(target, join(root, "2026-04-07.md"), "file");
+      await expect(
+        configured.call("obsidian_append_to_daily_note", {
+          vault_id: id,
+          content: "escaped",
+          date_iso: "2026-04-07",
+        }),
+      ).rejects.toThrow("Path escapes vault: 2026-04-07.md");
+      await expect(
+        configured.call("obsidian_daily_note_get", { vault_id: id, date_iso: "2026-04-07" }),
+      ).rejects.toThrow("Path escapes vault: 2026-04-07.md");
+      expect(readFileSync(target, "utf8")).toBe("outside");
+    },
+  );
+});
+
+describe("obsidian_get, obsidian_list and obsidian_search: realpath containment", () => {
+  /** A vault holding `kept.md`, and `linked`: a directory link to an outside folder with a secret note. */
+  function vaultWithOutsideLink(): { root: string; configured: CapturedTools } {
+    const outside = outsideDir();
+    writeFileSync(join(outside, "secret.md"), "# Secret\n\nneedle outside the vault\n", "utf8");
+    const root = vault({ "kept.md": "# Kept\n\nneedle inside\n" });
+    dirLink(outside, join(root, "linked"));
+    return { root, configured: configure(root) };
+  }
+
+  it("refuses obsidian_get through a directory link (a junction on Windows) out of the vault", async () => {
+    const { root, configured } = vaultWithOutsideLink();
+    await expect(
+      configured.call("obsidian_get", { vault: root, path: "linked/secret.md" }),
+    ).rejects.toThrow("Path escapes vault: linked/secret.md");
+  });
+
+  it("refuses obsidian_get by id through the same link", async () => {
+    const { configured } = vaultWithOutsideLink();
+    const listed = (await configured.callJson("obsidian_list", {})) as { id: string }[];
+    const vaultPart = (listed[0]?.id ?? "").split("#")[0] ?? "";
+    await expect(
+      configured.call("obsidian_get", { id: `${vaultPart}#linked/secret.md` }),
+    ).rejects.toThrow("Path escapes vault: linked/secret.md");
+  });
+
+  it("refuses obsidian_get with .. out of the vault, naming the path", async () => {
+    const outside = outsideDir();
+    writeFileSync(join(outside, "secret.md"), "# Secret\n", "utf8");
+    const root = vault({ "kept.md": "# Kept\n" });
+    const rel = `../${outside.split(/[\\/]/).at(-1) ?? ""}/secret.md`;
+    await expect(configure(root).call("obsidian_get", { vault: root, path: rel })).rejects.toThrow(
+      `Path escapes vault: ${rel}`,
+    );
+  });
+
+  it("refuses obsidian_get through a dangling link", async () => {
+    const root = vault({ "kept.md": "# Kept\n" });
+    const gone = outsideDir();
+    dirLink(gone, join(root, "broken"));
+    rmSync(gone, { recursive: true, force: true });
+    await expect(
+      configure(root).call("obsidian_get", { vault: root, path: "broken/x.md" }),
+    ).rejects.toThrow("Path escapes vault: broken/x.md");
+  });
+
+  it.skipIf(!canLinkFiles)(
+    "refuses obsidian_get of a note that is a file symlink out of the vault",
+    async () => {
+      const target = join(outsideDir(), "secret.md");
+      writeFileSync(target, "# Secret\n", "utf8");
+      const root = vault({ "kept.md": "# Kept\n" });
+      symlinkSync(target, join(root, "alias.md"), "file");
+      await expect(
+        configure(root).call("obsidian_get", { vault: root, path: "alias.md" }),
+      ).rejects.toThrow("Path escapes vault: alias.md");
+    },
+  );
+
+  it("still reads a note through a link that stays inside the vault", async () => {
+    const root = vault({ "real/inner.md": "# Inner\n" });
+    dirLink(join(root, "real"), join(root, "alias"));
+    const note = (await configure(root).callJson("obsidian_get", {
+      vault: root,
+      path: "alias/inner.md",
+    })) as { title: string };
+    expect(note.title).toBe("Inner");
+  });
+
+  it("does not list or search notes behind a link out of the vault", async () => {
+    const { configured } = vaultWithOutsideLink();
+    const listed = (await configured.callJson("obsidian_list", {})) as { path: string }[];
+    expect(listed.map((n) => n.path)).toEqual(["kept.md"]);
+    const hits = (await configured.callJson("obsidian_search", { query: "needle" })) as {
+      path: string;
+    }[];
+    expect(hits.map((h) => h.path)).toEqual(["kept.md"]);
+  });
+});
+
+describe("vault discovery does not follow links under a configured root", () => {
+  /** Notes as `vault_name:path`, over every vault discovery found. */
+  async function discovered(configured: CapturedTools): Promise<string[]> {
+    const out = (await configured.callJson("obsidian_list", {})) as {
+      vault_name: string;
+      path: string;
+    }[];
+    return out.map((n) => `${n.vault_name}:${n.path}`).sort();
+  }
+
+  it("does not discover a vault outside the root reached through a junction or symlink", async () => {
+    const outside = outsideDir();
+    mkdirSync(join(outside, "elsewhere", ".obsidian"), { recursive: true });
+    writeFileSync(join(outside, "elsewhere", "secret.md"), "# Secret\n", "utf8");
+
+    const root = mkdtempSync(join(tmpdir(), "obsidian-root-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "team", ".obsidian"), { recursive: true });
+    writeFileSync(join(root, "team", "plan.md"), "# Plan\n", "utf8");
+    // A link straight to the outside vault, and one to a folder that CONTAINS it.
+    dirLink(join(outside, "elsewhere"), join(root, "linked-vault"));
+    dirLink(outside, join(root, "linked-parent"));
+
+    expect(await discovered(configure(root))).toEqual(["team:plan.md"]);
+  });
+
+  it("does not discover a vault inside the root twice through a link to it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "obsidian-root-"));
+    tempDirs.push(root);
+    mkdirSync(join(root, "team", ".obsidian"), { recursive: true });
+    writeFileSync(join(root, "team", "plan.md"), "# Plan\n", "utf8");
+    dirLink(join(root, "team"), join(root, "alias"));
+    expect(await discovered(configure(root))).toEqual(["team:plan.md"]);
   });
 });

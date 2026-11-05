@@ -71,6 +71,37 @@ function readPageSnapshot(res: { ok: boolean; status: number; text: string }): P
   };
 }
 
+/** One entry of `confluence_page_get`'s `ancestors`: what a caller needs, not the whole page. */
+export interface PageAncestor {
+  readonly id: string | null;
+  readonly title: string | null;
+}
+
+/**
+ * Narrow the `ancestors` Confluence expands on a page to `{ id, title }` per entry, in Confluence's
+ * order (the space's top-level page first, the page's direct parent last). An ancestor is a whole
+ * content object (links, extensions, status); a caller deciding where a page sits needs only its
+ * id, and the title is free. An entry without a string id keeps its place with `id: null` rather
+ * than being dropped, so the chain is never shorter than Confluence said. A reply with no
+ * `ancestors` array is returned as it came: absent stays absent, never an invented `[]`.
+ */
+export function withAncestorSummaries(page: unknown): unknown {
+  if (page === null || typeof page !== "object" || Array.isArray(page)) return page;
+  const obj = page as Record<string, unknown>;
+  const ancestors = obj["ancestors"];
+  if (!Array.isArray(ancestors)) return page;
+  const summaries: PageAncestor[] = ancestors.map((a: unknown) => {
+    const entry = a !== null && typeof a === "object" ? (a as Record<string, unknown>) : {};
+    const id = entry["id"];
+    const title = entry["title"];
+    return {
+      id: typeof id === "string" ? id : null,
+      title: typeof title === "string" ? title : null,
+    };
+  });
+  return { ...obj, ancestors: summaries };
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const CONFLUENCE_TOOL_NAMES = [
   "confluence_space_list",
@@ -150,14 +181,23 @@ export function registerConfluenceTools(
 
   reg(
     "confluence_page_get",
-    "Get a Confluence page with body.storage (GET /content/{id}).",
+    "Get a Confluence page with body.storage (GET /content/{id}). ancestors lists the pages above it as { id, title }, the top-level page first and the direct parent last.",
     confluencePageIdSchema,
     async (parsed) => {
       const id = encodeURIComponent(parsed.pageId);
       const res = await confFetch(
-        `/content/${id}?expand=body.storage,version,history.lastUpdated,space`,
+        `/content/${id}?expand=body.storage,version,history.lastUpdated,space,ancestors`,
       );
-      return mcpJsonResultFromTextIfOk("Confluence", res);
+      if (!res.ok) {
+        throw new Error(`Confluence ${String(res.status)}: ${res.text.slice(0, 400)}`);
+      }
+      let page: unknown;
+      try {
+        page = JSON.parse(res.text) as unknown;
+      } catch {
+        throw new Error("Confluence: invalid JSON response");
+      }
+      return mcpJsonResult(withAncestorSummaries(page));
     },
   );
 
