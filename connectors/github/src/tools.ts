@@ -236,7 +236,7 @@ export function registerGithubTools(
   registerGithubWriteTool(
     "github_issue_labels_add",
     { mutates: "github.issue.labels.add", recoverable: true },
-    "Add labels to an issue or pull request; it only adds, and cannot remove or replace any existing label.",
+    "Add labels to an issue or pull request; a label that does not exist yet is created in the repository. It only adds, and cannot remove or replace any existing label.",
     githubIssueNumberSchema.extend({
       labels: z.array(z.string().min(1).max(50)).min(1).max(100),
     }),
@@ -258,7 +258,7 @@ export function registerGithubTools(
   registerGithubWriteTool(
     "github_issue_state_set",
     { mutates: "github.issue.state.set", recoverable: true },
-    "Open or close an issue (state open or closed); it changes only the state and can be reversed by setting it back.",
+    "Open or close an issue (state open or closed); given a pull request number it closes or reopens that pull request. It changes only the state and can be reversed by setting it back.",
     githubIssueNumberSchema.extend({ state: z.enum(["open", "closed"]) }),
     issuePath,
     (parsed) => jsonInit("PATCH", { state: parsed.state }),

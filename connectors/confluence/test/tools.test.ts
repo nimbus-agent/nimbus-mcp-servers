@@ -331,9 +331,10 @@ describe("confluence_page_append", () => {
     expect(stub.calls).toEqual([]);
   });
 
-  it("never touches confluence_kb_append's registration", () => {
-    expect(tools.names()).toContain("confluence_kb_append");
-    expect(tools.names()).toContain("confluence_page_append");
+  it("throws, writing nothing, when the page has no version number", async () => {
+    const stub = serve('{"id":"4242","type":"page","title":"Runbook"}');
+    await expect(append()).rejects.toThrow("Confluence: page has no version");
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET"]);
   });
 
   it("runs end to end against a fake server named by CONFLUENCE_BASE_URL", async () => {

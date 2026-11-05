@@ -285,6 +285,9 @@ export function registerJiraTools(
           token,
           `/rest/api/3/issue/${key}?fields=status`,
         );
+        if (!res.ok) {
+          throw new Error(`Jira ${String(res.status)}: ${res.text.slice(0, 200)}`);
+        }
         const json = JSON.parse(res.text) as {
           fields?: { status?: { name?: string; id?: string } };
         };

@@ -60,10 +60,13 @@ function readPageSnapshot(res: { ok: boolean; status: number; text: string }): P
     version?: { number?: number };
     body?: { storage?: { value?: string } };
   };
+  if (page.version?.number === undefined) {
+    throw new Error("Confluence: page has no version");
+  }
   return {
     type: page.type ?? "page",
     title: page.title ?? "",
-    version: page.version?.number ?? 0,
+    version: page.version.number,
     html: page.body?.storage?.value ?? "",
   };
 }

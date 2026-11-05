@@ -371,4 +371,32 @@ describe("jira transition (standalone mode)", () => {
       status: "In Progress",
     });
   });
+  it("records captureFailed, not an undefined status, when the status cannot be read", async () => {
+    let standalone: CapturedTools | undefined;
+    await withEnv(
+      { NIMBUS_MCP_JIRA_WRITE_SCOPE: "issue:OPS-7", NIMBUS_MCP_AUDIT_LOG: auditLog },
+      () => {
+        standalone = captureStandaloneTools(registerJiraTools, { elicitation: true }).tools;
+      },
+    );
+    serve((req) =>
+      req.method === "GET"
+        ? { status: 404, body: "Issue does not exist" }
+        : { status: 204, body: "" },
+    );
+    await onSite(async () => {
+      await standalone?.call("jira_issue_transition", { issueKey: "OPS-7", transitionId: "31" });
+    });
+    const executed = readFileSync(auditLog, "utf8")
+      .trim()
+      .split(String.fromCharCode(10))
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      )
+      .find((e) => e.outcome === "executed");
+    expect(executed?.detail["preState"]).toEqual({
+      captureFailed: expect.stringContaining("Jira 404"),
+    });
+  });
 });
