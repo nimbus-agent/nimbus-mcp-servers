@@ -9,7 +9,11 @@ import {
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
-import { CONFLUENCE_TOOL_NAMES, registerConfluenceTools } from "../src/tools.ts";
+import {
+  CONFLUENCE_TOOL_NAMES,
+  registerConfluenceTools,
+  withAncestorSummaries,
+} from "../src/tools.ts";
 
 const API = "https://acme.atlassian.net/wiki/rest/api";
 
@@ -99,7 +103,7 @@ describe("confluence reads", () => {
     [
       "confluence_page_get",
       { pageId: "12/3" },
-      "/content/12%2F3?expand=body.storage,version,history.lastUpdated,space",
+      "/content/12%2F3?expand=body.storage,version,history.lastUpdated,space,ancestors",
     ],
     [
       "confluence_blogpost_get",
@@ -140,6 +144,99 @@ describe("confluence reads", () => {
     await configured(async () => {
       await expect(tools.call("confluence_page_get", { pageId: "9" })).rejects.toThrow(
         "Confluence 404: No content found with id 9",
+      );
+    });
+  });
+});
+
+describe("confluence_page_get ancestors", () => {
+  /** A page reply as Confluence sends one with `expand=ancestors`: whole content objects. */
+  const PAGE = {
+    id: "900",
+    type: "page",
+    title: "Runbook",
+    version: { number: 3 },
+    ancestors: [
+      {
+        id: "100",
+        type: "page",
+        status: "current",
+        title: "Engineering",
+        _links: { webui: "/spaces/ENG/pages/100" },
+        _expandable: { body: "" },
+      },
+      { id: "500", type: "page", status: "current", title: "Knowledge base" },
+    ],
+  };
+
+  async function getPage(body: unknown): Promise<{ req: RecordedRequest; reply: unknown }> {
+    const stub = serve(JSON.stringify(body));
+    let reply: unknown;
+    await configured(async () => {
+      reply = await tools.callJson("confluence_page_get", { pageId: "900" });
+    });
+    return { req: stub.only, reply };
+  }
+
+  it("asks Confluence to expand the ancestors", async () => {
+    const { req } = await getPage(PAGE);
+    const expand = new URL(req.url).searchParams.get("expand")?.split(",") ?? [];
+    expect(expand).toContain("ancestors");
+    expect(expand).toEqual([
+      "body.storage",
+      "version",
+      "history.lastUpdated",
+      "space",
+      "ancestors",
+    ]);
+  });
+
+  it("returns each ancestor as { id, title }, top-level first, and the rest of the page as sent", async () => {
+    const { reply } = await getPage(PAGE);
+    expect(reply).toEqual({
+      id: "900",
+      type: "page",
+      title: "Runbook",
+      version: { number: 3 },
+      ancestors: [
+        { id: "100", title: "Engineering" },
+        { id: "500", title: "Knowledge base" },
+      ],
+    });
+  });
+
+  it("returns a top-level page's empty ancestors as []", async () => {
+    const { reply } = await getPage({ ...PAGE, ancestors: [] });
+    expect((reply as { ancestors: unknown }).ancestors).toEqual([]);
+  });
+
+  it("keeps a malformed ancestor in its place with null fields, never dropping it", async () => {
+    const { reply } = await getPage({
+      ...PAGE,
+      ancestors: [{ id: 7, title: ["x"] }, null, "500", { id: "500", title: "Knowledge base" }],
+    });
+    expect((reply as { ancestors: unknown }).ancestors).toEqual([
+      { id: null, title: null },
+      { id: null, title: null },
+      { id: null, title: null },
+      { id: "500", title: "Knowledge base" },
+    ]);
+  });
+
+  it("leaves a reply without ancestors as it came, inventing no []", async () => {
+    const { ancestors: _dropped, ...withoutAncestors } = PAGE;
+    const { reply } = await getPage(withoutAncestors);
+    expect(reply).toEqual(withoutAncestors);
+    expect(withAncestorSummaries(null)).toBeNull();
+    expect(withAncestorSummaries([1, 2])).toEqual([1, 2]);
+    expect(withAncestorSummaries({ ancestors: "x" })).toEqual({ ancestors: "x" });
+  });
+
+  it("refuses a reply that is not JSON", async () => {
+    serve("<html>not json</html>");
+    await configured(async () => {
+      await expect(tools.call("confluence_page_get", { pageId: "900" })).rejects.toThrow(
+        "Confluence: invalid JSON response",
       );
     });
   });
