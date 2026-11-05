@@ -111,7 +111,13 @@ nimbus ask "What meetings do I have next week in my iCloud Calendar?"
 ### Calendar write tools (HITL-gated)
 
 - `apple_calendar_event_create` — create a new event in iCloud Calendar via
-  CalDAV PUT. Requires Gateway HITL `calendar.event.create`.
+  CalDAV PUT. Requires Gateway HITL `calendar.event.create`. `start` and `end`
+  must be UTC in the form `YYYYMMDDTHHMMSSZ`: all-day and floating-time events
+  are refused. `summary`, `description`, `location` and `calendar` are refused
+  when they contain a line break or any other control character (so a
+  multi-line description is refused, not rewritten); each attendee must be one
+  email address with no whitespace or control character; a given `uid` must be
+  1-200 characters of `A-Z a-z 0-9 . _ @ -`.
 - `apple_calendar_event_delete` — delete an event from iCloud Calendar via
   CalDAV DELETE by href. Requires Gateway HITL `calendar.event.delete`.
 

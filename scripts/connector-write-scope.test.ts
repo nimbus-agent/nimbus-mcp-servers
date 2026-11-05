@@ -105,6 +105,8 @@ type WriteCase = readonly [
 
 const MAIL_TO = { to: "ada@example.com" };
 const GITHUB_REPO = { owner: "acme", repo: "api" };
+/** iCloud event times are format-checked (UTC `YYYYMMDDTHHMMSSZ`), which `fixtureFor` cannot guess. */
+const ICLOUD_TIMES = { start: "20260101T000000Z", end: "20260101T010000Z" };
 
 /**
  * Every connector that registers a write tool, with each write tool's expected scope target.
@@ -131,10 +133,15 @@ const WRITES: Readonly<
       [
         "apple_calendar_event_create",
         "apple.calendar.event.create",
-        { calendar: "Work" },
+        { calendar: "Work", ...ICLOUD_TIMES },
         "calendar:Work",
       ],
-      ["apple_calendar_event_create", "apple.calendar.event.create", {}, "calendar:default"],
+      [
+        "apple_calendar_event_create",
+        "apple.calendar.event.create",
+        ICLOUD_TIMES,
+        "calendar:default",
+      ],
       [
         "apple_calendar_event_delete",
         "apple.calendar.event.delete",

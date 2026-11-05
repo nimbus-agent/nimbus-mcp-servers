@@ -43,15 +43,59 @@ const listArgs = z.object({
   calendar: z.string().min(1).optional(),
 });
 
+/** A C0 control (CR, LF and TAB included), DEL, or a C1 control. */
+function isControlCode(code: number): boolean {
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+}
+
+/**
+ * Whether `value` carries a control character anywhere. Event text reaches iCalendar content
+ * lines, where CR or LF ends a line and starts a new property; the SDK's escaping turns CRLF or LF
+ * into an escaped newline but leaves a bare CR. So the input is REFUSED here rather than relying
+ * on (or adding) an escape. Nothing is stripped.
+ */
+export function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    if (isControlCode(value.charCodeAt(i))) return true;
+  }
+  return false;
+}
+
+/** Whether `value` carries any whitespace (Unicode `\s`) or control character. */
+export function hasWhitespaceOrControl(value: string): boolean {
+  return /\s/u.test(value) || hasControlCharacter(value);
+}
+
+export const ICLOUD_TEXT_REFUSAL = "must not contain a line break or other control character";
+export const ICLOUD_TIME_REFUSAL =
+  "must be a UTC time in the form YYYYMMDDTHHMMSSZ; all-day and floating times are not supported";
+export const ICLOUD_UID_REFUSAL =
+  "must be 1 to 200 characters, each a letter, a digit, '.', '_', '@' or '-'";
+export const ICLOUD_ATTENDEE_REFUSAL =
+  "each attendee must be one email address, with no whitespace or control character";
+
+/** `YYYYMMDDTHHMMSSZ`: a UTC date-time and nothing else (owner ruling OR-B4-6). */
+const UTC_DATE_TIME = /^\d{8}T\d{6}Z$/;
+const EVENT_UID = /^[A-Za-z0-9._@-]{1,200}$/;
+
+/** A free-text event field: refused, never cleaned, when it carries a control character. */
+function eventText(): z.ZodString {
+  return z.string().refine((s) => !hasControlCharacter(s), ICLOUD_TEXT_REFUSAL);
+}
+
 const createArgs = z.object({
-  calendar: z.string().min(1).optional(),
-  summary: z.string().min(1).max(1000),
-  start: z.string().min(1),
-  end: z.string().min(1),
-  description: z.string().max(10_000).optional(),
-  location: z.string().max(500).optional(),
-  attendees: z.array(z.email()).optional(),
-  uid: z.string().min(1).optional(),
+  calendar: eventText().min(1).optional(),
+  summary: eventText().min(1).max(1000),
+  start: z.string().regex(UTC_DATE_TIME, ICLOUD_TIME_REFUSAL),
+  end: z.string().regex(UTC_DATE_TIME, ICLOUD_TIME_REFUSAL),
+  description: eventText().max(10_000).optional(),
+  location: eventText().max(500).optional(),
+  // z.email() already refuses whitespace and controls today; the explicit check keeps that a
+  // stated property of THIS schema, not of zod's current email pattern.
+  attendees: z
+    .array(z.email().refine((s) => !hasWhitespaceOrControl(s), ICLOUD_ATTENDEE_REFUSAL))
+    .optional(),
+  uid: z.string().regex(EVENT_UID, ICLOUD_UID_REFUSAL).optional(),
 });
 
 const deleteArgs = z.object({
@@ -199,7 +243,7 @@ export function registerAppleCalendarTools(
       recoverable: true,
       scopeTargetOf: (p) => ({ kind: "calendar", value: p.calendar ?? "default" }),
     },
-    "Create a new event in iCloud Calendar via CalDAV PUT.",
+    "Create a new event in iCloud Calendar via CalDAV PUT. start and end are UTC, in the form YYYYMMDDTHHMMSSZ (all-day and floating times are refused). summary, description, location and calendar may not contain a line break or other control character; uid, when given, is 1-200 of A-Z a-z 0-9 . _ @ -.",
     createArgs,
     async (parsedData) => {
       const parsed = { success: true as const, data: parsedData };
