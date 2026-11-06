@@ -4,7 +4,14 @@ import {
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
-import { ghFetch, ghQueryPath, ghRepoPath, setGhPaging } from "../../../shared/github-rest.ts";
+import {
+  ghFetch,
+  ghQueryPath,
+  ghRepoPath,
+  isSafeGitRef,
+  resolveCommitSha,
+  setGhPaging,
+} from "../../../shared/github-rest.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -35,6 +42,10 @@ export const GITHUB_TOOL_NAMES = [
   "github_ci_runs",
   "github_ci_run_get",
   "github_branch_delete",
+  "github_ref_get",
+  "github_branch_create",
+  "github_pr_create",
+  "github_pr_update",
   "github_tag_create",
   "github_commit_push",
 ] as const;
@@ -61,6 +72,11 @@ export function registerGithubTools(
   const registerGithubTool = makeRestToolRegistrar({ registrar: reg, ...githubRest });
   const registerRestWriteTool = makeRestWriteToolRegistrar({ registerWriteTool, ...githubRest });
 
+  const repoScope = (p: { owner: string; repo: string }): { kind: string; value: string } => ({
+    kind: "repo",
+    value: `${p.owner}/${p.repo}`,
+  });
+
   /**
    * The write-tool equivalent of `registerGithubTool`, routed through the write registrar.
    * `scopeTargetOf` is supplied here rather than per tool — every GitHub mutation is scoped to one
@@ -76,7 +92,7 @@ export function registerGithubTools(
   ): void {
     registerRestWriteTool(
       name,
-      { ...cfg, scopeTargetOf: (p) => ({ kind: "repo", value: `${p.owner}/${p.repo}` }) },
+      { ...cfg, scopeTargetOf: repoScope },
       description,
       schema,
       buildPath,
@@ -324,6 +340,119 @@ export function registerGithubTools(
         throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
       }
       return jsonResult({ ok: true, deleted: ref });
+    },
+  );
+
+  /** A ref the model names reaches a URL path, so every one passes `isSafeGitRef` at the schema. */
+  const gitRefSchema = z.string().min(1).max(255).refine(isSafeGitRef, "not a safe git ref name");
+
+  const githubRefGetSchema = repoSlugArgs.extend({ ref: gitRefSchema });
+
+  reg(
+    "github_ref_get",
+    "Resolve a branch, tag or commit to its commit SHA (a bare name is tried as a branch, then a tag; an annotated tag resolves to its commit). Returns {ref, kind: branch|tag|sha, sha}.",
+    githubRefGetSchema,
+    async (parsed) => {
+      const token = requireProcessEnv("GITHUB_PAT");
+      const { sha, kind } = await resolveCommitSha(token, parsed.owner, parsed.repo, parsed.ref);
+      return jsonResult({ ref: parsed.ref, kind, sha });
+    },
+  );
+
+  const githubBranchCreateSchema = repoSlugArgs.extend({
+    branch: gitRefSchema,
+    fromRef: gitRefSchema,
+    expectedSha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/i)
+      .optional(),
+  });
+
+  registerWriteTool(
+    "github_branch_create",
+    // A new ref is undone by github_branch_delete, so there is nothing to capture first.
+    { mutates: "github.branch.create", recoverable: true, scopeTargetOf: repoScope },
+    "Create a branch from a branch, tag or commit (fromRef). If expectedSha is given and fromRef now resolves to a different commit, nothing is created.",
+    githubBranchCreateSchema,
+    async (parsed) => {
+      const token = requireProcessEnv("GITHUB_PAT");
+      const { sha } = await resolveCommitSha(token, parsed.owner, parsed.repo, parsed.fromRef);
+      if (parsed.expectedSha !== undefined && parsed.expectedSha.toLowerCase() !== sha) {
+        throw new Error(`fromRef resolves to ${sha}, not the approved ${parsed.expectedSha}`);
+      }
+      const ref = `refs/heads/${parsed.branch}`;
+      const res = await ghFetch(
+        token,
+        `${ghRepoPath(parsed.owner, parsed.repo)}/git/refs`,
+        jsonInit("POST", { ref, sha }),
+      );
+      if (!res.ok) {
+        throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
+      }
+      return jsonResult({ ok: true, ref, sha, fromRef: parsed.fromRef });
+    },
+  );
+
+  const githubPrCreateSchema = repoSlugArgs.extend({
+    head: z.string().min(1).max(255),
+    base: z.string().min(1).max(255),
+    title: z.string().min(1).max(256),
+    body: z.string().max(65_000).optional(),
+    draft: z.boolean().optional(),
+  });
+
+  registerGithubWriteTool(
+    "github_pr_create",
+    { mutates: "github.pr.create", recoverable: true },
+    "Open a pull request from head (a branch, or user:branch for a fork) into base. Title and body are sent exactly as given.",
+    githubPrCreateSchema,
+    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/pulls`,
+    (parsed) =>
+      jsonInit("POST", {
+        head: parsed.head,
+        base: parsed.base,
+        title: parsed.title,
+        ...(parsed.body === undefined ? {} : { body: parsed.body }),
+        ...(parsed.draft === undefined ? {} : { draft: parsed.draft }),
+      }),
+  );
+
+  // A plain object, not a `.refine()`d one: the registrar passes `.shape` as the MCP inputSchema and a
+  // refined object has none. The at-least-one check is the handler's.
+  const githubPrUpdateSchema = githubPrNumberSchema.extend({
+    title: z.string().min(1).max(256).optional(),
+    body: z.string().max(65_000).optional(),
+    base: z.string().min(1).max(255).optional(),
+  });
+  const prPath = (parsed: { owner: string; repo: string; pullNumber: number }): string =>
+    `${ghRepoPath(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}`;
+
+  registerGithubWriteTool(
+    "github_pr_update",
+    {
+      mutates: "github.pr.update",
+      // An edit overwrites text; its inverse needs the old text, so capture it first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITHUB_PAT");
+        const res = await ghFetch(token, prPath(parsed));
+        const pr = res.json as { title?: unknown; body?: unknown; base?: { ref?: unknown } } | null;
+        if (!res.ok || pr === null) return { resolved: false, status: res.status };
+        return { title: pr.title, body: pr.body, base: pr.base?.ref };
+      },
+    },
+    "Edit a pull request's title, body or base branch (at least one). It never opens, closes or merges it.",
+    githubPrUpdateSchema,
+    prPath,
+    (parsed) => {
+      if (parsed.title === undefined && parsed.body === undefined && parsed.base === undefined) {
+        throw new Error("github_pr_update needs at least one of title, body, base");
+      }
+      return jsonInit("PATCH", {
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
+        ...(parsed.body === undefined ? {} : { body: parsed.body }),
+        ...(parsed.base === undefined ? {} : { base: parsed.base }),
+      });
     },
   );
 

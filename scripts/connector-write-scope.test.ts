@@ -294,6 +294,9 @@ const WRITES: Readonly<
       ["github_issue_labels_add", "github.issue.labels.add", GITHUB_REPO, "repo:acme/api"],
       ["github_issue_assignees_add", "github.issue.assignees.add", GITHUB_REPO, "repo:acme/api"],
       ["github_issue_state_set", "github.issue.state.set", GITHUB_REPO, "repo:acme/api"],
+      ["github_branch_create", "github.branch.create", GITHUB_REPO, "repo:acme/api"],
+      ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:acme/api"],
+      ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:acme/api"],
     ],
   },
   "github-actions": {
