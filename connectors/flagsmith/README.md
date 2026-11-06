@@ -73,7 +73,9 @@ published swagger, but Flagsmith's own repository calls them "deprecated" (PR 87
 feature state APIs"), the docs site documents only the `__future__` pair, and the v1 write needs a
 feature-state id looked up first. The path is built in one place (`apiFuture` in `src/tools.ts`), so
 a change is one edit. Flagsmith refuses the write while change requests are enabled for the
-environment; its message is returned as is.
+environment; its message is returned as is. Omitting `value` is intended to leave the stored value
+alone, but how the `__future__` PATCH merges a partial `environment_default` is unverified against a
+live server. The result carries `confirmed`, true only when the reply shows the requested `enabled`.
 
 Authentication: the state tools send the same `Authorization: Token <token>` header as the reads.
 The swagger lists that scheme (`tokenAuth`) on the `__future__` operations; the docs page shows

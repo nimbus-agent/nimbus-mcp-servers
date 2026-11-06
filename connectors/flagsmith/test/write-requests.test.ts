@@ -93,7 +93,7 @@ describe("flagsmith feature state (gateway mode)", () => {
     await withToken(async () => {
       expect(
         await tools.callJson("flagsmith_feature_state_set", { ...ARGS, enabled: false }),
-      ).toEqual({ ok: true, ...ARGS, enabled: false });
+      ).toEqual({ ok: true, confirmed: true, ...ARGS, enabled: false });
     });
     expect(`${stub.only.method} ${stub.only.url}`).toBe(`PATCH ${STATE_URL}`);
     expect(stub.only.headers["content-type"]).toBe("application/json");
@@ -148,6 +148,27 @@ describe("flagsmith feature state (gateway mode)", () => {
       ).rejects.toThrow();
     });
     expect(stub.calls).toEqual([]);
+  });
+
+  it("set reports confirmed:false when the reply echoes the opposite state or none", async () => {
+    for (const reply of [
+      '{"environment_default":{"enabled":false}}',
+      "{}",
+      '{"environment_default":{"enabled":"true"}}',
+    ]) {
+      serve(reply);
+      await withToken(async () => {
+        expect(
+          await tools.callJson("flagsmith_feature_state_set", { ...ARGS, enabled: true }),
+        ).toMatchObject({ ok: true, confirmed: false });
+      });
+    }
+  });
+
+  it("states the PATCH merge semantics as unverified in its description", () => {
+    expect(tools.get("flagsmith_feature_state_set").description).toMatch(
+      /unverified against a live server/,
+    );
   });
 
   it("quotes Flagsmith's refusal (change requests enabled)", async () => {

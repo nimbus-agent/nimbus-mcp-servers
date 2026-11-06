@@ -195,12 +195,12 @@ export function registerFlagsmithTools(
     "flagsmith_feature_state_set",
     {
       mutates: "flagsmith.feature.state.set",
-      // The previous state is captured first so the change can be put back by hand.
+      // The previous state is recorded in the audit pre-state; this tool does not restore it.
       recoverable: false,
       capturePreState: readFeatureState,
       scopeTargetOf: (p) => ({ kind: "flag", value: `${p.environmentKey}/${String(p.featureId)}` }),
     },
-    "Enable or disable a feature in ONE environment, optionally setting its typed value (`PATCH /api/__future__/environments/{environmentKey}/features/{featureId}/`, an EXPERIMENTAL Flagsmith endpoint that may change without notice). Omitting `value` leaves the value alone; segment and identity overrides are untouched. Flagsmith refuses it while change requests are enabled for the environment, with its own message.",
+    "Enable or disable a feature in ONE environment, optionally setting its typed value (`PATCH /api/__future__/environments/{environmentKey}/features/{featureId}/`, an EXPERIMENTAL Flagsmith endpoint that may change without notice). Omitting `value` is intended to leave the value alone (PATCH merge semantics are unverified against a live server); segment and identity overrides are untouched. Flagsmith refuses it while change requests are enabled for the environment, with its own message. The result carries `confirmed`: true only when the reply shows the requested `enabled`; false means the server accepted the write but its reply does not show the new state.",
     featureStateArgs.extend({ enabled: z.boolean(), value: valueSchema.optional() }),
     async (p) => {
       // Validated here, not with `.refine`: a refined schema loses `.shape` (the registrar needs it).
@@ -215,6 +215,9 @@ export function registerFlagsmithTools(
         ok: true,
         environmentKey: p.environmentKey,
         featureId: p.featureId,
+        // true only when the reply shows the state that was asked for; false means the server
+        // accepted the write but its reply does not show the new state.
+        confirmed: response?.environment_default?.enabled === p.enabled,
         enabled: response?.environment_default?.enabled,
       });
     },
