@@ -468,6 +468,8 @@ const WRITES: Readonly<
         { issueKey: "ENG-7", transitionId: "31" },
         "issue:ENG-7",
       ],
+      ["jira_ops_alert_acknowledge", "jira.ops.alert.acknowledge", { alertId: "A1" }, "alert:A1"],
+      ["jira_ops_alert_close", "jira.ops.alert.close", { alertId: "A1" }, "alert:A1"],
     ],
   },
   kubernetes: {

@@ -49,6 +49,122 @@ function plainToAdf(text: string): Record<string, unknown> {
   };
 }
 
+type JiraConfig = { baseUrl: string; email: string; token: string };
+type HttpText = { ok: boolean; status: number; text: string };
+
+/** Atlassian's API gateway for JSM Operations. The host is fixed: it is never taken from an argument. */
+const OPS_API_ROOT = "https://api.atlassian.com/jsm/ops/api";
+
+/** A cloud id is a UUID. It enters a URL path, so anything else is refused, not encoded. */
+const CLOUD_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+
+/** Discovered cloud ids, per site, for the life of the process. */
+const discoveredCloudIds = new Map<string, string>();
+
+/** Test seam: forget discovered cloud ids. */
+export function resetJiraCloudIdCacheForTests(): void {
+  discoveredCloudIds.clear();
+}
+
+function assertCloudId(value: unknown, source: string): string {
+  if (typeof value !== "string" || !CLOUD_ID_PATTERN.test(value)) {
+    throw new Error(
+      `${source} did not give a valid Jira cloud id; set JIRA_CLOUD_ID to the site's cloud id`,
+    );
+  }
+  return value;
+}
+
+/** A request is never allowed to follow a redirect: the credential goes only where it was aimed. */
+function refuseRedirect(what: string, res: HttpText): HttpText {
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`${what} answered ${String(res.status)} with a redirect; refused`);
+  }
+  return res;
+}
+
+/**
+ * The site's cloud id: `JIRA_CLOUD_ID` when set, else `GET {site}/_edge/tenant_info` once per
+ * process (Atlassian's documented lookup, sent with the same Basic header as every other Jira call,
+ * so the credential goes only to the host it already goes to). Fails closed: no id, no ops call.
+ */
+async function resolveCloudId(cfg: JiraConfig): Promise<string> {
+  const configured = process.env["JIRA_CLOUD_ID"]?.trim();
+  if (configured !== undefined && configured !== "") {
+    return assertCloudId(configured, "JIRA_CLOUD_ID");
+  }
+  const cached = discoveredCloudIds.get(cfg.baseUrl);
+  if (cached !== undefined) return cached;
+  const res = refuseRedirect(
+    "Jira tenant_info",
+    await jiraFetch(cfg.baseUrl, cfg.email, cfg.token, "/_edge/tenant_info", {
+      redirect: "manual",
+    }),
+  );
+  if (!res.ok) {
+    throw new Error(
+      `Jira tenant_info ${String(res.status)}: could not discover the cloud id; set JIRA_CLOUD_ID`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(res.text);
+  } catch {
+    throw new Error("Jira tenant_info was not JSON; set JIRA_CLOUD_ID to the site's cloud id");
+  }
+  const id = assertCloudId((parsed as { cloudId?: unknown } | null)?.cloudId, "Jira tenant_info");
+  discoveredCloudIds.set(cfg.baseUrl, id);
+  return id;
+}
+
+/** One JSM Operations request: `https://api.atlassian.com/jsm/ops/api/{cloudId}/v1{path}`. */
+async function opsFetch(cfg: JiraConfig, path: string, init?: RequestInit): Promise<HttpText> {
+  const cloudId = await resolveCloudId(cfg);
+  const res = await fetchAtlassianBasicAuthJsonText(
+    `${OPS_API_ROOT}/${cloudId}/v1${path}`,
+    cfg.email,
+    cfg.token,
+    { ...init, redirect: "manual" },
+  );
+  return refuseRedirect("Jira Operations", res);
+}
+
+/** Ids that reach a path: the documented alert id, and request ids, are plain tokens. */
+const opsIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
+
+const alertIdSchema = z.object({
+  alertId: z
+    .string()
+    .regex(opsIdPattern, "the alert id (not a tinyId or alias): letters, digits, '_' and '-'"),
+});
+
+/** What the audit record needs to understand an alert before it was acknowledged or closed. */
+async function alertPreState(parsed: { alertId: string }): Promise<Record<string, unknown>> {
+  const res = await opsFetch(requireJiraConfig(), `/alerts/${encodeURIComponent(parsed.alertId)}`);
+  if (!res.ok) {
+    throw new Error(`Jira Operations ${String(res.status)}: ${res.text.slice(0, 200)}`);
+  }
+  const alert = JSON.parse(res.text) as Record<string, unknown>;
+  return {
+    status: alert["status"],
+    acknowledged: alert["acknowledged"],
+    message: alert["message"],
+    priority: alert["priority"],
+  };
+}
+
+/** The 202 body of an async alert action, without claiming the action has happened. */
+function acceptedResult(res: HttpText): ReturnType<typeof jsonResult> {
+  if (!res.ok) {
+    throw new Error(`Jira Operations ${String(res.status)}: ${res.text.slice(0, 400)}`);
+  }
+  const body = (res.text === "" ? {} : JSON.parse(res.text)) as {
+    requestId?: unknown;
+    took?: unknown;
+  };
+  return jsonResult({ status: "accepted", requestId: body.requestId, took: body.took });
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const JIRA_TOOL_NAMES = [
   "jira_issue_list",
@@ -61,6 +177,11 @@ export const JIRA_TOOL_NAMES = [
   "jira_board_list",
   "jira_sprint_list",
   "jira_epic_list",
+  "jira_ops_alert_get",
+  "jira_ops_alert_list",
+  "jira_ops_alert_request_status",
+  "jira_ops_alert_acknowledge",
+  "jira_ops_alert_close",
 ] as const;
 
 export function registerJiraTools(
@@ -78,7 +199,7 @@ export function registerJiraTools(
   const registerWriteTool = createWriteToolRegistrar(server, {
     connector: "jira",
     scopeEnv: "NIMBUS_MCP_JIRA_WRITE_SCOPE",
-    scopeKinds: ["project", "issue"],
+    scopeKinds: ["project", "issue", "alert"],
   });
 
   const jiraIssueListSchema = z.object({
@@ -393,6 +514,108 @@ export function registerJiraTools(
       return mcpJsonResultFromTextIfOk("Jira", res, {
         jsonParseErrorMessage: "Jira: invalid JSON from epic search",
       });
+    },
+  );
+
+  reg(
+    "jira_ops_alert_get",
+    "Get a Jira Service Management Operations alert by its id (GET /alerts/{id} on the JSM Operations API): status, acknowledged, message, priority, responders. Takes the alert id, not a tinyId or alias.",
+    alertIdSchema,
+    async (parsed) => {
+      const res = await opsFetch(
+        requireJiraConfig(),
+        `/alerts/${encodeURIComponent(parsed.alertId)}`,
+      );
+      return mcpJsonResultFromTextIfOk("Jira Operations", res, {
+        jsonParseErrorMessage: "Jira Operations: invalid JSON from alert get",
+      });
+    },
+  );
+
+  reg(
+    "jira_ops_alert_list",
+    "List Jira Service Management Operations alerts (GET /alerts). `query` is the Operations search query; `size` 1-100 (default 25); offset plus size must stay under 20000.",
+    z.object({
+      query: z.string().min(1).max(1000).optional(),
+      size: z.number().int().min(1).max(100).optional(),
+      offset: z.number().int().min(0).optional(),
+      sort: z.enum(["createdAt", "updatedAt"]).optional(),
+      order: z.enum(["asc", "desc"]).optional(),
+      from: z.string().min(1).max(64).optional(),
+      to: z.string().min(1).max(64).optional(),
+    }),
+    async (parsed) => {
+      const size = parsed.size ?? 25;
+      const offset = parsed.offset ?? 0;
+      if (offset + size >= 20_000) {
+        throw new Error("offset plus size must be lower than 20000");
+      }
+      const search = new URLSearchParams({ size: String(size), offset: String(offset) });
+      for (const key of ["query", "sort", "order", "from", "to"] as const) {
+        const value = parsed[key];
+        if (value !== undefined) search.set(key, value);
+      }
+      const res = await opsFetch(requireJiraConfig(), `/alerts?${search.toString()}`);
+      return mcpJsonResultFromTextIfOk("Jira Operations", res, {
+        jsonParseErrorMessage: "Jira Operations: invalid JSON from alert list",
+      });
+    },
+  );
+
+  reg(
+    "jira_ops_alert_request_status",
+    "Check an asynchronous alert action (GET /alerts/requests/{id}) with the requestId that jira_ops_alert_acknowledge or jira_ops_alert_close returned: whether it was processed and succeeded.",
+    z.object({ requestId: z.string().regex(opsIdPattern, "letters, digits, '_' and '-' only") }),
+    async (parsed) => {
+      const res = await opsFetch(
+        requireJiraConfig(),
+        `/alerts/requests/${encodeURIComponent(parsed.requestId)}`,
+      );
+      return mcpJsonResultFromTextIfOk("Jira Operations", res, {
+        jsonParseErrorMessage: "Jira Operations: invalid JSON from request status",
+      });
+    },
+  );
+
+  registerWriteTool(
+    "jira_ops_alert_acknowledge",
+    {
+      mutates: "jira.ops.alert.acknowledge",
+      // No unacknowledge tool is built, so the alert's state before is captured instead.
+      recoverable: false,
+      capturePreState: alertPreState,
+      scopeTargetOf: (p) => ({ kind: "alert", value: p.alertId }),
+    },
+    "Acknowledge a Jira Service Management Operations alert (POST /alerts/{id}/acknowledge; the API takes no body). The action is asynchronous: this returns {status: accepted, requestId}, not completion; check it with jira_ops_alert_request_status. Takes the alert id, not a tinyId or alias.",
+    alertIdSchema,
+    async (parsed) => {
+      const res = await opsFetch(
+        requireJiraConfig(),
+        `/alerts/${encodeURIComponent(parsed.alertId)}/acknowledge`,
+        { method: "POST" },
+      );
+      return acceptedResult(res);
+    },
+  );
+
+  registerWriteTool(
+    "jira_ops_alert_close",
+    {
+      mutates: "jira.ops.alert.close",
+      // The Operations API has no reopen, so the alert's state before is captured.
+      recoverable: false,
+      capturePreState: alertPreState,
+      scopeTargetOf: (p) => ({ kind: "alert", value: p.alertId }),
+    },
+    "Close a Jira Service Management Operations alert (POST /alerts/{id}/close; the API takes no body). It cannot be reopened through this API. The action is asynchronous: this returns {status: accepted, requestId}, not completion. To resolve an incident use jira_issue_transition; incidents are Jira issues.",
+    alertIdSchema,
+    async (parsed) => {
+      const res = await opsFetch(
+        requireJiraConfig(),
+        `/alerts/${encodeURIComponent(parsed.alertId)}/close`,
+        { method: "POST" },
+      );
+      return acceptedResult(res);
     },
   );
 }
