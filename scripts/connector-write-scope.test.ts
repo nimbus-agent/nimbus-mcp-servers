@@ -413,6 +413,7 @@ const WRITES: Readonly<
       ],
       ["gdrive_file_create", "google_drive.file.create", {}, "folder:root"],
       ["gdrive_file_move", "google_drive.file.move", { fileId: "file-1" }, "file:file-1"],
+      ["gdrive_file_trash", "google_drive.file.trash", { fileId: "file-1" }, "file:file-1"],
       ["gdrive_file_rename", "google_drive.file.rename", { fileId: "file-1" }, "file:file-1"],
     ],
   },
@@ -613,7 +614,12 @@ const WRITES: Readonly<
         "incident:P1",
       ],
       ["pd_incident_resolve", "pagerduty.incident.resolve", { incidentId: "P1" }, "incident:P1"],
-      ["pd_incident_escalate", "pagerduty.incident.escalate", { incidentId: "P1" }, "incident:P1"],
+      [
+        "pd_incident_escalate",
+        "pagerduty.incident.escalate",
+        { incidentId: "P1", escalationLevel: 2 },
+        "incident:P1",
+      ],
     ],
   },
   powerbi: {

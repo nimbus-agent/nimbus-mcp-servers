@@ -8,11 +8,7 @@ import {
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
-import {
-  ESCALATE_NOT_SUPPORTED,
-  PAGERDUTY_TOOL_NAMES,
-  registerPagerdutyTools,
-} from "../src/tools.ts";
+import { PAGERDUTY_TOOL_NAMES, registerPagerdutyTools } from "../src/tools.ts";
 
 const API = "https://api.pagerduty.com";
 
@@ -130,12 +126,31 @@ describe("pagerduty tools", () => {
     });
   }
 
-  it("incident_escalate always refuses NOT_SUPPORTED, before any request", async () => {
+  it("incident_escalate PUTs escalation_level to /incidents/{id} with the From header", async () => {
+    const stub = serve('{"incident":{"id":"P1"}}');
+    await configured(async () => {
+      await tools.call("pd_incident_escalate", { incidentId: "P1", escalationLevel: 2 });
+    });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`PUT ${API}/incidents/P1`);
+    expect(stub.only.headers["from"]).toBe("oncall@example.com");
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({
+      incident: { type: "incident_reference", escalation_level: 2 },
+    });
+  });
+
+  it("incident_escalate refuses a missing or out-of-range level before any request", async () => {
     const stub = serve("{}");
     await configured(async () => {
-      await expect(tools.call("pd_incident_escalate", { incidentId: "P1" })).rejects.toThrow(
-        ESCALATE_NOT_SUPPORTED,
-      );
+      for (const extra of [
+        {},
+        { escalationLevel: 0 },
+        { escalationLevel: 21 },
+        { escalationLevel: 1.5 },
+      ]) {
+        await expect(
+          tools.call("pd_incident_escalate", { incidentId: "P1", ...extra }),
+        ).rejects.toThrow();
+      }
     });
     expect(stub.calls).toEqual([]);
   });

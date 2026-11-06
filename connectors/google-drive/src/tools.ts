@@ -470,9 +470,17 @@ export function registerGoogleDriveTools(
     fileId: z.string().min(1),
   });
 
-  registerDriveTool(
+  // A write, not a read: it was registered as a read before 0.6.0, so outside the gateway it had
+  // no consent gate (the gateway already classified it as `google_drive.file.trash`).
+  registerDriveWriteTool(
     "gdrive_file_trash",
-    "Move a Drive file or folder to trash (recoverable). Requires Gateway HITL file.delete.",
+    {
+      mutates: "google_drive.file.trash",
+      // Drive keeps a trashed item for 30 days and it can be restored from the trash.
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "file", value: p.fileId }),
+    },
+    "Move a Drive file or folder to trash (recoverable from the Drive trash for 30 days). Requires Gateway HITL google_drive.file.trash.",
     gdriveFileTrashArgs,
     (args, token) => drivePatchJson(token, args.fileId, { trashed: true }),
   );

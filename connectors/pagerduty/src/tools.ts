@@ -56,9 +56,9 @@ const incidentIdSchema = z.string().regex(/^[A-Za-z0-9]{1,64}$/);
  * https://docs.pagerduty.com/developer/api/reference/rest/incidents/update-incident documents
  * (retrieved 2026-11-06). There is no `/acknowledge` or `/resolve` sub-endpoint.
  */
-async function pdIncidentStatusPut(
+async function pdIncidentPut(
   actionLabel: string,
-  status: "acknowledged" | "resolved",
+  change: { readonly status: "acknowledged" | "resolved" } | { readonly escalation_level: number },
   incidentId: string,
 ) {
   const from = requirePdFromEmail();
@@ -66,7 +66,7 @@ async function pdIncidentStatusPut(
   const res = await pdFetch(token, `/incidents/${encodeURIComponent(incidentId)}`, {
     method: "PUT",
     headers: { From: from },
-    body: JSON.stringify({ incident: { type: "incident_reference", status } }),
+    body: JSON.stringify({ incident: { type: "incident_reference", ...change } }),
   });
   if (!res.ok) {
     throw new Error(`PagerDuty ${actionLabel} ${String(res.status)}: ${res.text.slice(0, 400)}`);
@@ -91,10 +91,6 @@ async function readIncidentPreState(incidentId: string): Promise<Record<string, 
     escalation_policy: inc["escalation_policy"],
   };
 }
-
-/** Fixed refusal; see the pd_incident_escalate description. */
-export const ESCALATE_NOT_SUPPORTED =
-  "NOT_SUPPORTED: pd_incident_escalate is not supported; PagerDuty documents no escalation field on PUT /incidents/{id}";
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const PAGERDUTY_TOOL_NAMES = [
@@ -173,7 +169,7 @@ export function registerPagerdutyTools(
     },
     "Acknowledge an incident (`PUT /incidents/{id}` with status acknowledged). Needs PAGERDUTY_FROM_EMAIL, the email of a valid PagerDuty user.",
     incidentArgs,
-    async (p) => pdIncidentStatusPut("acknowledge", "acknowledged", p.incidentId),
+    async (p) => pdIncidentPut("acknowledge", { status: "acknowledged" }, p.incidentId),
   );
 
   registerWriteTool(
@@ -186,7 +182,7 @@ export function registerPagerdutyTools(
     },
     "Resolve an incident (`PUT /incidents/{id}` with status resolved); it cannot be reopened through these tools. Needs PAGERDUTY_FROM_EMAIL, the email of a valid PagerDuty user.",
     incidentArgs,
-    async (p) => pdIncidentStatusPut("resolve", "resolved", p.incidentId),
+    async (p) => pdIncidentPut("resolve", { status: "resolved" }, p.incidentId),
   );
 
   registerWriteTool(
@@ -194,12 +190,14 @@ export function registerPagerdutyTools(
     {
       mutates: "pagerduty.incident.escalate",
       recoverable: false,
-      // Nothing will be sent, so there is nothing to capture.
-      capturePreState: () => Promise.resolve({}),
+      capturePreState: (p) => readIncidentPreState(p.incidentId),
       scopeTargetOf: incidentScope,
     },
-    "NOT SUPPORTED: always refuses before any request. PagerDuty's update-incident reference documents no escalation field in the request body, so there is nothing safe to send.",
-    incidentArgs,
-    () => Promise.reject(new Error(ESCALATE_NOT_SUPPORTED)),
+    // `escalation_level` ("Escalate the incident to this level in the escalation policy.", an
+    // integer) is a property of the `incident` body of PUT /incidents/{id} in PagerDuty's OpenAPI
+    // schema (github.com/PagerDuty/api-schema, reference/REST/openapiv3.json, retrieved 2026-11-06).
+    "Escalate an incident to the given level of its escalation policy (`PUT /incidents/{id}` with `escalation_level`); it cannot be de-escalated through these tools. Needs PAGERDUTY_FROM_EMAIL, the email of a valid PagerDuty user.",
+    incidentArgs.extend({ escalationLevel: z.number().int().min(1).max(20) }),
+    async (p) => pdIncidentPut("escalate", { escalation_level: p.escalationLevel }, p.incidentId),
   );
 }

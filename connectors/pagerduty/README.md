@@ -25,7 +25,7 @@ nimbus ask "Summarize my recent activity in Pagerduty"
 ## Write tools
 
 - `pd_incident_acknowledge` / `pd_incident_resolve` send `PUT /incidents/{id}` with `{"incident":{"type":"incident_reference","status":"acknowledged"|"resolved"}}` ([reference](https://docs.pagerduty.com/developer/api/reference/rest/incidents/update-incident)). Neither can be undone through these tools; the incident's prior state is recorded in the audit.
-- `pd_incident_escalate` is **not supported**: the update-incident reference documents no escalation field in its request body, so the tool always refuses (`NOT_SUPPORTED`) before any request.
+- `pd_incident_escalate` sends `PUT /incidents/{id}` with `{"incident":{"type":"incident_reference","escalation_level":<n>}}` (a required `escalationLevel`, 1-20). The field is documented in PagerDuty's OpenAPI schema ([PagerDuty/api-schema](https://github.com/PagerDuty/api-schema), `reference/REST/openapiv3.json`, retrieved 2026-11-06); it cannot be de-escalated through these tools.
 
 ## See also
 
