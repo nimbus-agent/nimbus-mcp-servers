@@ -8,7 +8,7 @@ import {
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
-import { PAGERDUTY_TOOL_NAMES, registerPagerdutyTools } from "../src/tools.ts";
+import { isEmailShape, PAGERDUTY_TOOL_NAMES, registerPagerdutyTools } from "../src/tools.ts";
 
 const API = "https://api.pagerduty.com";
 
@@ -95,7 +95,18 @@ describe("pagerduty tools", () => {
 
     it(`incident_${action} refuses a missing or malformed From email before any request`, async () => {
       const stub = serve("{}");
-      for (const from of [undefined, "", "not-an-email", "a b@c.d"]) {
+      for (const from of [
+        undefined,
+        "",
+        "not-an-email",
+        "a b@c.d",
+        "a@@b.co",
+        "@b.co",
+        "a@.co",
+        "a@b.",
+        "a@b",
+        "a@b.co\n",
+      ]) {
         await withEnv({ PAGERDUTY_API_TOKEN: "pd-token", PAGERDUTY_FROM_EMAIL: from }, async () => {
           await expect(tools.call(`pd_incident_${action}`, { incidentId: "P1" })).rejects.toThrow(
             /PAGERDUTY_FROM_EMAIL/,
@@ -184,5 +195,28 @@ describe("pagerduty tools", () => {
       );
     });
     expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("isEmailShape", () => {
+  it("accepts ordinary addresses and refuses malformed ones", () => {
+    expect(isEmailShape("oncall@example.com")).toBe(true);
+    expect(isEmailShape("a@b.co")).toBe(true);
+    for (const bad of ["", "a@b", "a@@b.co", "@b.co", "a@.co", "a@b.", "a b@c.d", "a@b.co\n"]) {
+      expect(isEmailShape(bad)).toBe(false);
+    }
+    expect(isEmailShape(`${"a".repeat(250)}@b.co`)).toBe(false);
+  });
+
+  it("is linear on adversarial input", () => {
+    const started = performance.now();
+    for (const evil of [
+      `${"a@".repeat(50_000)}`,
+      `a@${".".repeat(100_000)}`,
+      "a".repeat(100_000),
+    ]) {
+      expect(isEmailShape(evil)).toBe(false);
+    }
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });

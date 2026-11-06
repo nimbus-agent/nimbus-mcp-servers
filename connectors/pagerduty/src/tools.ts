@@ -32,7 +32,25 @@ async function pdFetch(token: string, path: string, init?: RequestInit): Promise
   return toRestFetchResult(res);
 }
 
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * A linear-time email shape check (no regex, so no backtracking): at most 254 characters, no
+ * whitespace or control characters, exactly one `@`, a non-empty local part, and a domain that
+ * contains a `.` that is neither its first nor its last character.
+ */
+export function isEmailShape(email: string): boolean {
+  if (email.length === 0 || email.length > 254) return false;
+  for (let i = 0; i < email.length; i++) {
+    const c = email.charCodeAt(i);
+    if (c <= 0x20 || (c >= 0x7f && c <= 0xa0) || c === 0x2028 || c === 0x2029 || c === 0xfeff) {
+      return false;
+    }
+  }
+  const at = email.indexOf("@");
+  if (at < 1 || at !== email.lastIndexOf("@")) return false;
+  const domain = email.slice(at + 1);
+  // A "." strictly inside the domain: neither its first nor its last character.
+  return domain.length >= 3 && domain.slice(1, -1).includes(".");
+}
 
 /**
  * The `From` header PagerDuty requires on an incident update: "The email address of a valid user
@@ -41,7 +59,7 @@ const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  */
 function requirePdFromEmail(): string {
   const email = requireProcessEnv("PAGERDUTY_FROM_EMAIL");
-  if (!EMAIL_SHAPE.test(email)) {
+  if (!isEmailShape(email)) {
     throw new Error("PAGERDUTY_FROM_EMAIL is not an email address");
   }
   return email;
