@@ -52,6 +52,7 @@ import { registerImapTools } from "../connectors/imap/src/tools.ts";
 import { registerJenkinsTools } from "../connectors/jenkins/src/tools.ts";
 import { registerJiraTools } from "../connectors/jira/src/tools.ts";
 import { registerKubernetesTools } from "../connectors/kubernetes/src/tools.ts";
+import { registerLaunchdarklyTools } from "../connectors/launchdarkly/src/tools.ts";
 import { registerLinearTools } from "../connectors/linear/src/tools.ts";
 import { registerLookerTools } from "../connectors/looker/src/server.ts";
 import { registerMlflowTools } from "../connectors/mlflow/src/server.ts";
@@ -103,6 +104,9 @@ type WriteCase = readonly [
   target: string,
 ];
 
+/** Three distinct keys, so a scope built from the wrong two of them fails. */
+const LD_FLAG = { projectKey: "proj-x", environmentKey: "env-y", flagKey: "flag-z" };
+const LD_TARGET = "flag:proj-x/env-y/flag-z";
 const MAIL_TO = { to: "ada@example.com" };
 /**
  * A repo no tool source may contain as a literal: a scope target hard-coded to a "typical" repo
@@ -468,6 +472,18 @@ const WRITES: Readonly<
       ["k8s_pod_delete", "kubernetes.pod.delete", {}, "namespace:default"],
       ["k8s_rollout_restart", "kubernetes.rollout.restart", { namespace: "web" }, "namespace:web"],
       ["k8s_rollout_restart", "kubernetes.rollout.restart", {}, "namespace:default"],
+    ],
+  },
+  launchdarkly: {
+    register: registerLaunchdarklyTools,
+    cases: [
+      ["launchdarkly_flag_toggle", "launchdarkly.flag.toggle", LD_FLAG, LD_TARGET],
+      [
+        "launchdarkly_flag_rollout_set",
+        "launchdarkly.flag.rollout.set",
+        { ...LD_FLAG, weights: [{ variationId: "v1", percent: 100 }] },
+        LD_TARGET,
+      ],
     ],
   },
   linear: {

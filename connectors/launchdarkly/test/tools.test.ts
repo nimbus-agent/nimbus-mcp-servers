@@ -7,6 +7,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { LAUNCHDARKLY_TOOL_NAMES, registerLaunchdarklyTools } from "../src/tools.ts";
 
 const API = "https://app.launchdarkly.com/api/v2";
@@ -37,10 +38,13 @@ function configured(fn: () => Promise<void>): Promise<void> {
 }
 
 beforeEach(() => {
+  resetConnectorModeForTests();
+  setConnectorMode("gateway");
   tools = captureTools(registerLaunchdarklyTools);
 });
 
 afterEach(() => {
+  resetConnectorModeForTests();
   http?.restore();
   http = undefined;
 });
