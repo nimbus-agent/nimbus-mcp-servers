@@ -5,6 +5,8 @@ import {
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
 import { optionalBaseUrl } from "../../../shared/env-json-api.ts";
+import { isSafeGitRef } from "../../../shared/github-rest.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -20,6 +22,14 @@ import {
   toRestFetchResult,
 } from "../../../shared/rest-tool-kit.ts";
 
+/**
+ * A project reference that reaches a URL path: a numeric id, or `/`-separated segments of
+ * `[A-Za-z0-9._-]`, none of them `.` or `..` (a URL parser collapses those out of the path).
+ */
+function isSafeProjectPath(p: string): boolean {
+  return p.split("/").every((seg) => /^[A-Za-z0-9._-]+$/.test(seg) && seg !== "." && seg !== "..");
+}
+
 function apiBase(): string {
   return optionalBaseUrl("GITLAB_API_BASE_URL", "https://gitlab.com/api/v4");
 }
@@ -33,10 +43,13 @@ async function glFetch(token: string, path: string, init?: RequestInit): Promise
     init?.headers === undefined
       ? baseHeaders
       : { ...baseHeaders, ...(init.headers as Record<string, string>) };
-  const res = await fetch(url, {
-    ...init,
-    headers: mergedHeaders,
-  });
+  // guardedFetch: the PRIVATE-TOKEN header must never follow a redirect to another origin.
+  const res = await guardedFetch(
+    "GitLab",
+    url,
+    { ...init, headers: mergedHeaders },
+    { requireSecureBase: false },
+  );
   return toRestFetchResult(res);
 }
 
@@ -113,7 +126,12 @@ async function fetchJobTrace(parsed: {
   const token = requireProcessEnv("GITLAB_PAT");
   const enc = encodeURIComponent(parsed.projectPath);
   const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
-  const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+  const res = await guardedFetch(
+    "GitLab",
+    url,
+    { headers: { "PRIVATE-TOKEN": token } },
+    { requireSecureBase: false },
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
@@ -135,6 +153,9 @@ export const GITLAB_TOOL_NAMES = [
   "gitlab_issue_labels_add",
   "gitlab_issue_assignees_add",
   "gitlab_issue_state_set",
+  "gitlab_branch_create",
+  "gitlab_mr_create",
+  "gitlab_mr_update",
   "gitlab_pipeline_list",
   "gitlab_pipeline_get",
   "gitlab_pipeline_jobs_get",
@@ -197,7 +218,7 @@ export function registerGitlabTools(
   const projectPathArg = z.object({
     projectPath: z
       .string()
-      .min(1)
+      .refine(isSafeProjectPath, "not a valid project path or numeric id")
       .describe("URL-encoded path or numeric project id, e.g. group/repo"),
   });
 
@@ -244,11 +265,14 @@ export function registerGitlabTools(
       `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests/${String(parsed.mergeRequestIid)}`,
   );
 
+  const FULL_SHA = /^[0-9a-f]{40}$/i;
+
   const gitlabMrMergeSchema = projectPathArg.extend({
     mergeRequestIid: z.number().int().min(1),
     mergeCommitMessage: z.string().max(10_000).optional(),
     squash: z.boolean().optional(),
     shouldRemoveSourceBranch: z.boolean().optional(),
+    sha: z.string().regex(FULL_SHA, "a full 40-hex commit sha").optional(),
   });
 
   registerGitlabWriteTool(
@@ -257,7 +281,7 @@ export function registerGitlabTools(
       mutates: "gitlab.mr.merge",
       recoverable: true,
     },
-    "Merge a merge request.",
+    "Merge a merge request. If `sha` (40 hex) is given it is sent as the API's `sha` parameter, and GitLab fails the merge when the source branch head is no longer that commit (https://docs.gitlab.com/api/merge_requests/#merge-a-merge-request).",
     gitlabMrMergeSchema,
     (parsed) =>
       `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests/${String(parsed.mergeRequestIid)}/merge`,
@@ -271,6 +295,9 @@ export function registerGitlabTools(
       }
       if (parsed.shouldRemoveSourceBranch !== undefined) {
         body["should_remove_source_branch"] = parsed.shouldRemoveSourceBranch;
+      }
+      if (parsed.sha !== undefined) {
+        body["sha"] = parsed.sha;
       }
       return {
         method: "PUT",
@@ -388,18 +415,23 @@ export function registerGitlabTools(
       // header), so this one request bypasses glFetch. Never the private_token query parameter:
       // a token in a URL is logged.
       const res = await toRestFetchResult(
-        await fetch(graphqlUrl(), {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: SET_ASSIGNEES_APPEND,
-            variables: {
-              projectPath: parsed.projectPath,
-              iid: String(parsed.issueIid),
-              assigneeUsernames: parsed.assigneeUsernames,
-            },
-          }),
-        }),
+        await guardedFetch(
+          "GitLab",
+          graphqlUrl(),
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: SET_ASSIGNEES_APPEND,
+              variables: {
+                projectPath: parsed.projectPath,
+                iid: String(parsed.issueIid),
+                assigneeUsernames: parsed.assigneeUsernames,
+              },
+            }),
+          },
+          { requireSecureBase: false },
+        ),
       );
       if (!res.ok) {
         throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);
@@ -419,6 +451,141 @@ export function registerGitlabTools(
     gitlabIssueGetSchema.extend({ stateEvent: z.enum(["close", "reopen"]) }),
     issuePath,
     (parsed) => jsonBody("PUT", { state_event: parsed.stateEvent }),
+  );
+
+  /**
+   * A branch or ref name placed in a URL and sent to GitLab: the same rule as GitHub's
+   * (`isSafeGitRef`, ASCII only, so no format, control or surrogate character can pass).
+   */
+  const gitlabRefSchema = z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(isSafeGitRef, "not a valid branch or ref name");
+
+  /**
+   * A branch name that goes in a JSON body: GitLab's own rules apply, but a format (invisible or
+   * bidi), control or lone-surrogate character is refused, so an approval prompt shows what is sent.
+   */
+  const branchNameSchema = z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(
+      (v) => !/[\p{Cf}\p{Cc}\p{Cs}]/u.test(v),
+      "branch name has an invisible or control character",
+    );
+
+  registerWriteTool(
+    "gitlab_branch_create",
+    // A new branch is undone by deleting it, so nothing needs capturing first.
+    {
+      mutates: "gitlab.branch.create",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
+    },
+    "Create a branch from a branch, tag or commit (fromRef). If expectedSha (40 hex) is given, fromRef is first resolved to a commit: when that commit is not expectedSha nothing is created, otherwise the branch is created from exactly that commit.",
+    projectPathArg.extend({
+      branch: gitlabRefSchema,
+      fromRef: gitlabRefSchema,
+      expectedSha: z.string().regex(FULL_SHA).optional(),
+    }),
+    async (parsed) => {
+      const token = requireProcessEnv("GITLAB_PAT");
+      const project = encodeURIComponent(parsed.projectPath);
+      let ref = parsed.fromRef;
+      if (parsed.expectedSha !== undefined) {
+        // https://docs.gitlab.com/api/commits/#get-a-single-commit — `sha` is a hash or a branch or
+        // tag name; the response's `id` is the full commit hash.
+        const commit = await glFetch(
+          token,
+          `/projects/${project}/repository/commits/${encodeURIComponent(parsed.fromRef)}`,
+        );
+        const id = (commit.json as { id?: unknown } | null)?.id;
+        if (!commit.ok || typeof id !== "string" || !FULL_SHA.test(id)) {
+          throw new Error(`GitLab ${String(commit.status)}: ${commit.text.slice(0, 300)}`);
+        }
+        if (id.toLowerCase() !== parsed.expectedSha.toLowerCase()) {
+          throw new Error(`fromRef resolves to ${id}, not the approved ${parsed.expectedSha}`);
+        }
+        ref = id.toLowerCase();
+      }
+      const res = await glFetch(
+        token,
+        listUrl(`/projects/${project}/repository/branches`, (q) => {
+          q.set("branch", parsed.branch);
+          q.set("ref", ref);
+        }),
+        { method: "POST" },
+      );
+      return mcpJsonResultIfOk("GitLab", res);
+    },
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_mr_create",
+    { mutates: "gitlab.mr.create", recoverable: true },
+    "Open a merge request from sourceBranch into targetBranch. Title and description are sent exactly as given.",
+    projectPathArg.extend({
+      sourceBranch: branchNameSchema,
+      targetBranch: branchNameSchema,
+      title: z.string().min(1).max(255),
+      description: z.string().max(65_000).optional(),
+    }),
+    (parsed) => `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests`,
+    (parsed) =>
+      jsonBody("POST", {
+        source_branch: parsed.sourceBranch,
+        target_branch: parsed.targetBranch,
+        title: parsed.title,
+        ...(parsed.description === undefined ? {} : { description: parsed.description }),
+      }),
+  );
+
+  // A plain object, not a `.refine()`d one: the registrar passes `.shape` as the MCP inputSchema and a
+  // refined object has none. The at-least-one check is the handler's.
+  const mrPath = (p: { projectPath: string; mergeRequestIid: number }): string =>
+    `/projects/${encodeURIComponent(p.projectPath)}/merge_requests/${String(p.mergeRequestIid)}`;
+
+  registerGitlabWriteTool(
+    "gitlab_mr_update",
+    {
+      mutates: "gitlab.mr.update",
+      // An edit overwrites text; its inverse needs the old text, so capture it first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITLAB_PAT");
+        const res = await glFetch(token, mrPath(parsed));
+        const mr = res.json as {
+          title?: unknown;
+          description?: unknown;
+          target_branch?: unknown;
+        } | null;
+        if (!res.ok || mr === null) return { resolved: false, status: res.status };
+        return { title: mr.title, description: mr.description, target_branch: mr.target_branch };
+      },
+    },
+    "Edit a merge request's title, description or target branch (at least one). It never closes, reopens or merges it.",
+    gitlabMrGetSchema.extend({
+      title: z.string().min(1).max(255).optional(),
+      description: z.string().max(65_000).optional(),
+      targetBranch: branchNameSchema.optional(),
+    }),
+    mrPath,
+    (parsed) => {
+      if (
+        parsed.title === undefined &&
+        parsed.description === undefined &&
+        parsed.targetBranch === undefined
+      ) {
+        throw new Error("gitlab_mr_update needs at least one of title, description, targetBranch");
+      }
+      return jsonBody("PUT", {
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
+        ...(parsed.description === undefined ? {} : { description: parsed.description }),
+        ...(parsed.targetBranch === undefined ? {} : { target_branch: parsed.targetBranch }),
+      });
+    },
   );
 
   const gitlabPipelineListSchema = projectPathArg.extend({

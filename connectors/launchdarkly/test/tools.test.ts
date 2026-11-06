@@ -7,6 +7,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { LAUNCHDARKLY_TOOL_NAMES, registerLaunchdarklyTools } from "../src/tools.ts";
 
 const API = "https://app.launchdarkly.com/api/v2";
@@ -37,10 +38,13 @@ function configured(fn: () => Promise<void>): Promise<void> {
 }
 
 beforeEach(() => {
+  resetConnectorModeForTests();
+  setConnectorMode("gateway");
   tools = captureTools(registerLaunchdarklyTools);
 });
 
 afterEach(() => {
+  resetConnectorModeForTests();
   http?.restore();
   http = undefined;
 });
@@ -81,6 +85,25 @@ describe("launchdarkly tools", () => {
       ).toEqual({ key: "new-checkout" });
     });
     expect(stub.only.url).toBe(`${API}/flags/web/new%2Fcheckout`);
+  });
+
+  it("the read tools refuse a '.' or '..' key before any request", async () => {
+    const stub = serve("{}");
+    await configured(async () => {
+      for (const bad of [".", ".."]) {
+        await expect(tools.call("launchdarkly_list", { projectKey: bad })).rejects.toThrow();
+        await expect(
+          tools.call("launchdarkly_get", { projectKey: "web", flagKey: bad }),
+        ).rejects.toThrow();
+        await expect(
+          tools.call("launchdarkly_get", { projectKey: bad, flagKey: "x" }),
+        ).rejects.toThrow();
+        await expect(
+          tools.call("launchdarkly_search", { projectKey: bad, query: "x" }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
   });
 
   it("talks to the configured base URL, keeping it as given", async () => {

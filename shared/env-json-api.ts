@@ -38,6 +38,7 @@
  * fail with "X_TOKEN is not set" on the tool call rather than at startup.
  */
 
+import { guardedFetch } from "./guarded-fetch.ts";
 import { stripTrailingSlashes } from "./strip-trailing-slashes.ts";
 
 /** Body-snippet length in the thrown error. The value every connector used. */
@@ -156,7 +157,25 @@ function sendFor(
   const doFetch = config.fetch ?? ((url, init) => fetch(url, init));
   return async (path, init, errorPrefix) => {
     const root = typeof base === "string" ? base : base();
-    const res = await doFetch(`${root}${path}`, init(headers()));
+    // A credential must go only where the base names, and a runtime follows a 3xx by default
+    // (re-sending a custom header such as LaunchDarkly's bare Authorization or Flagsmith's Token
+    // to whatever Location says). So a mutation's 3xx is refused outright, and a GET follows only
+    // a same-origin Location or the same host's http -> https upgrade, at most 3 hops, each hop asked for manually.
+    const reqInit = init(headers());
+    const url = `${root}${path}`;
+    const method = (reqInit.method ?? "GET").toUpperCase();
+    const res =
+      method === "GET" || method === "HEAD"
+        ? await guardedFetch(errorPrefix, url, reqInit, {
+            fetch: doFetch,
+            requireSecureBase: false,
+          })
+        : await doFetch(url, { ...reqInit, redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(
+        `${errorPrefix}: the server answered with a redirect (${String(res.status)}); the write may or may not have been applied`,
+      );
+    }
     const text = await res.text();
     if (!res.ok) {
       throw new Error(`${errorPrefix} ${String(res.status)}: ${text.slice(0, snippetMax)}`);
@@ -180,6 +199,41 @@ export function createJsonGetter(config: JsonApiConfig): (path: string) => Promi
 }
 
 /**
+ * A `(method, path, body, extraHeaders?) => Promise<unknown>` JSON client for any mutating verb
+ * (PATCH, PUT, DELETE, POST). `Content-Type: application/json` is the default and `extraHeaders`
+ * override it key for key (LaunchDarkly's semantic patch needs `application/json;
+ * domain-model=launchdarkly.semanticpatch`). Resolves to the parsed response, `{}` when empty.
+ *
+ * Throws `"<errorPrefix> <status>: <body snippet>"`; the prefix defaults to
+ * `"<label> <method> <path>"` and is taken explicitly so {@link createJsonPoster} keeps its own
+ * `"<label> <path>"` format. A 3xx is refused, never followed (see `sendFor`).
+ */
+export function createJsonSender(
+  config: JsonApiConfig,
+  errorPrefix: (method: string, path: string) => string = (method, path) =>
+    `${config.label} ${method} ${path}`,
+): (
+  method: string,
+  path: string,
+  body: unknown,
+  extraHeaders?: Record<string, string>,
+) => Promise<unknown> {
+  const send = sendFor(config);
+  return async (method, path, body, extraHeaders) => {
+    const text = await send(
+      path,
+      (headers) => ({
+        method,
+        headers: { ...headers, "Content-Type": "application/json", ...extraHeaders },
+        body: JSON.stringify(body),
+      }),
+      errorPrefix(method, path),
+    );
+    return text === "" ? {} : (JSON.parse(text) as unknown);
+  };
+}
+
+/**
  * The mutating twin of {@link createJsonGetter}: a `(path, body) => Promise<unknown>`
  * POST client that sends `body` as JSON (adding `Content-Type: application/json` to
  * the request headers) and resolves to the parsed response — `{}` when the response
@@ -192,18 +246,6 @@ export function createJsonGetter(config: JsonApiConfig): (path: string) => Promi
 export function createJsonPoster(
   config: JsonApiConfig,
 ): (path: string, body: unknown) => Promise<unknown> {
-  const { label } = config;
-  const send = sendFor(config);
-  return async (path: string, body: unknown): Promise<unknown> => {
-    const text = await send(
-      path,
-      (headers) => ({
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      `${label} ${path}`,
-    );
-    return text === "" ? {} : (JSON.parse(text) as unknown);
-  };
+  const send = createJsonSender(config, (_method, path) => `${config.label} ${path}`);
+  return (path: string, body: unknown): Promise<unknown> => send("POST", path, body);
 }

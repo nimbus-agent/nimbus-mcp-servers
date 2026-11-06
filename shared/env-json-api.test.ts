@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   createJsonGetter,
   createJsonPoster,
+  createJsonSender,
   DEFAULT_SNIPPET_MAX,
   envAuthHeaders,
   optionalBaseUrl,
@@ -289,5 +290,225 @@ describe("createJsonPoster", () => {
     expect(await post("/x", {})).toEqual({ via: "seam" });
     expect(seen).toEqual(["https://api.test/x"]);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createJsonSender", () => {
+  const cfg = () => ({
+    base: "https://api.test",
+    label: "Test",
+    headers: envAuthHeaders({ env: ENV }),
+  });
+
+  it("sends the method it is given, with the factory headers and a JSON Content-Type", async () => {
+    const { calls } = stubFetch({ body: '{"ok":true}' });
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    expect(await send("PATCH", "/flags/a", { on: true })).toEqual({ ok: true });
+    const call = calls[0];
+    expect(call?.method).toBe("PATCH");
+    expect(call?.url).toBe("https://api.test/flags/a");
+    expect(call?.headers.get("authorization")).toBe("Bearer tok");
+    expect(call?.headers.get("content-type")).toBe("application/json");
+    expect(await call?.text()).toBe('{"on":true}');
+  });
+
+  it("lets extraHeaders replace the default Content-Type and add others", async () => {
+    const { calls } = stubFetch({});
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    await send(
+      "PATCH",
+      "/x",
+      {},
+      { "Content-Type": "application/json; domain-model=x", "X-A": "1" },
+    );
+    expect(calls[0]?.headers.get("content-type")).toBe("application/json; domain-model=x");
+    expect(calls[0]?.headers.get("x-a")).toBe("1");
+    expect(calls[0]?.headers.get("authorization")).toBe("Bearer tok");
+  });
+
+  it("names label, method and path in the error", async () => {
+    stubFetch({ status: 405, body: "needs approval" });
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    await expect(send("PATCH", "/flags/a", {})).rejects.toThrow(
+      "Test PATCH /flags/a 405: needs approval",
+    );
+  });
+
+  it("resolves an empty 2xx body to {}", async () => {
+    stubFetch({ body: "" });
+    process.env[ENV] = "tok";
+    expect(await createJsonSender(cfg())("PUT", "/x", {})).toEqual({});
+  });
+
+  it("refuses before sending anything when the credential is missing", async () => {
+    const { calls } = stubFetch({});
+    await expect(createJsonSender(cfg())("PATCH", "/x", {})).rejects.toThrow(`${ENV} is not set`);
+    expect(calls).toEqual([]);
+  });
+
+  it("asks fetch not to follow redirects and refuses a 3xx without a second request", async () => {
+    const seen: (RequestRedirect | undefined)[] = [];
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(String(input));
+      seen.push(init?.redirect);
+      return new Response("", { status: 302, headers: { Location: "https://evil.test/steal" } });
+    }) as typeof globalThis.fetch;
+    process.env[ENV] = "tok";
+    await expect(createJsonSender(cfg())("PATCH", "/x", {})).rejects.toThrow(/redirect/i);
+    expect(seen).toEqual(["manual"]);
+    expect(calls).toEqual(["https://api.test/x"]);
+  });
+});
+
+describe("createJsonPoster redirects", () => {
+  it("refuses a 3xx and never follows it", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${String(input)} ${String(init?.redirect)}`);
+      return new Response("", { status: 307, headers: { Location: "https://evil.test/" } });
+    }) as typeof globalThis.fetch;
+    process.env[ENV] = "tok";
+    const post = createJsonPoster({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    await expect(post("/x", {})).rejects.toThrow(/redirect/i);
+    expect(calls).toEqual(["https://api.test/x manual"]);
+  });
+});
+
+describe("createJsonGetter redirects", () => {
+  /** Answers each URL from `routes`; records every request's URL, header and redirect mode. */
+  function route(routes: Record<string, { status: number; location?: string; body?: string }>): {
+    seen: { url: string; auth: string | null; redirect: string | undefined }[];
+  } {
+    const seen: { url: string; auth: string | null; redirect: string | undefined }[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({
+        url,
+        auth: new Headers(init?.headers).get("authorization"),
+        redirect: init?.redirect,
+      });
+      const hit = routes[url];
+      if (hit === undefined) return new Response("{}", { status: 404 });
+      return new Response(hit.body ?? "", {
+        status: hit.status,
+        headers: hit.location === undefined ? {} : { Location: hit.location },
+      });
+    }) as typeof globalThis.fetch;
+    return { seen };
+  }
+
+  const getter = () =>
+    createJsonGetter({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV, scheme: "" }),
+    });
+
+  it("follows a same-origin https redirect, asking for manual on every hop", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 301, location: "/a/" },
+      "https://api.test/a/": { status: 200, body: '{"ok":true}' },
+    });
+    process.env[ENV] = "tok";
+    expect(await getter()("/a")).toEqual({ ok: true });
+    expect(seen.map((s) => s.url)).toEqual(["https://api.test/a", "https://api.test/a/"]);
+    expect(seen.map((s) => s.redirect)).toEqual(["manual", "manual"]);
+    expect(seen.map((s) => s.auth)).toEqual(["tok", "tok"]);
+  });
+
+  it("refuses a cross-origin redirect and sends nothing to the other origin", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 302, location: "https://evil.test/steal" },
+    });
+    process.env[ENV] = "tok";
+    await expect(getter()("/a")).rejects.toThrow(/another origin/);
+    expect(seen.map((s) => s.url)).toEqual(["https://api.test/a"]);
+  });
+
+  it("refuses a redirect from https down to plain http", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 302, location: "http://api.test/a" },
+    });
+    process.env[ENV] = "tok";
+    await expect(getter()("/a")).rejects.toThrow(/another origin/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("refuses the fourth hop", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 301, location: "/b" },
+      "https://api.test/b": { status: 301, location: "/c" },
+      "https://api.test/c": { status: 301, location: "/d" },
+      "https://api.test/d": { status: 301, location: "/e" },
+      "https://api.test/e": { status: 200, body: "{}" },
+    });
+    process.env[ENV] = "tok";
+    await expect(getter()("/a")).rejects.toThrow(/too many redirects/);
+    expect(seen.map((s) => s.url)).toEqual([
+      "https://api.test/a",
+      "https://api.test/b",
+      "https://api.test/c",
+      "https://api.test/d",
+    ]);
+  });
+
+  it("carries a custom credential header on a same-origin hop and never to another origin", async () => {
+    const seenHeaders: { url: string; key: string | null }[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seenHeaders.push({ url, key: new Headers(init?.headers).get("zotero-api-key") });
+      if (url === "https://api.test/a") {
+        return new Response(null, { status: 301, headers: { location: "/b" } });
+      }
+      if (url === "https://api.test/b") {
+        return new Response(null, { status: 302, headers: { location: "https://evil.test/c" } });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    process.env[ENV] = "tok";
+    const get = createJsonGetter({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV, scheme: "", header: "Zotero-API-Key" }),
+    });
+    await expect(get("/a")).rejects.toThrow(/another origin/);
+    expect(seenHeaders).toEqual([
+      { url: "https://api.test/a", key: "tok" },
+      { url: "https://api.test/b", key: "tok" },
+    ]);
+  });
+
+  it("follows a plain-http base's same-origin redirect and its same-host https upgrade", async () => {
+    route({
+      "http://ci.internal/x": { status: 301, location: "/y" },
+      "http://ci.internal/y": { status: 301, location: "https://ci.internal/z" },
+      "https://ci.internal/z": { status: 200, body: "[1]" },
+    });
+    process.env[ENV] = "tok";
+    const get = createJsonGetter({
+      base: "http://ci.internal",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    expect(await get("/x")).toEqual([1]);
+  });
+
+  it("still allows a plain-http base that does not redirect (self-hosted callers)", async () => {
+    route({ "http://ci.internal/x": { status: 200, body: "[]" } });
+    process.env[ENV] = "tok";
+    const get = createJsonGetter({
+      base: "http://ci.internal",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    expect(await get("/x")).toEqual([]);
   });
 });

@@ -147,3 +147,68 @@ describe("ghApiBase (GitHub Enterprise Server)", () => {
     expect(ghQueryPath("/user/repos", (q) => q.set("a", "b"))).toBe("/user/repos?a=b");
   });
 });
+
+describe("ghFetch redirects", () => {
+  const seen: { url: string; method: string }[] = [];
+  function script(steps: Response[]): void {
+    seen.length = 0;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(input), method: init?.method ?? "GET" });
+      const step = steps.shift();
+      if (step === undefined) throw new Error("unscripted request");
+      return step;
+    }) as typeof globalThis.fetch;
+  }
+  const moved = (status: number, location: string): Response =>
+    new Response(null, { status, headers: { location } });
+
+  it("refuses a 301 on a POST and sends no second request", async () => {
+    script([moved(301, `${GH_API}/repositories/1/git/refs`), new Response("{}", { status: 200 })]);
+    await expect(
+      ghFetch("t", `${ghRepoPath("o", "r")}/git/refs`, { method: "POST", body: "{}" }),
+    ).rejects.toThrow(/answered a POST with a redirect/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("refuses a redirect on a PATCH", async () => {
+    script([moved(308, `${GH_API}/repositories/1/pulls/2`)]);
+    await expect(ghFetch("t", "/repos/o/r/pulls/2", { method: "PATCH" })).rejects.toThrow(
+      /answered a PATCH with a redirect/,
+    );
+    expect(seen).toHaveLength(1);
+  });
+
+  it("follows a same-origin 301 on a GET", async () => {
+    script([moved(301, `${GH_API}/repositories/1`), new Response('{"id":1}', { status: 200 })]);
+    const res = await ghFetch("t", ghRepoPath("o", "r"));
+    expect(res.ok).toBe(true);
+    expect(res.json).toEqual({ id: 1 });
+    expect(seen.map((s) => s.url)).toEqual([`${GH_API}/repos/o/r`, `${GH_API}/repositories/1`]);
+  });
+
+  it("refuses a cross-origin 302 on a GET", async () => {
+    script([moved(302, "https://evil.test/steal")]);
+    await expect(ghFetch("t", ghRepoPath("o", "r"))).rejects.toThrow(/another origin/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("keeps a GitHub Enterprise Server /api/v3 base", async () => {
+    process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3";
+    try {
+      script([new Response("{}", { status: 200 })]);
+      await ghFetch("t", "/repos/o/r");
+      expect(seen[0]?.url).toBe("https://ghe.example.com/api/v3/repos/o/r");
+    } finally {
+      delete process.env["GITHUB_API_BASE_URL"];
+    }
+  });
+});
+
+describe("ghRepoPath dot segments", () => {
+  it("refuses . and .. in owner or repo", () => {
+    for (const bad of [".", ".."]) {
+      expect(() => ghRepoPath(bad, "r")).toThrow(/dot segment/);
+      expect(() => ghRepoPath("o", bad)).toThrow(/dot segment/);
+    }
+  });
+});

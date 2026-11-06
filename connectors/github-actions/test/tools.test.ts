@@ -31,22 +31,22 @@ async function urlOf(name: string, args: Record<string, unknown>): Promise<strin
   return fetchStub.only.url;
 }
 
-const REPO = { owner: "acme co", repo: "api/v2" };
+const REPO = { owner: "acme-co", repo: "api.v2" };
 
 describe("github-actions list tools build GitHub's paged query, in a stable parameter order", () => {
   it("gha_workflow_list: per_page (default 30), then page when given", async () => {
     expect(await urlOf("gha_workflow_list", REPO)).toBe(
-      "https://api.github.com/repos/acme%20co/api%2Fv2/actions/workflows?per_page=30",
+      "https://api.github.com/repos/acme-co/api.v2/actions/workflows?per_page=30",
     );
     fetchStub.calls.length = 0;
     expect(await urlOf("gha_workflow_list", { ...REPO, perPage: 10, page: 2 })).toBe(
-      "https://api.github.com/repos/acme%20co/api%2Fv2/actions/workflows?per_page=10&page=2",
+      "https://api.github.com/repos/acme-co/api.v2/actions/workflows?per_page=10&page=2",
     );
   });
 
   it("gha_run_list: paging, then each filter that was given", async () => {
     expect(await urlOf("gha_run_list", REPO)).toBe(
-      "https://api.github.com/repos/acme%20co/api%2Fv2/actions/runs?per_page=30",
+      "https://api.github.com/repos/acme-co/api.v2/actions/runs?per_page=30",
     );
     fetchStub.calls.length = 0;
     expect(
@@ -58,12 +58,12 @@ describe("github-actions list tools build GitHub's paged query, in a stable para
         status: "completed",
       }),
     ).toBe(
-      "https://api.github.com/repos/acme%20co/api%2Fv2/actions/runs?per_page=30&page=3&branch=main&event=push&status=completed",
+      "https://api.github.com/repos/acme-co/api.v2/actions/runs?per_page=30&page=3&branch=main&event=push&status=completed",
     );
   });
 });
 
-const RUNS = "https://api.github.com/repos/acme%20co/api%2Fv2/actions";
+const RUNS = "https://api.github.com/repos/acme-co/api.v2/actions";
 
 /** Answer every request with `reply`, replacing the stub the file-level hook installed. */
 function reply(body: string, status = 200): void {
@@ -119,7 +119,7 @@ describe("gha_run_log against GitHub Enterprise Server and its log redirect", ()
     reply("log text");
     await tools.call("gha_run_log", { ...REPO, jobId: 42 });
     expect(fetchStub.only.url).toBe(
-      "https://ghe.example.com/api/v3/repos/acme%20co/api%2Fv2/actions/jobs/42/logs",
+      "https://ghe.example.com/api/v3/repos/acme-co/api.v2/actions/jobs/42/logs",
     );
     expect(fetchStub.only.headers["authorization"]).toBe("Bearer ghp_test");
     expect(fetchStub.only.redirect).toBe("manual");
@@ -179,8 +179,8 @@ describe("github-actions writes (gateway mode)", () => {
     reply("");
     expect(await tools.callJson("gha_run_trigger", { ...REPO, workflowId: "ci.yml" })).toEqual({
       ok: true,
-      owner: "acme co",
-      repo: "api/v2",
+      owner: "acme-co",
+      repo: "api.v2",
       workflowId: "ci.yml",
     });
     expect(`${fetchStub.only.method} ${fetchStub.only.url}`).toBe(

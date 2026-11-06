@@ -82,14 +82,24 @@ What the lock does not cover:
 | `NIMBUS_MCP_WRITE_BUDGET` | Maximum mutations per session. Caps a runaway agent loop, including one that sends its writes in parallel: a write whose prompt you approve after the budget has run out is still refused. Unset means the default, `10`. A value you set must be a whole number in plain digits, from `0`, which refuses every write, to `9007199254740991`; whitespace around it is ignored. Any other value stops a connector that has write tools at startup, with an error naming the variable: an empty or whitespace-only value, a sign as in `-1` or `+5`, a decimal point as in `2.5` or `10.0`, `1e3`, `0x10`, `ten`, `Infinity`, or a number above `9007199254740991`. It is never replaced by the default, which could be more than you meant. |
 | `NIMBUS_MCP_AUDIT_LOG` | Absolute path for the hash-chained JSONL audit log. Unset disables it, and it is the only durable record the connector keeps of its write calls. Each step of a write is also sent to the client as an MCP log message (`notifications/message`, at `info` for `executed` and `warning` for the rest), naming the connector, the tool and the outcome but never the parameters. A client may filter those by level and need not keep them, and each is sent after the step's entry has been appended to this log, when one is set. |
 | `GITHUB_API_BASE_URL` | Optional. Points the `github` and `github-actions` connectors at a GitHub Enterprise Server API, e.g. `https://ghe.example.com/api/v3`. Unset means `https://api.github.com`. Trailing slashes are ignored, and it is read on every call. `GITHUB_PAT` is then sent to that host, so set it only to a server you trust. The job log that `gha_run_log` downloads sits behind a redirect to separate storage; the token is sent to the API host only and never to the redirect target. |
+| `JIRA_CLOUD_ID` | Optional. The Atlassian cloud id of the Jira site, used by the five `jira_ops_alert_*` tools (JSM Operations, `https://api.atlassian.com/jsm/ops/api/{cloudId}/v1`). It must be a UUID; anything else stops the tool before a request is made. Unset means the connector asks `{JIRA_BASE_URL}/_edge/tenant_info` once per process, with the same Basic credential and no redirect followed, and refuses the alert call if that fails. |
 | _connector credentials_ | Per connector, e.g. `GITHUB_PAT`. Most are listed in `connectors/<id>/README.md`; where a README does not list them yet, a tool called without its credential refuses with an error naming the variable. |
 
 `<SERVICE>` is the connector id you launch, upper-cased, with each `-` written as `_`: `github`
 reads `NIMBUS_MCP_GITHUB_WRITE_SCOPE` and `monte-carlo` reads `NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE`.
 Scope kinds are per connector. `discord` accepts `channel:<channelId>`, the 17 to 20 digit snowflake
 of the channel `discord_message_post` writes to, e.g. `NIMBUS_MCP_DISCORD_WRITE_SCOPE=channel:123456789012345678`.
+`launchdarkly` accepts `flag:<projectKey>/<environmentKey>/<flagKey>` and `flagsmith` accepts
+`flag:<environmentKey>/<featureId>` (the numeric feature id), so one flag in one environment is one
+term. `jira` also accepts `alert:<alertId>` for its Operations alerts, by exact alert id only.
 Do not derive it from a connector's tool names or action types — `monte-carlo`'s are
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
+
+**Redirects.** A credential header is never sent to another origin. The `gitlab` connector, the flag
+connectors and the JSM Operations tools refuse any redirect on a write. A read follows at most 3
+redirects, only to the same origin or the same host's http -> https upgrade (never https -> http).
+A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the token is then sent in
+clear.
 
 ## Three behaviours that look like bugs and are not
 

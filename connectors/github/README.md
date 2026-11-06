@@ -29,6 +29,13 @@ conversation, add labels, add assignees, and open or close an issue. Labels and 
 **add-only**: no tool removes or replaces one. Each write asks for approval, and standalone is limited
 by `NIMBUS_MCP_GITHUB_WRITE_SCOPE=repo:<owner>/<repo>`.
 
+Branches and pull requests: `github_ref_get` reads a branch, tag or commit as a commit sha;
+`github_branch_create` makes a branch from a ref (optionally pinned with `expectedSha`, so a branch
+that moved after you approved is refused); `github_pr_create` opens a pull request (title and body
+are sent verbatim, no draft unless asked); `github_pr_update` edits a pull request's title, body or
+base only, and records the old values first. A fine-grained token needs Contents: write for branch
+create and Pull requests: write for PR create and update.
+
 ## See also
 
 - [Github Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)

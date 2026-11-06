@@ -40,6 +40,7 @@ import { registerCircleciTools } from "../connectors/circleci/src/tools.ts";
 import { registerConfluenceTools } from "../connectors/confluence/src/tools.ts";
 import { registerDiscordTools } from "../connectors/discord/src/tools.ts";
 import { registerFastmailTools } from "../connectors/fastmail/src/tools.ts";
+import { registerFlagsmithTools } from "../connectors/flagsmith/src/tools.ts";
 import { registerFluxTools } from "../connectors/flux/src/server.ts";
 import { registerGcpTools } from "../connectors/gcp/src/tools.ts";
 import { registerGithubTools } from "../connectors/github/src/tools.ts";
@@ -52,6 +53,7 @@ import { registerImapTools } from "../connectors/imap/src/tools.ts";
 import { registerJenkinsTools } from "../connectors/jenkins/src/tools.ts";
 import { registerJiraTools } from "../connectors/jira/src/tools.ts";
 import { registerKubernetesTools } from "../connectors/kubernetes/src/tools.ts";
+import { registerLaunchdarklyTools } from "../connectors/launchdarkly/src/tools.ts";
 import { registerLinearTools } from "../connectors/linear/src/tools.ts";
 import { registerLookerTools } from "../connectors/looker/src/server.ts";
 import { registerMlflowTools } from "../connectors/mlflow/src/server.ts";
@@ -103,8 +105,15 @@ type WriteCase = readonly [
   target: string,
 ];
 
+/** Three distinct keys, so a scope built from the wrong two of them fails. */
+const LD_FLAG = { projectKey: "proj-x", environmentKey: "env-y", flagKey: "flag-z" };
+const LD_TARGET = "flag:proj-x/env-y/flag-z";
 const MAIL_TO = { to: "ada@example.com" };
-const GITHUB_REPO = { owner: "acme", repo: "api" };
+/**
+ * A repo no tool source may contain as a literal: a scope target hard-coded to a "typical" repo
+ * (acme/api, group/repo) must fail here, not coincide with the fixture and pass.
+ */
+const GITHUB_REPO = { owner: "zeta-labs", repo: "quokka" };
 /** iCloud event times are format-checked (UTC `YYYYMMDDTHHMMSSZ`), which `fixtureFor` cannot guess. */
 const ICLOUD_TIMES = { start: "20260101T000000Z", end: "20260101T010000Z" };
 
@@ -248,6 +257,17 @@ const WRITES: Readonly<
     register: (server: never) => registerFastmailTools(server, UNREACHABLE),
     cases: [["fastmail_mail_send", "fastmail.mail.send", MAIL_TO, "recipient:ada@example.com"]],
   },
+  flagsmith: {
+    register: registerFlagsmithTools,
+    cases: [
+      [
+        "flagsmith_feature_state_set",
+        "flagsmith.feature.state.set",
+        { environmentKey: "env-y", featureId: 314 },
+        "flag:env-y/314",
+      ],
+    ],
+  },
   flux: {
     register: registerFluxTools,
     cases: [
@@ -285,39 +305,75 @@ const WRITES: Readonly<
   github: {
     register: registerGithubTools,
     cases: [
-      ["github_issue_create", "github.issue.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_pr_merge", "github.pr.merge", GITHUB_REPO, "repo:acme/api"],
-      ["github_pr_close", "github.pr.close", GITHUB_REPO, "repo:acme/api"],
-      ["github_branch_delete", "github.branch.delete", GITHUB_REPO, "repo:acme/api"],
-      ["github_tag_create", "github.tag.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_comment_create", "github.issue.comment.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_labels_add", "github.issue.labels.add", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_assignees_add", "github.issue.assignees.add", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_state_set", "github.issue.state.set", GITHUB_REPO, "repo:acme/api"],
+      ["github_issue_create", "github.issue.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_merge", "github.pr.merge", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_close", "github.pr.close", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_branch_delete", "github.branch.delete", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_tag_create", "github.tag.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
+        "github_issue_comment_create",
+        "github.issue.comment.create",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      ["github_issue_labels_add", "github.issue.labels.add", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
+        "github_issue_assignees_add",
+        "github.issue.assignees.add",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      ["github_issue_state_set", "github.issue.state.set", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_branch_create", "github.branch.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:zeta-labs/quokka"],
     ],
   },
   "github-actions": {
     register: registerGithubActionsTools,
     cases: [
-      ["gha_run_trigger", "github_actions.run.trigger", GITHUB_REPO, "repo:acme/api"],
-      ["gha_run_cancel", "github_actions.run.cancel", GITHUB_REPO, "repo:acme/api"],
+      ["gha_run_trigger", "github_actions.run.trigger", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["gha_run_cancel", "github_actions.run.cancel", GITHUB_REPO, "repo:zeta-labs/quokka"],
     ],
   },
   gitlab: {
     register: registerGitlabTools,
     cases: [
-      ["gitlab_mr_merge", "gitlab.mr.merge", { projectPath: "group/repo" }, "repo:group/repo"],
+      [
+        "gitlab_mr_merge",
+        "gitlab.mr.merge",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
       [
         "gitlab_pipeline_retry",
         "gitlab.pipeline.retry",
-        { projectPath: "group/repo" },
-        "repo:group/repo",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
       ],
       [
         "gitlab_pipeline_cancel",
         "gitlab.pipeline.cancel",
-        { projectPath: "group/repo" },
-        "repo:group/repo",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
+      [
+        "gitlab_branch_create",
+        "gitlab.branch.create",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
+      [
+        "gitlab_mr_create",
+        "gitlab.mr.create",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
+      [
+        "gitlab_mr_update",
+        "gitlab.mr.update",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
       ],
       ...(
         [
@@ -332,8 +388,8 @@ const WRITES: Readonly<
         ([tool, mutates]): WriteCase => [
           tool,
           mutates,
-          { projectPath: "group/repo" },
-          "repo:group/repo",
+          { projectPath: "zeta-group/quokka" },
+          "repo:zeta-group/quokka",
         ],
       ),
     ],
@@ -357,6 +413,7 @@ const WRITES: Readonly<
       ],
       ["gdrive_file_create", "google_drive.file.create", {}, "folder:root"],
       ["gdrive_file_move", "google_drive.file.move", { fileId: "file-1" }, "file:file-1"],
+      ["gdrive_file_trash", "google_drive.file.trash", { fileId: "file-1" }, "file:file-1"],
       ["gdrive_file_rename", "google_drive.file.rename", { fileId: "file-1" }, "file:file-1"],
     ],
   },
@@ -412,6 +469,8 @@ const WRITES: Readonly<
         { issueKey: "ENG-7", transitionId: "31" },
         "issue:ENG-7",
       ],
+      ["jira_ops_alert_acknowledge", "jira.ops.alert.acknowledge", { alertId: "A1" }, "alert:A1"],
+      ["jira_ops_alert_close", "jira.ops.alert.close", { alertId: "A1" }, "alert:A1"],
     ],
   },
   kubernetes: {
@@ -428,6 +487,18 @@ const WRITES: Readonly<
       ["k8s_pod_delete", "kubernetes.pod.delete", {}, "namespace:default"],
       ["k8s_rollout_restart", "kubernetes.rollout.restart", { namespace: "web" }, "namespace:web"],
       ["k8s_rollout_restart", "kubernetes.rollout.restart", {}, "namespace:default"],
+    ],
+  },
+  launchdarkly: {
+    register: registerLaunchdarklyTools,
+    cases: [
+      ["launchdarkly_flag_toggle", "launchdarkly.flag.toggle", LD_FLAG, LD_TARGET],
+      [
+        "launchdarkly_flag_rollout_set",
+        "launchdarkly.flag.rollout.set",
+        { ...LD_FLAG, weights: [{ variationId: "v1", percent: 100 }] },
+        LD_TARGET,
+      ],
     ],
   },
   linear: {
@@ -543,7 +614,12 @@ const WRITES: Readonly<
         "incident:P1",
       ],
       ["pd_incident_resolve", "pagerduty.incident.resolve", { incidentId: "P1" }, "incident:P1"],
-      ["pd_incident_escalate", "pagerduty.incident.escalate", { incidentId: "P1" }, "incident:P1"],
+      [
+        "pd_incident_escalate",
+        "pagerduty.incident.escalate",
+        { incidentId: "P1", escalationLevel: 2 },
+        "incident:P1",
+      ],
     ],
   },
   powerbi: {

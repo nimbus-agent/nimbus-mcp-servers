@@ -8,8 +8,10 @@
  * places, so a bump had to find all three.
  */
 
+import { resolveUrlWithBase } from "@nimbus-dev/sdk/connector-kit";
 import { optionalBaseUrl } from "./env-json-api.ts";
-import { makeRestFetcher, type RestFetchResult } from "./rest-tool-kit.ts";
+import { guardedFetch } from "./guarded-fetch.ts";
+import { type RestFetchResult, toRestFetchResult } from "./rest-tool-kit.ts";
 
 export const GH_API = "https://api.github.com";
 
@@ -33,13 +35,42 @@ export const GH_HEADERS: Record<string, string> = {
   "X-GitHub-Api-Version": GH_API_VERSION,
 };
 
-/** A Bearer-authenticated JSON request against {@link ghApiBase} (a relative path or a same-origin URL). */
-export function ghFetch(token: string, path: string, init?: RequestInit): Promise<RestFetchResult> {
-  return makeRestFetcher({ apiBase: ghApiBase(), token, defaultHeaders: GH_HEADERS })(path, init);
+/**
+ * A Bearer-authenticated JSON request against {@link ghApiBase} (a relative path or a same-origin
+ * URL). It goes through {@link guardedFetch}: a write that GitHub answers with a redirect (a renamed
+ * or transferred repository) is refused, not replayed as a GET that would report a false success,
+ * and a GET follows only a same-origin https redirect, at most 3 hops.
+ */
+export async function ghFetch(
+  token: string,
+  path: string,
+  init?: RequestInit,
+): Promise<RestFetchResult> {
+  const url = resolveUrlWithBase(ghApiBase(), path);
+  const headers = new Headers({ Authorization: `Bearer ${token}`, ...GH_HEADERS });
+  if (init?.headers !== undefined) {
+    for (const [k, v] of new Headers(init.headers)) headers.set(k, v);
+  }
+  const res = await guardedFetch("GitHub", url, { ...init, headers }, { requireSecureBase: false });
+  return toRestFetchResult(res);
 }
 
-/** `/repos/<owner>/<repo>`, both segments URI-encoded. */
+/**
+ * Whether `seg` is a safe GitHub `owner` or `repo`: 1..100 of `[A-Za-z0-9._-]`, and not `.` or `..`
+ * (a URL parser collapses those out of the path, turning `/repos/../../pulls/9` into another endpoint).
+ */
+export function isSafeGhSlug(seg: string): boolean {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(seg) && seg !== "." && seg !== "..";
+}
+
+/**
+ * `/repos/<owner>/<repo>`, both segments URI-encoded. `.` and `..` are refused: `encodeURIComponent`
+ * leaves them alone and a URL parser collapses them (`/repos/../../pulls/9`).
+ */
 export function ghRepoPath(owner: string, repo: string): string {
+  for (const seg of [owner, repo]) {
+    if (seg === "." || seg === "..") throw new Error("owner and repo cannot be a dot segment");
+  }
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
@@ -70,4 +101,96 @@ export function ghQueryPath(path: string, setQuery: (params: URLSearchParams) =>
   const u = new URL(`${GH_API}${path}`);
   setQuery(u.searchParams);
   return `${u.pathname}${u.search}`;
+}
+
+/**
+ * Whether `ref` is safe to place in a GitHub API path and to hand to GitHub as a ref name.
+ *
+ * A ref reaches a URL path, so a hostile one is a path-traversal vector (`../x` would climb out of
+ * `/commits/`). One rule for every ref the model supplies: 1..255 characters of
+ * `[A-Za-z0-9._/-]`, no `..`, no leading or trailing `/`, no `//`, no leading `-`, no segment that
+ * starts with `.` or ends with `.lock`, and no trailing `.`.
+ */
+export function isSafeGitRef(ref: string): boolean {
+  if (ref.length < 1 || ref.length > 255) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(ref)) return false;
+  if (ref.startsWith("/") || ref.endsWith("/") || ref.startsWith("-") || ref.endsWith(".")) {
+    return false;
+  }
+  if (ref.includes("//") || ref.includes("..")) return false;
+  return ref.split("/").every((seg) => !seg.startsWith(".") && !seg.endsWith(".lock"));
+}
+
+/** What a ref resolved to: the commit SHA, and whether the name was a branch, a tag or a SHA. */
+export interface ResolvedCommit {
+  readonly sha: string;
+  readonly kind: "branch" | "tag" | "sha";
+}
+
+const FULL_SHA = /^[0-9a-f]{40}$/i;
+
+/**
+ * One `GET /commits/<ref>` with the SHA media type; `undefined` when the ref does not exist, a throw
+ * on anything else. GitHub answers a missing ref with a 422 ("No commit found for SHA: ..."), not a
+ * 404, so both count as not found; a 422 with any other message is a real error.
+ */
+async function commitShaFor(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<string | undefined> {
+  const segments = ref.split("/").map(encodeURIComponent).join("/");
+  const res = await ghFetch(token, `${ghRepoPath(owner, repo)}/commits/${segments}`, {
+    headers: { Accept: "application/vnd.github.sha" },
+  });
+  if (res.status === 404) return undefined;
+  if (res.status === 422 && /no commit found/i.test(res.text)) return undefined;
+  if (!res.ok) {
+    throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
+  }
+  const sha = res.text.trim();
+  if (!FULL_SHA.test(sha)) {
+    throw new Error(`GitHub returned no commit sha for ref "${ref}"`);
+  }
+  return sha.toLowerCase();
+}
+
+/**
+ * The names to try for `ref`, in order. A `heads/` or `tags/` prefix (or the full `refs/heads/` /
+ * `refs/tags/`) is one candidate; a bare name is both. Always the full `refs/...` form: GitHub's
+ * `/commits/tags/<x>` answers 422 for an existing tag, while `/commits/refs/tags/<x>` resolves.
+ */
+function refCandidates(ref: string): { readonly name: string; readonly kind: "branch" | "tag" }[] {
+  if (ref.startsWith("refs/heads/")) return [{ name: ref, kind: "branch" }];
+  if (ref.startsWith("refs/tags/")) return [{ name: ref, kind: "tag" }];
+  if (ref.startsWith("heads/")) return [{ name: `refs/${ref}`, kind: "branch" }];
+  if (ref.startsWith("tags/")) return [{ name: `refs/${ref}`, kind: "tag" }];
+  return [
+    { name: `refs/heads/${ref}`, kind: "branch" },
+    { name: `refs/tags/${ref}`, kind: "tag" },
+  ];
+}
+
+/**
+ * Resolve a branch, tag or commit to a COMMIT sha. `ref` must already satisfy {@link isSafeGitRef}.
+ *
+ * A 40-hex string is returned as is. `heads/*` or `tags/*` is one GET. A bare name tries
+ * `refs/heads/<ref>` then `refs/tags/<ref>`, falling through only on a not-found (404, or 422 "No commit found"). It reads `/commits/<ref>` and not
+ * `/git/ref/<ref>` so an annotated tag is peeled to a commit (a branch cannot point at a tag object).
+ * The read tool and the write tool share this, so what a name means cannot differ between the
+ * before-state the owner saw and the write that runs.
+ */
+export async function resolveCommitSha(
+  token: string,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<ResolvedCommit> {
+  if (FULL_SHA.test(ref)) return { sha: ref.toLowerCase(), kind: "sha" };
+  for (const c of refCandidates(ref)) {
+    const sha = await commitShaFor(token, owner, repo, c.name);
+    if (sha !== undefined) return { sha, kind: c.kind };
+  }
+  throw new Error(`GitHub 404: ref "${ref}" not found`);
 }

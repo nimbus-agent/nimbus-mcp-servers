@@ -8,6 +8,7 @@ import {
   ghFetch,
   ghQueryPath,
   ghRepoPath,
+  isSafeGhSlug,
   setGhPaging,
 } from "../../../shared/github-rest.ts";
 import {
@@ -54,8 +55,8 @@ export function registerGithubActionsTools(
   });
 
   const repoSlugArgs = z.object({
-    owner: z.string().min(1),
-    repo: z.string().min(1),
+    owner: z.string().refine(isSafeGhSlug, "not a valid GitHub owner name"),
+    repo: z.string().refine(isSafeGhSlug, "not a valid GitHub repository name"),
   });
 
   const runListSchema = repoSlugArgs.extend({

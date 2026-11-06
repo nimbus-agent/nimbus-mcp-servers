@@ -5,8 +5,8 @@
 First-party Nimbus MCP connector for [LaunchDarkly](https://launchdarkly.com)
 feature flags. Indexes the user's **feature flags** across all (or one
 configured) LaunchDarkly project as `launchdarkly:feature_flag` items in the
-local index and exposes three read-only tools to the Nimbus agent
-(`launchdarkly_list`, `launchdarkly_get`, `launchdarkly_search`). Useful for
+local index and exposes read tools and two owner-approved write tools to the Nimbus agent
+(`launchdarkly_list`, `launchdarkly_get`, `launchdarkly_search`, `launchdarkly_flag_state_get`, `launchdarkly_flag_toggle`, `launchdarkly_flag_rollout_set`). Useful for
 incident correlation — "was this flag enabled when the alert fired?".
 
 ## Install
@@ -45,9 +45,20 @@ Tools exposed:
 | `launchdarkly_list` | List projects (no `projectKey`), or feature flags for a project. |
 | `launchdarkly_get` | Fetch one flag by `projectKey` + `flagKey`. |
 | `launchdarkly_search` | Substring search across a project's flags (key, name, description, tags). |
+| `launchdarkly_flag_state_get` | Read one flag in ONE environment (on/off, fallthrough or rollout with variation ids and percent, version). |
+| `launchdarkly_flag_toggle` (write) | Turn a flag on or off in one environment (semantic patch `turnFlagOn`/`turnFlagOff`). |
+| `launchdarkly_flag_rollout_set` (write) | Set the fallthrough to a percentage rollout in one environment; weights must sum to exactly 100 with at most 3 decimals. The previous state is recorded first. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. The
-`launchdarkly.flag.toggle` write tool is a deferred Phase 8 follow-up.
+The two write tools declare `hitlRequired: ["write"]`: each needs owner approval, and the token
+needs a role that can update flags. They send a semantic patch
+(`Content-Type: application/json; domain-model=launchdarkly.semanticpatch`, body `{ environmentKey,
+comment, instructions }`) for ONE environment, and never set `ignoreConflicts`. An environment that
+requires approvals answers 405 and nothing changes. Outside the gateway, scope them with
+`NIMBUS_MCP_LAUNCHDARKLY_WRITE_SCOPE=flag:<projectKey>/<environmentKey>/<flagKey>`.
+
+Unverified against a live account: LaunchDarkly's schema calls `offVariation` both an "ID" and an
+"index"; the read treats variation references as indices into `variations` and returns the raw
+number beside the resolved id. Redirects are never followed to another origin.
 
 ## See also
 

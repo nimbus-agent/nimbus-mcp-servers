@@ -196,6 +196,24 @@ describe("gitlab merge request merge", () => {
   });
 });
 
+describe("gitlab merge request merge sha guard", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+
+  it("sends sha as the API's sha parameter so the merge fails if the head moved", async () => {
+    const stub = reply('{"state":"merged"}');
+    await tools.call("gitlab_mr_merge", { ...PROJECT, mergeRequestIid: 4, sha: SHA });
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({ sha: SHA });
+  });
+
+  it("refuses a sha that is not 40 hex, before any request", async () => {
+    const stub = reply("{}");
+    await expect(
+      tools.call("gitlab_mr_merge", { ...PROJECT, mergeRequestIid: 4, sha: "abc123" }),
+    ).rejects.toThrow();
+    expect(stub.calls).toEqual([]);
+  });
+});
+
 describe("gitlab issue and merge request writes (gateway mode)", () => {
   const ENC = `${API}/projects/group%2Frepo`;
 

@@ -8,7 +8,7 @@ import {
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
-import { PAGERDUTY_TOOL_NAMES, registerPagerdutyTools } from "../src/tools.ts";
+import { isEmailShape, PAGERDUTY_TOOL_NAMES, registerPagerdutyTools } from "../src/tools.ts";
 
 const API = "https://api.pagerduty.com";
 
@@ -22,7 +22,10 @@ function serve(reply: StubReply): FetchStub {
 }
 
 function configured(fn: () => Promise<void>): Promise<void> {
-  return withEnv({ PAGERDUTY_API_TOKEN: "pd-token" }, fn);
+  return withEnv(
+    { PAGERDUTY_API_TOKEN: "pd-token", PAGERDUTY_FROM_EMAIL: "oncall@example.com" },
+    fn,
+  );
 }
 
 // Gateway mode: the tool surface itself, with the gateway as the consent gate. The standalone
@@ -74,20 +77,94 @@ describe("pagerduty tools", () => {
     expect(stub.only.url).toBe(`${API}/incidents/P%2F1`);
   });
 
-  for (const action of ["acknowledge", "resolve", "escalate"] as const) {
-    it(`incident_${action} PUTs an incident reference to /incidents/{id}/${action}`, async () => {
+  const STATUS_WORD = { acknowledge: "acknowledged", resolve: "resolved" } as const;
+  for (const action of ["acknowledge", "resolve"] as const) {
+    it(`incident_${action} PUTs the status to /incidents/{id} with the From header`, async () => {
       const stub = serve('{"incident":{"id":"P1"}}');
       await configured(async () => {
         expect(await tools.callJson(`pd_incident_${action}`, { incidentId: "P1" })).toEqual({
           incident: { id: "P1" },
         });
       });
-      expect(`${stub.only.method} ${stub.only.url}`).toBe(`PUT ${API}/incidents/P1/${action}`);
+      expect(`${stub.only.method} ${stub.only.url}`).toBe(`PUT ${API}/incidents/P1`);
+      expect(stub.only.headers["from"]).toBe("oncall@example.com");
       expect(JSON.parse(stub.only.body ?? "null")).toEqual({
-        incident: { type: "incident_reference", id: "P1" },
+        incident: { type: "incident_reference", status: STATUS_WORD[action] },
       });
     });
+
+    it(`incident_${action} refuses a missing or malformed From email before any request`, async () => {
+      const stub = serve("{}");
+      for (const from of [
+        undefined,
+        "",
+        "not-an-email",
+        "a b@c.d",
+        "a@@b.co",
+        "@b.co",
+        "a@.co",
+        "a@b.",
+        "a@b",
+        "a@b.co\n",
+      ]) {
+        await withEnv({ PAGERDUTY_API_TOKEN: "pd-token", PAGERDUTY_FROM_EMAIL: from }, async () => {
+          await expect(tools.call(`pd_incident_${action}`, { incidentId: "P1" })).rejects.toThrow(
+            /PAGERDUTY_FROM_EMAIL/,
+          );
+        });
+      }
+      expect(stub.calls).toEqual([]);
+    });
+
+    it(`incident_${action} refuses a redirect and does not follow it`, async () => {
+      const stub = serve({ status: 307, headers: { Location: "https://evil.example/x" } });
+      await configured(async () => {
+        await expect(tools.call(`pd_incident_${action}`, { incidentId: "P1" })).rejects.toThrow(
+          /answered a PUT with a redirect \(307\)/,
+        );
+      });
+      expect(stub.calls).toHaveLength(1);
+    });
   }
+
+  for (const bad of ["", "P/1", "P1?x=1", "a".repeat(65)]) {
+    it(`refuses incidentId ${JSON.stringify(bad.slice(0, 12))} before any request`, async () => {
+      const stub = serve("{}");
+      await configured(async () => {
+        await expect(tools.call("pd_incident_resolve", { incidentId: bad })).rejects.toThrow();
+      });
+      expect(stub.calls).toEqual([]);
+    });
+  }
+
+  it("incident_escalate PUTs escalation_level to /incidents/{id} with the From header", async () => {
+    const stub = serve('{"incident":{"id":"P1"}}');
+    await configured(async () => {
+      await tools.call("pd_incident_escalate", { incidentId: "P1", escalationLevel: 2 });
+    });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`PUT ${API}/incidents/P1`);
+    expect(stub.only.headers["from"]).toBe("oncall@example.com");
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({
+      incident: { type: "incident_reference", escalation_level: 2 },
+    });
+  });
+
+  it("incident_escalate refuses a missing or out-of-range level before any request", async () => {
+    const stub = serve("{}");
+    await configured(async () => {
+      for (const extra of [
+        {},
+        { escalationLevel: 0 },
+        { escalationLevel: 21 },
+        { escalationLevel: 1.5 },
+      ]) {
+        await expect(
+          tools.call("pd_incident_escalate", { incidentId: "P1", ...extra }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
 
   it("a status change answered with no JSON body reports ok", async () => {
     serve("");
@@ -101,15 +178,15 @@ describe("pagerduty tools", () => {
   it("a refused status change names the action, the status and the body", async () => {
     serve({ status: 403, body: "Access Denied" });
     await configured(async () => {
-      await expect(tools.call("pd_incident_escalate", { incidentId: "P1" })).rejects.toThrow(
-        "PagerDuty escalate 403: Access Denied",
+      await expect(tools.call("pd_incident_resolve", { incidentId: "P1" })).rejects.toThrow(
+        "PagerDuty resolve 403: Access Denied",
       );
     });
   });
 
   it("refuses without PAGERDUTY_API_TOKEN, before any request", async () => {
     const stub = serve("{}");
-    await withEnv({ PAGERDUTY_API_TOKEN: undefined }, async () => {
+    await withEnv({ PAGERDUTY_API_TOKEN: undefined, PAGERDUTY_FROM_EMAIL: "a@b.co" }, async () => {
       await expect(tools.call("pd_incident_list", {})).rejects.toThrow(
         "PAGERDUTY_API_TOKEN is not set",
       );
@@ -118,5 +195,28 @@ describe("pagerduty tools", () => {
       );
     });
     expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("isEmailShape", () => {
+  it("accepts ordinary addresses and refuses malformed ones", () => {
+    expect(isEmailShape("oncall@example.com")).toBe(true);
+    expect(isEmailShape("a@b.co")).toBe(true);
+    for (const bad of ["", "a@b", "a@@b.co", "@b.co", "a@.co", "a@b.", "a b@c.d", "a@b.co\n"]) {
+      expect(isEmailShape(bad)).toBe(false);
+    }
+    expect(isEmailShape(`${"a".repeat(250)}@b.co`)).toBe(false);
+  });
+
+  it("is linear on adversarial input", () => {
+    const started = performance.now();
+    for (const evil of [
+      `${"a@".repeat(50_000)}`,
+      `a@${".".repeat(100_000)}`,
+      "a".repeat(100_000),
+    ]) {
+      expect(isEmailShape(evil)).toBe(false);
+    }
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });

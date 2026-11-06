@@ -30,6 +30,9 @@ const WRITE_TOOLS = [
   "github_issue_create",
   "github_branch_delete",
   "github_tag_create",
+  "github_branch_create",
+  "github_pr_create",
+  "github_pr_update",
 ] as const;
 
 /**

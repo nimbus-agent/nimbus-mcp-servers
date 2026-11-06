@@ -2,14 +2,14 @@
   "id": "com.nimbus.flagsmith",
   "displayName": "Flagsmith",
   "version": "0.1.0",
-  "description": "Flagsmith feature-flag connector (read-only). Surfaces feature-flag definitions across all projects — name, type, default-enabled, initial value, description, tags, archived state, owner count, and timestamps — into the local index as `flagsmith:feature_flag` items, useful for incident correlation (\"did this flag exist when the alert fired?\"). Admin-API-token auth (`Authorization: Token <token>`). Regional / self-hosted instances override `flagsmith.api_base` (default https://api.flagsmith.com); the SaaS API host (api.flagsmith.com) is the only one in the static sandbox manifest today. v1 indexes flag definitions only — per-environment on/off state + segments are a deferred follow-up. The `flagsmith.flag.toggle` write tool is a deferred Phase 8 follow-up.",
+  "description": "Flagsmith feature-flag connector. Surfaces feature-flag definitions across all projects — name, type, default-enabled, initial value, description, tags, archived state, owner count, and timestamps — into the local index as `flagsmith:feature_flag` items, useful for incident correlation (\"did this flag exist when the alert fired?\"). Admin-API-token auth (`Authorization: Token <token>`). Regional / self-hosted instances override `flagsmith.api_base` (default https://api.flagsmith.com); the SaaS API host (api.flagsmith.com) is the only one in the static sandbox manifest today. v1 indexes flag definitions only — per-environment on/off state + segments are a deferred follow-up. Write tool (needs owner approval): `flagsmith.feature.state.set` enables or disables a feature, optionally with a typed value, in ONE environment, through Flagsmith's experimental `__future__` endpoint; Flagsmith refuses it while change requests are enabled.",
   "author": "Nimbus",
   "entrypoint": "dist/server.js",
   "runtime": "bun",
   "permissions": {
     "network": ["api.flagsmith.com"]
   },
-  "hitlRequired": [],
+  "hitlRequired": ["write"],
   "syncInterval": 600,
   "minNimbusVersion": "0.2.0"
 }
