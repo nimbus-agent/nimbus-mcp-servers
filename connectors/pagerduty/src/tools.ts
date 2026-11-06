@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -18,7 +19,8 @@ const API = "https://api.pagerduty.com";
 async function pdFetch(token: string, path: string, init?: RequestInit): Promise<RestFetchResult> {
   const rel = path.startsWith("/") ? path : `/${path}`;
   const url = path.startsWith("http") ? path : `${API}${rel}`;
-  const res = await fetch(url, {
+  // guardedFetch: a write answered with a redirect is refused, and a GET follows only same-origin.
+  const res = await guardedFetch("PagerDuty", url, {
     ...init,
     headers: {
       Accept: "application/vnd.pagerduty+json;version=2",
@@ -30,17 +32,69 @@ async function pdFetch(token: string, path: string, init?: RequestInit): Promise
   return toRestFetchResult(res);
 }
 
-async function pdIncidentPutMutation(actionLabel: string, pathSuffix: string, incidentId: string) {
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * The `From` header PagerDuty requires on an incident update: "The email address of a valid user
+ * associated with the account making the request". Writes only. Throws before any request.
+ * The gateway injects it from the Vault key `pagerduty.from_email`.
+ */
+function requirePdFromEmail(): string {
+  const email = requireProcessEnv("PAGERDUTY_FROM_EMAIL");
+  if (!EMAIL_SHAPE.test(email)) {
+    throw new Error("PAGERDUTY_FROM_EMAIL is not an email address");
+  }
+  return email;
+}
+
+/** Incident ids are short alphanumerics; anything else never reaches a URL. */
+const incidentIdSchema = z.string().regex(/^[A-Za-z0-9]{1,64}$/);
+
+/**
+ * `PUT /incidents/{id}` with `{incident:{type:"incident_reference", status}}` and a required
+ * `From` header: the only update endpoint
+ * https://docs.pagerduty.com/developer/api/reference/rest/incidents/update-incident documents
+ * (retrieved 2026-11-06). There is no `/acknowledge` or `/resolve` sub-endpoint.
+ */
+async function pdIncidentStatusPut(
+  actionLabel: string,
+  status: "acknowledged" | "resolved",
+  incidentId: string,
+) {
+  const from = requirePdFromEmail();
   const token = requireProcessEnv("PAGERDUTY_API_TOKEN");
-  const res = await pdFetch(token, `/incidents/${encodeURIComponent(incidentId)}/${pathSuffix}`, {
+  const res = await pdFetch(token, `/incidents/${encodeURIComponent(incidentId)}`, {
     method: "PUT",
-    body: JSON.stringify({ incident: { type: "incident_reference", id: incidentId } }),
+    headers: { From: from },
+    body: JSON.stringify({ incident: { type: "incident_reference", status } }),
   });
   if (!res.ok) {
     throw new Error(`PagerDuty ${actionLabel} ${String(res.status)}: ${res.text.slice(0, 400)}`);
   }
   return jsonResult(res.json ?? { ok: true });
 }
+
+/** The incident as it stands: status, assignments, escalation level. Audited before a write. */
+async function readIncidentPreState(incidentId: string): Promise<Record<string, unknown>> {
+  requirePdFromEmail();
+  const token = requireProcessEnv("PAGERDUTY_API_TOKEN");
+  const res = await pdFetch(token, `/incidents/${encodeURIComponent(incidentId)}`);
+  if (!res.ok) {
+    throw new Error(`PagerDuty pre-state ${String(res.status)}: ${res.text.slice(0, 400)}`);
+  }
+  const inc = (res.json as { incident?: Record<string, unknown> } | null)?.incident ?? {};
+  return {
+    id: incidentId,
+    status: inc["status"],
+    assignments: inc["assignments"],
+    escalation_level: inc["escalation_level"] ?? null,
+    escalation_policy: inc["escalation_policy"],
+  };
+}
+
+/** Fixed refusal; see the pd_incident_escalate description. */
+export const ESCALATE_NOT_SUPPORTED =
+  "NOT_SUPPORTED: pd_incident_escalate is not supported; PagerDuty documents no escalation field on PUT /incidents/{id}";
 
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const PAGERDUTY_TOOL_NAMES = [
@@ -49,13 +103,6 @@ export const PAGERDUTY_TOOL_NAMES = [
   "pd_incident_acknowledge",
   "pd_incident_resolve",
   "pd_incident_escalate",
-] as const;
-
-/** The incident status changes, which differ only in the word they PUT. */
-const INCIDENT_STATUS_ACTIONS = [
-  { action: "acknowledge", description: "Acknowledge an incident." },
-  { action: "resolve", description: "Resolve an incident." },
-  { action: "escalate", description: "Escalate an incident." },
 ] as const;
 
 export function registerPagerdutyTools(
@@ -107,20 +154,52 @@ export function registerPagerdutyTools(
     (parsed) => `/incidents/${encodeURIComponent(parsed.incidentId)}`,
   );
 
-  // The three incident status changes are the same PUT with a different status
-  // word, so they are declared rather than written out three times. Each keeps
-  // its own description; the rest was identical.
-  for (const { action, description } of INCIDENT_STATUS_ACTIONS) {
-    registerWriteTool(
-      `pd_incident_${action}`,
-      {
-        mutates: `pagerduty.incident.${action}`,
-        recoverable: true,
-        scopeTargetOf: (p) => ({ kind: "incident", value: p.incidentId }),
-      },
-      description,
-      z.object({ incidentId: z.string().min(1) }),
-      async (parsed) => pdIncidentPutMutation(action, action, parsed.incidentId),
-    );
-  }
+  // Literal tool ids and `mutates` strings, so a static scan reads them. None can be undone
+  // through these tools (there is no unacknowledge, reopen or de-escalate), so each records the
+  // incident's prior state in the audit.
+  const incidentArgs = z.object({ incidentId: incidentIdSchema });
+  const incidentScope = (p: { incidentId: string }) => ({
+    kind: "incident",
+    value: p.incidentId,
+  });
+
+  registerWriteTool(
+    "pd_incident_acknowledge",
+    {
+      mutates: "pagerduty.incident.acknowledge",
+      recoverable: false,
+      capturePreState: (p) => readIncidentPreState(p.incidentId),
+      scopeTargetOf: incidentScope,
+    },
+    "Acknowledge an incident (`PUT /incidents/{id}` with status acknowledged). Needs PAGERDUTY_FROM_EMAIL, the email of a valid PagerDuty user.",
+    incidentArgs,
+    async (p) => pdIncidentStatusPut("acknowledge", "acknowledged", p.incidentId),
+  );
+
+  registerWriteTool(
+    "pd_incident_resolve",
+    {
+      mutates: "pagerduty.incident.resolve",
+      recoverable: false,
+      capturePreState: (p) => readIncidentPreState(p.incidentId),
+      scopeTargetOf: incidentScope,
+    },
+    "Resolve an incident (`PUT /incidents/{id}` with status resolved); it cannot be reopened through these tools. Needs PAGERDUTY_FROM_EMAIL, the email of a valid PagerDuty user.",
+    incidentArgs,
+    async (p) => pdIncidentStatusPut("resolve", "resolved", p.incidentId),
+  );
+
+  registerWriteTool(
+    "pd_incident_escalate",
+    {
+      mutates: "pagerduty.incident.escalate",
+      recoverable: false,
+      // Nothing will be sent, so there is nothing to capture.
+      capturePreState: () => Promise.resolve({}),
+      scopeTargetOf: incidentScope,
+    },
+    "NOT SUPPORTED: always refuses before any request. PagerDuty's update-incident reference documents no escalation field in the request body, so there is nothing safe to send.",
+    incidentArgs,
+    () => Promise.reject(new Error(ESCALATE_NOT_SUPPORTED)),
+  );
 }
