@@ -49,9 +49,66 @@ export interface GuardedFetchOptions {
   readonly requireSecureBase?: boolean;
 }
 
+type Transport = (url: string, init: RequestInit) => Promise<Response>;
+
+/** Phase 2: send one hop with `redirect: "manual"`, so no runtime follows anything on its own. */
+function sendHop(doFetch: Transport, url: URL, init: RequestInit): Promise<Response> {
+  return doFetch(url.toString(), { ...init, redirect: "manual" });
+}
+
+/** Phase 3a: a redirect on a mutation is never followed, and the credential never goes along. */
+function assertReadRedirect(label: string, method: string, status: number): void {
+  if (method === "GET" || method === "HEAD") return;
+  throw new Error(
+    `${label} answered a ${method} with a redirect (${String(status)}); the write may or may not have been applied`,
+  );
+}
+
+/** Phase 3b: the `Location` the redirect names. */
+function requireLocation(label: string, res: Response): string {
+  const location = res.headers.get("location");
+  if (location === null || location === "") {
+    throw new Error(`${label} sent a redirect without a Location; refused`);
+  }
+  return location;
+}
+
+/** Phase 3c: at most {@link MAX_REDIRECT_HOPS} followed redirects; `hop` counts those already followed. */
+function assertHopBudget(label: string, hop: number): void {
+  if (hop >= MAX_REDIRECT_HOPS) throw new Error(`${label} sent too many redirects; refused`);
+}
+
+/** Phase 3d: resolve `location` against the URL that answered. */
+function resolveNext(label: string, location: string, current: URL): URL {
+  try {
+    return new URL(location, current);
+  } catch {
+    throw new Error(`${label} redirected to an invalid URL; refused`);
+  }
+}
+
+/**
+ * Phase 3e: the target must be the same origin (a plain-http base was only reachable with
+ * requireSecureBase off, or is loopback), plus ONE widening: the same host's http -> https upgrade.
+ * Never https -> http; anything else is refused and nothing is sent there.
+ */
+function assertSameOriginOrUpgrade(label: string, current: URL, next: URL): void {
+  const sameOrigin = next.origin === current.origin;
+  const httpsUpgrade =
+    current.protocol === "http:" &&
+    next.protocol === "https:" &&
+    next.hostname === current.hostname &&
+    next.port === current.port;
+  if (!sameOrigin && !httpsUpgrade) {
+    throw new Error(`${label} redirected to another origin; refused`);
+  }
+}
+
 /**
  * `fetch(url, init)` with the redirect policy above. `label` names the service in a refusal
  * ("GitLab redirected a POST; refused"). Resolves to the final non-redirect response.
+ *
+ * The order of the checks is the policy; read it top to bottom in the loop.
  */
 export async function guardedFetch(
   label: string,
@@ -60,43 +117,19 @@ export async function guardedFetch(
   options: GuardedFetchOptions = {},
 ): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
-  const mayFollow = method === "GET" || method === "HEAD";
-  const doFetch =
+  const doFetch: Transport =
     options.fetch ?? ((u: string, i: RequestInit) => fetchWithTimeout(u, i, DEFAULT_TIMEOUT_MS));
   let current = new URL(url);
+  // Phase 1: the base itself.
   if (options.requireSecureBase !== false) assertSecureTransport(label, current);
   for (let hop = 0; ; hop += 1) {
-    const res = await doFetch(current.toString(), { ...init, redirect: "manual" });
+    const res = await sendHop(doFetch, current, init);
     if (!REDIRECT_STATUSES.has(res.status)) return res;
-    if (!mayFollow) {
-      throw new Error(
-        `${label} answered a ${method} with a redirect (${String(res.status)}); the write may or may not have been applied`,
-      );
-    }
-    const location = res.headers.get("location");
-    if (location === null || location === "") {
-      throw new Error(`${label} sent a redirect without a Location; refused`);
-    }
-    if (hop >= MAX_REDIRECT_HOPS) {
-      throw new Error(`${label} sent too many redirects; refused`);
-    }
-    let next: URL;
-    try {
-      next = new URL(location, current);
-    } catch {
-      throw new Error(`${label} redirected to an invalid URL; refused`);
-    }
-    // Same origin always (a plain-http base was only reachable with requireSecureBase off, or is
-    // loopback), plus ONE widening: the same host's http -> https upgrade. Never https -> http.
-    const sameOrigin = next.origin === current.origin;
-    const httpsUpgrade =
-      current.protocol === "http:" &&
-      next.protocol === "https:" &&
-      next.hostname === current.hostname &&
-      next.port === current.port;
-    if (!sameOrigin && !httpsUpgrade) {
-      throw new Error(`${label} redirected to another origin; refused`);
-    }
+    assertReadRedirect(label, method, res.status);
+    const location = requireLocation(label, res);
+    assertHopBudget(label, hop);
+    const next = resolveNext(label, location, current);
+    assertSameOriginOrUpgrade(label, current, next);
     current = next;
   }
 }

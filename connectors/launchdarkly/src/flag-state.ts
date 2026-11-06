@@ -47,6 +47,40 @@ export function echoedOn(response: unknown, environmentKey: string): boolean | u
   return isRecord(env) && typeof env["on"] === "boolean" ? env["on"] : undefined;
 }
 
+/** `environmentKey`'s fallthrough rollout object in a flag-change reply, when there is one. */
+function fallthroughRolloutOf(
+  response: Record<string, unknown>,
+  environmentKey: string,
+): Record<string, unknown> | undefined {
+  const envs = isRecord(response["environments"]) ? response["environments"] : {};
+  const env = envs[environmentKey];
+  const fallthrough = isRecord(env) && isRecord(env["fallthrough"]) ? env["fallthrough"] : {};
+  const rollout = fallthrough["rollout"];
+  return isRecord(rollout) ? rollout : undefined;
+}
+
+/**
+ * The echoed rollout weights by variation id, or `undefined` when any entry cannot be resolved to a
+ * variation id and a numeric weight.
+ */
+function echoedWeights(
+  rollout: Record<string, unknown>,
+  variations: readonly unknown[],
+): Record<string, number> | undefined {
+  const echoed: Record<string, number> = {};
+  const entries = Array.isArray(rollout["variations"]) ? rollout["variations"] : [];
+  for (const entry of entries) {
+    const row = isRecord(entry) ? entry : {};
+    const index = row["variation"];
+    const weight = row["weight"];
+    const variation = typeof index === "number" ? variations[index] : undefined;
+    const id = isRecord(variation) ? variation["_id"] : undefined;
+    if (typeof id !== "string" || typeof weight !== "number") return undefined;
+    echoed[id] = weight;
+  }
+  return echoed;
+}
+
 /**
  * True only when the reply carries `environmentKey`'s fallthrough rollout and its weights (by
  * variation id, a missing id counting as 0) equal `requested`. A reply without them is not a
@@ -58,22 +92,11 @@ export function rolloutEchoed(
   requested: Readonly<Record<string, number>>,
 ): boolean {
   if (!isRecord(response)) return false;
-  const envs = isRecord(response["environments"]) ? response["environments"] : {};
-  const env = envs[environmentKey];
-  const fallthrough = isRecord(env) && isRecord(env["fallthrough"]) ? env["fallthrough"] : {};
-  const rollout = fallthrough["rollout"];
-  if (!isRecord(rollout) || !Array.isArray(rollout["variations"])) return false;
+  const rollout = fallthroughRolloutOf(response, environmentKey);
+  if (rollout === undefined || !Array.isArray(rollout["variations"])) return false;
   const variations = Array.isArray(response["variations"]) ? response["variations"] : [];
-  const echoed: Record<string, number> = {};
-  for (const entry of rollout["variations"]) {
-    const row = isRecord(entry) ? entry : {};
-    const index = row["variation"];
-    const weight = row["weight"];
-    const variation = typeof index === "number" ? variations[index] : undefined;
-    const id = isRecord(variation) ? variation["_id"] : undefined;
-    if (typeof id !== "string" || typeof weight !== "number") return false;
-    echoed[id] = weight;
-  }
+  const echoed = echoedWeights(rollout, variations);
+  if (echoed === undefined) return false;
   const ids = new Set([...Object.keys(requested), ...Object.keys(echoed)]);
   for (const id of ids) {
     if ((requested[id] ?? 0) !== (echoed[id] ?? 0)) return false;

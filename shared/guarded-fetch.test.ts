@@ -26,22 +26,6 @@ const redirect = (status: number, location?: string): Response =>
 const ok = (): Response => new Response("done", { status: 200 });
 
 describe("guardedFetch redirects", () => {
-  it("refuses a redirect to a userinfo URL that names another host", async () => {
-    const t = scripted([redirect(302, "https://api.example.com@evil.test/")]);
-    await expect(
-      guardedFetch("Svc", "https://api.example.com/x", {}, { fetch: t.fetch }),
-    ).rejects.toThrow(/another origin/);
-    expect(t.calls).toHaveLength(1);
-  });
-
-  it("refuses a protocol-relative Location that names another host", async () => {
-    const t = scripted([redirect(302, "//evil.test/x")]);
-    await expect(
-      guardedFetch("Svc", "https://api.example.com/x", {}, { fetch: t.fetch }),
-    ).rejects.toThrow(/another origin/);
-    expect(t.calls).toHaveLength(1);
-  });
-
   it("treats an explicit default port as the same origin", async () => {
     const t = scripted([redirect(301, "https://api.example.com:443/y"), ok()]);
     const res = await guardedFetch("Svc", "https://api.example.com/x", {}, { fetch: t.fetch });
@@ -55,8 +39,12 @@ describe("guardedFetch redirects", () => {
     expect(res.status).toBe(200);
   });
 
-  it("refuses an https to http downgrade on the same host", async () => {
-    const t = scripted([redirect(302, "http://api.example.com/x")]);
+  it.each([
+    ["a userinfo URL that names another host", "https://api.example.com@evil.test/"],
+    ["a protocol-relative Location that names another host", "//evil.test/x"],
+    ["an https to http downgrade on the same host", "http://api.example.com/x"],
+  ])("refuses a redirect to %s", async (_name, location) => {
+    const t = scripted([redirect(302, location)]);
     await expect(
       guardedFetch("Svc", "https://api.example.com/x", {}, { fetch: t.fetch }),
     ).rejects.toThrow(/another origin/);
