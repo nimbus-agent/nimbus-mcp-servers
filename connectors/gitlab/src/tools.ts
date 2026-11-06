@@ -5,6 +5,7 @@ import {
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
 import { optionalBaseUrl } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -33,10 +34,8 @@ async function glFetch(token: string, path: string, init?: RequestInit): Promise
     init?.headers === undefined
       ? baseHeaders
       : { ...baseHeaders, ...(init.headers as Record<string, string>) };
-  const res = await fetch(url, {
-    ...init,
-    headers: mergedHeaders,
-  });
+  // guardedFetch: the PRIVATE-TOKEN header must never follow a redirect to another origin.
+  const res = await guardedFetch("GitLab", url, { ...init, headers: mergedHeaders });
   return toRestFetchResult(res);
 }
 
@@ -113,7 +112,7 @@ async function fetchJobTrace(parsed: {
   const token = requireProcessEnv("GITLAB_PAT");
   const enc = encodeURIComponent(parsed.projectPath);
   const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
-  const res = await fetch(url, { headers: { "PRIVATE-TOKEN": token } });
+  const res = await guardedFetch("GitLab", url, { headers: { "PRIVATE-TOKEN": token } });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
@@ -135,6 +134,9 @@ export const GITLAB_TOOL_NAMES = [
   "gitlab_issue_labels_add",
   "gitlab_issue_assignees_add",
   "gitlab_issue_state_set",
+  "gitlab_branch_create",
+  "gitlab_mr_create",
+  "gitlab_mr_update",
   "gitlab_pipeline_list",
   "gitlab_pipeline_get",
   "gitlab_pipeline_jobs_get",
@@ -388,7 +390,7 @@ export function registerGitlabTools(
       // header), so this one request bypasses glFetch. Never the private_token query parameter:
       // a token in a URL is logged.
       const res = await toRestFetchResult(
-        await fetch(graphqlUrl(), {
+        await guardedFetch("GitLab", graphqlUrl(), {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -419,6 +421,99 @@ export function registerGitlabTools(
     gitlabIssueGetSchema.extend({ stateEvent: z.enum(["close", "reopen"]) }),
     issuePath,
     (parsed) => jsonBody("PUT", { state_event: parsed.stateEvent }),
+  );
+
+  /** A branch name or ref GitLab takes in a query: no whitespace, control characters, `..` or leading `-`. */
+  const gitlabRefSchema = z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(
+      (r) =>
+        !r.includes("..") &&
+        !r.startsWith("-") &&
+        [...r].every((c) => c.trim() !== "" && c.charCodeAt(0) > 31 && c.charCodeAt(0) !== 127),
+      "not a valid branch or ref name",
+    );
+
+  registerGitlabWriteTool(
+    "gitlab_branch_create",
+    // A new branch is undone by deleting it, so nothing needs capturing first.
+    { mutates: "gitlab.branch.create", recoverable: true },
+    "Create a branch from a branch name or commit SHA (fromRef).",
+    projectPathArg.extend({ branch: gitlabRefSchema, fromRef: gitlabRefSchema }),
+    (parsed) =>
+      listUrl(`/projects/${encodeURIComponent(parsed.projectPath)}/repository/branches`, (q) => {
+        q.set("branch", parsed.branch);
+        q.set("ref", parsed.fromRef);
+      }),
+    () => ({ method: "POST" }),
+  );
+
+  registerGitlabWriteTool(
+    "gitlab_mr_create",
+    { mutates: "gitlab.mr.create", recoverable: true },
+    "Open a merge request from sourceBranch into targetBranch. Title and description are sent exactly as given.",
+    projectPathArg.extend({
+      sourceBranch: z.string().min(1).max(255),
+      targetBranch: z.string().min(1).max(255),
+      title: z.string().min(1).max(255),
+      description: z.string().max(65_000).optional(),
+    }),
+    (parsed) => `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests`,
+    (parsed) =>
+      jsonBody("POST", {
+        source_branch: parsed.sourceBranch,
+        target_branch: parsed.targetBranch,
+        title: parsed.title,
+        ...(parsed.description === undefined ? {} : { description: parsed.description }),
+      }),
+  );
+
+  // A plain object, not a `.refine()`d one: the registrar passes `.shape` as the MCP inputSchema and a
+  // refined object has none. The at-least-one check is the handler's.
+  const mrPath = (p: { projectPath: string; mergeRequestIid: number }): string =>
+    `/projects/${encodeURIComponent(p.projectPath)}/merge_requests/${String(p.mergeRequestIid)}`;
+
+  registerGitlabWriteTool(
+    "gitlab_mr_update",
+    {
+      mutates: "gitlab.mr.update",
+      // An edit overwrites text; its inverse needs the old text, so capture it first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITLAB_PAT");
+        const res = await glFetch(token, mrPath(parsed));
+        const mr = res.json as {
+          title?: unknown;
+          description?: unknown;
+          target_branch?: unknown;
+        } | null;
+        if (!res.ok || mr === null) return { resolved: false, status: res.status };
+        return { title: mr.title, description: mr.description, target_branch: mr.target_branch };
+      },
+    },
+    "Edit a merge request's title, description or target branch (at least one). It never closes, reopens or merges it.",
+    gitlabMrGetSchema.extend({
+      title: z.string().min(1).max(255).optional(),
+      description: z.string().max(65_000).optional(),
+      targetBranch: z.string().min(1).max(255).optional(),
+    }),
+    mrPath,
+    (parsed) => {
+      if (
+        parsed.title === undefined &&
+        parsed.description === undefined &&
+        parsed.targetBranch === undefined
+      ) {
+        throw new Error("gitlab_mr_update needs at least one of title, description, targetBranch");
+      }
+      return jsonBody("PUT", {
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
+        ...(parsed.description === undefined ? {} : { description: parsed.description }),
+        ...(parsed.targetBranch === undefined ? {} : { target_branch: parsed.targetBranch }),
+      });
+    },
   );
 
   const gitlabPipelineListSchema = projectPathArg.extend({

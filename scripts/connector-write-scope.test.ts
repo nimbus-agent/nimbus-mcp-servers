@@ -322,6 +322,14 @@ const WRITES: Readonly<
         { projectPath: "group/repo" },
         "repo:group/repo",
       ],
+      [
+        "gitlab_branch_create",
+        "gitlab.branch.create",
+        { projectPath: "group/repo" },
+        "repo:group/repo",
+      ],
+      ["gitlab_mr_create", "gitlab.mr.create", { projectPath: "group/repo" }, "repo:group/repo"],
+      ["gitlab_mr_update", "gitlab.mr.update", { projectPath: "group/repo" }, "repo:group/repo"],
       ...(
         [
           ["gitlab_issue_create", "gitlab.issue.create"],

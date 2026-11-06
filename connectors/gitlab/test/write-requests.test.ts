@@ -1,0 +1,402 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type CapturedTools,
+  captureStandaloneTools,
+  captureTools,
+  type FetchStub,
+  type RecordedRequest,
+  type StubReply,
+  stubFetch,
+  withEnv,
+} from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
+import { registerGitlabTools } from "../src/tools.ts";
+
+const BASE_ENV = "GITLAB_API_BASE_URL";
+const API = "https://gitlab.com/api/v4";
+const ENC = `${API}/projects/group%2Frepo`;
+const PROJECT = { projectPath: "group/repo" };
+
+let http: FetchStub | undefined;
+
+function serve(reply: StubReply | ((req: RecordedRequest) => StubReply | undefined)): FetchStub {
+  http?.restore();
+  http = stubFetch(reply);
+  return http;
+}
+
+beforeEach(() => {
+  resetConnectorModeForTests();
+  delete process.env[BASE_ENV];
+  process.env["GITLAB_PAT"] = "glpat-test";
+});
+
+afterEach(() => {
+  http?.restore();
+  http = undefined;
+  delete process.env["GITLAB_PAT"];
+  delete process.env[BASE_ENV];
+  resetConnectorModeForTests();
+});
+
+describe("gitlab branch, merge request create and update (gateway mode)", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGitlabTools);
+  });
+
+  async function request(name: string, args: Record<string, unknown>): Promise<RecordedRequest> {
+    const stub = serve('{"iid":5}');
+    await tools.call(name, { ...PROJECT, ...args });
+    return stub.only;
+  }
+
+  it("branch_create POSTs branch then ref as query parameters, with no body", async () => {
+    const req = await request("gitlab_branch_create", { branch: "feat/x", fromRef: "main" });
+    expect(`${req.method} ${req.url}`).toBe(
+      `POST ${ENC}/repository/branches?branch=feat%2Fx&ref=main`,
+    );
+    expect(req.body).toBeUndefined();
+    expect(req.headers["private-token"]).toBe("glpat-test");
+  });
+
+  it("branch_create accepts a commit sha as fromRef", async () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const req = await request("gitlab_branch_create", { branch: "b", fromRef: sha });
+    expect(req.url).toBe(`${ENC}/repository/branches?branch=b&ref=${sha}`);
+  });
+
+  it("branch_create refuses names GitLab would reject or that smuggle syntax, before any request", async () => {
+    const stub = serve("{}");
+    for (const bad of ["a b", "-x", "a..b", "a\u0001b", "a\nb", "", "x".repeat(256)]) {
+      await expect(
+        tools.call("gitlab_branch_create", { ...PROJECT, branch: bad, fromRef: "main" }),
+      ).rejects.toThrow();
+      await expect(
+        tools.call("gitlab_branch_create", { ...PROJECT, branch: "ok", fromRef: bad }),
+      ).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("branch_create encodes a query-hostile ref rather than splicing it in", async () => {
+    const req = await request("gitlab_branch_create", { branch: "a&b=c", fromRef: "main" });
+    expect(req.url).toBe(`${ENC}/repository/branches?branch=a%26b%3Dc&ref=main`);
+  });
+
+  it("mr_create POSTs exactly the documented fields, absent keys absent", async () => {
+    const req = await request("gitlab_mr_create", {
+      sourceBranch: "feat/x",
+      targetBranch: "main",
+      title: "Add x",
+    });
+    expect(`${req.method} ${req.url}`).toBe(`POST ${ENC}/merge_requests`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({
+      source_branch: "feat/x",
+      target_branch: "main",
+      title: "Add x",
+    });
+    expect(req.headers["content-type"]).toBe("application/json");
+  });
+
+  const MARKDOWN = "Ping @channel\n/close\n![](https://x/y.png)\n";
+
+  it("mr_create sends title and description byte-identical", async () => {
+    const req = await request("gitlab_mr_create", {
+      sourceBranch: "a",
+      targetBranch: "b",
+      title: "Fix @channel /close",
+      description: MARKDOWN,
+    });
+    const sent = JSON.parse(req.body ?? "null") as Record<string, string>;
+    expect(sent["description"]).toBe(MARKDOWN);
+    expect(sent["title"]).toBe("Fix @channel /close");
+    expect(Object.keys(sent).sort((a, b) => a.localeCompare(b))).toEqual([
+      "description",
+      "source_branch",
+      "target_branch",
+      "title",
+    ]);
+  });
+
+  it("mr_create encodes a nested project path and honours a base override without doubling", async () => {
+    process.env[BASE_ENV] = "https://git.example.com/api/v4/";
+    const stub = serve("{}");
+    await tools.call("gitlab_mr_create", {
+      projectPath: "group/sub/repo",
+      sourceBranch: "a",
+      targetBranch: "b",
+      title: "t",
+    });
+    expect(stub.only.url).toBe(
+      "https://git.example.com/api/v4/projects/group%2Fsub%2Frepo/merge_requests",
+    );
+  });
+
+  it("mr_create refuses an empty title or an over-long description before any request", async () => {
+    const stub = serve("{}");
+    for (const bad of [
+      { title: "" },
+      { title: "x".repeat(256) },
+      { description: "x".repeat(65_001) },
+    ]) {
+      await expect(
+        tools.call("gitlab_mr_create", {
+          ...PROJECT,
+          sourceBranch: "a",
+          targetBranch: "b",
+          title: "t",
+          ...bad,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("mr_update PUTs only the keys given, and never state_event", async () => {
+    const req = await request("gitlab_mr_update", { mergeRequestIid: 4, title: "New" });
+    expect(`${req.method} ${req.url}`).toBe(`PUT ${ENC}/merge_requests/4`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ title: "New" });
+    const all = await request("gitlab_mr_update", {
+      mergeRequestIid: 4,
+      title: "t",
+      description: MARKDOWN,
+      targetBranch: "develop",
+      stateEvent: "close",
+    });
+    const sent = JSON.parse(all.body ?? "null") as Record<string, unknown>;
+    expect(sent).toEqual({ title: "t", description: MARKDOWN, target_branch: "develop" });
+    expect("state_event" in sent).toBe(false);
+  });
+
+  it("mr_update with none of title, description, targetBranch is refused before any request", async () => {
+    const stub = serve("{}");
+    await expect(
+      tools.call("gitlab_mr_update", { ...PROJECT, mergeRequestIid: 4 }),
+    ).rejects.toThrow("at least one of title, description, targetBranch");
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("mr_update registers a plain object schema that lists its fields", () => {
+    const schema = tools.get("gitlab_mr_update").schema as { shape?: Record<string, unknown> };
+    expect(Object.keys(schema.shape ?? {}).sort((a, b) => a.localeCompare(b))).toEqual([
+      "description",
+      "mergeRequestIid",
+      "projectPath",
+      "targetBranch",
+      "title",
+    ]);
+  });
+
+  it("sends nothing at all when GITLAB_PAT is missing", async () => {
+    delete process.env["GITLAB_PAT"];
+    const stub = serve("{}");
+    for (const [name, args] of [
+      ["gitlab_branch_create", { branch: "b", fromRef: "main" }],
+      ["gitlab_mr_create", { sourceBranch: "a", targetBranch: "b", title: "t" }],
+      ["gitlab_mr_update", { mergeRequestIid: 1, title: "t" }],
+    ] as const) {
+      await expect(tools.call(name, { ...PROJECT, ...args })).rejects.toThrow("GITLAB_PAT");
+    }
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("gitlab mr_update (standalone mode)", () => {
+  let auditDir: string;
+  let auditLog: string;
+
+  beforeEach(() => {
+    setConnectorMode("standalone");
+    auditDir = mkdtempSync(join(tmpdir(), "nimbus-gitlab-audit-"));
+    auditLog = join(auditDir, "audit.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(auditDir, { recursive: true, force: true });
+  });
+
+  async function standalone(): Promise<CapturedTools> {
+    let tools: CapturedTools | undefined;
+    await withEnv(
+      {
+        NIMBUS_MCP_GITLAB_WRITE_SCOPE: "repo:group/repo",
+        NIMBUS_MCP_AUDIT_LOG: auditLog,
+        NIMBUS_MCP_WRITE_BUDGET: undefined,
+      },
+      () => {
+        tools = captureStandaloneTools(registerGitlabTools, { elicitation: true }).tools;
+      },
+    );
+    if (tools === undefined) throw new Error("registration did not run");
+    return tools;
+  }
+
+  it("captures the merge request's title, description and target BEFORE the PUT", async () => {
+    const tools = await standalone();
+    const mr = JSON.stringify({
+      title: "Old",
+      description: "old text",
+      target_branch: "main",
+      other: 1,
+    });
+    const stub = serve((req) => (req.method === "GET" ? mr : "{}"));
+    await tools.call("gitlab_mr_update", { ...PROJECT, mergeRequestIid: 4, title: "New" });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${ENC}/merge_requests/4`,
+      `PUT ${ENC}/merge_requests/4`,
+    ]);
+    const executed = readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      )
+      .find((e) => e.outcome === "executed");
+    expect(executed?.detail["preState"]).toEqual({
+      title: "Old",
+      description: "old text",
+      target_branch: "main",
+    });
+  });
+});
+
+describe("gitlab never sends its token across origins", () => {
+  let tools: CapturedTools;
+  const EVIL = "https://evil.example/steal";
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGitlabTools);
+  });
+
+  /** Every request the stub saw that carried any credential header. */
+  const credentialed = (stub: FetchStub): string[] =>
+    stub.calls
+      .filter(
+        (c) => c.headers["private-token"] !== undefined || c.headers["authorization"] !== undefined,
+      )
+      .map((c) => c.url);
+
+  it("a cross-origin 307 on a POST throws and the second request is never made", async () => {
+    const stub = serve({ status: 307, headers: { Location: EVIL } });
+    await expect(
+      tools.call("gitlab_mr_create", {
+        ...PROJECT,
+        sourceBranch: "a",
+        targetBranch: "b",
+        title: "t",
+      }),
+    ).rejects.toThrow("GitLab redirected a POST; refused");
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+  });
+
+  it("a same-origin 307 on a write is refused too", async () => {
+    const stub = serve({ status: 307, headers: { Location: `${API}/elsewhere` } });
+    await expect(
+      tools.call("gitlab_pipeline_retry", { ...PROJECT, pipelineId: 1 }),
+    ).rejects.toThrow("redirected a POST; refused");
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("a cross-origin 302 on a GET throws, and no request to another origin carries a credential", async () => {
+    const stub = serve({ status: 302, headers: { Location: EVIL } });
+    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
+      "GitLab redirected to another origin; refused",
+    );
+    expect(stub.calls).toHaveLength(1);
+    expect(credentialed(stub).every((u) => new URL(u).origin === "https://gitlab.com")).toBe(true);
+    expect(stub.calls.some((c) => c.url.startsWith("https://evil.example"))).toBe(false);
+  });
+
+  it("a same-origin https 301 on a GET is followed, with the token", async () => {
+    const stub = serve((req) =>
+      req.url.includes("group%2Frepo")
+        ? { status: 301, headers: { Location: `${API}/projects/123/merge_requests/1` } }
+        : '{"iid":1}',
+    );
+    expect(await tools.callJson("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).toEqual({
+      iid: 1,
+    });
+    expect(stub.calls).toHaveLength(2);
+    expect(stub.calls[1]?.url).toBe(`${API}/projects/123/merge_requests/1`);
+    expect(stub.calls[1]?.headers["private-token"]).toBe("glpat-test");
+  });
+
+  it("a relative Location resolves against the current URL and is followed", async () => {
+    const stub = serve((req) =>
+      req.url.includes("group%2Frepo")
+        ? { status: 302, headers: { Location: "/api/v4/moved" } }
+        : "{}",
+    );
+    await tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 });
+    expect(stub.calls[1]?.url).toBe("https://gitlab.com/api/v4/moved");
+  });
+
+  it("an http: Location is refused", async () => {
+    const stub = serve({ status: 301, headers: { Location: "http://gitlab.com/api/v4/x" } });
+    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
+      "redirected to another origin; refused",
+    );
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("a redirect with no Location is refused rather than returned as a result", async () => {
+    serve({ status: 302 });
+    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
+      /redirect/,
+    );
+  });
+
+  it("a fourth hop is refused", async () => {
+    const stub = serve({ status: 301, headers: { Location: `${API}/loop` } });
+    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
+      /too many redirects/,
+    );
+    expect(stub.calls).toHaveLength(4);
+  });
+
+  it("the job trace fetch refuses a cross-origin redirect", async () => {
+    const stub = serve({ status: 302, headers: { Location: EVIL } });
+    await expect(tools.call("gitlab_job_trace", { ...PROJECT, jobId: 7 })).rejects.toThrow(
+      "redirected to another origin; refused",
+    );
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("the GraphQL assignee POST refuses any redirect", async () => {
+    const stub = serve({ status: 307, headers: { Location: EVIL } });
+    await expect(
+      tools.call("gitlab_issue_assignees_add", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada"],
+      }),
+    ).rejects.toThrow("redirected a POST; refused");
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+  });
+
+  it("refuses a configured base that is not https and not loopback, before any request", async () => {
+    process.env[BASE_ENV] = "http://gitlab.example.com/api/v4";
+    const stub = serve("{}");
+    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
+      /https/,
+    );
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("still allows a loopback http base", async () => {
+    process.env[BASE_ENV] = "http://localhost:9/api/v4";
+    const stub = serve("{}");
+    await tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 });
+    expect(stub.only.url).toBe("http://localhost:9/api/v4/projects/group%2Frepo/merge_requests/1");
+  });
+});
