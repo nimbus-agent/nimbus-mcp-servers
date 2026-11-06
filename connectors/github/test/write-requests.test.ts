@@ -297,7 +297,7 @@ describe("github branch create / ref get (gateway mode)", () => {
   it("resolves a branch name, then POSTs the new ref at that commit", async () => {
     const stub = serve(
       table({
-        [`GET ${COMMITS}/heads/main`]: SHA,
+        [`GET ${COMMITS}/refs/heads/main`]: SHA,
         [`POST ${API}/repos/acme/api/git/refs`]: {
           status: 201,
           body: '{"ref":"refs/heads/feat/x"}',
@@ -312,7 +312,10 @@ describe("github branch create / ref get (gateway mode)", () => {
       }),
     );
     expect(out).toEqual({ ok: true, ref: "refs/heads/feat/x", sha: SHA, fromRef: "main" });
-    expect(log(stub)).toEqual([`GET ${COMMITS}/heads/main`, `POST ${API}/repos/acme/api/git/refs`]);
+    expect(log(stub)).toEqual([
+      `GET ${COMMITS}/refs/heads/main`,
+      `POST ${API}/repos/acme/api/git/refs`,
+    ]);
     expect(stub.calls[0]?.headers["accept"]).toBe("application/vnd.github.sha");
     expect(stub.calls[0]?.headers["authorization"]).toBe("Bearer ghp_test");
     expect(JSON.parse(stub.calls[1]?.body ?? "null")).toEqual({
@@ -324,8 +327,8 @@ describe("github branch create / ref get (gateway mode)", () => {
   it("falls back from heads to tags on a 404 only, and trims the sha body", async () => {
     const stub = serve(
       table({
-        [`GET ${COMMITS}/heads/v1`]: { status: 404, body: '{"message":"No commit found"}' },
-        [`GET ${COMMITS}/tags/v1`]: `${SHA}\n`,
+        [`GET ${COMMITS}/refs/heads/v1`]: { status: 404, body: '{"message":"No commit found"}' },
+        [`GET ${COMMITS}/refs/tags/v1`]: `${SHA}\n`,
         [`POST ${API}/repos/acme/api/git/refs`]: { status: 201, body: "{}" },
       }),
     );
@@ -333,11 +336,87 @@ describe("github branch create / ref get (gateway mode)", () => {
       tools.callJson("github_branch_create", { ...REPO_ARGS, branch: "rel", fromRef: "v1" }),
     );
     expect((out as { sha: string }).sha).toBe(SHA);
-    expect(log(stub).slice(0, 2)).toEqual([`GET ${COMMITS}/heads/v1`, `GET ${COMMITS}/tags/v1`]);
+    expect(log(stub).slice(0, 2)).toEqual([
+      `GET ${COMMITS}/refs/heads/v1`,
+      `GET ${COMMITS}/refs/tags/v1`,
+    ]);
+  });
+
+  it("a bare tag name resolves via refs/tags after the branch candidate answers 422", async () => {
+    const stub = serve(
+      table({
+        [`GET ${COMMITS}/refs/heads/v2.45.0`]: {
+          status: 422,
+          body: '{"message":"No commit found for SHA: v2.45.0"}',
+        },
+        [`GET ${COMMITS}/refs/tags/v2.45.0`]: SHA,
+        [`POST ${API}/repos/acme/api/git/refs`]: { status: 201, body: "{}" },
+      }),
+    );
+    const out = await run(() =>
+      tools.callJson("github_branch_create", { ...REPO_ARGS, branch: "rel", fromRef: "v2.45.0" }),
+    );
+    expect((out as { sha: string }).sha).toBe(SHA);
+    expect(log(stub).slice(0, 2)).toEqual([
+      `GET ${COMMITS}/refs/heads/v2.45.0`,
+      `GET ${COMMITS}/refs/tags/v2.45.0`,
+    ]);
+  });
+
+  it("a tags/ prefixed ref resolves as refs/tags/", async () => {
+    const stub = serve(
+      table({
+        [`GET ${COMMITS}/refs/tags/v2.45.0`]: SHA,
+        [`POST ${API}/repos/acme/api/git/refs`]: { status: 201, body: "{}" },
+      }),
+    );
+    const out = await run(() =>
+      tools.callJson("github_branch_create", {
+        ...REPO_ARGS,
+        branch: "rel",
+        fromRef: "tags/v2.45.0",
+      }),
+    );
+    expect((out as { sha: string }).sha).toBe(SHA);
+    expect(log(stub)[0]).toBe(`GET ${COMMITS}/refs/tags/v2.45.0`);
+  });
+
+  it("a missing ref (422 on both candidates) gives the not-found error", async () => {
+    const miss = { status: 422, body: '{"message":"No commit found for SHA: nope"}' };
+    serve(
+      table({
+        [`GET ${COMMITS}/refs/heads/nope`]: miss,
+        [`GET ${COMMITS}/refs/tags/nope`]: miss,
+      }),
+    );
+    await run(async () => {
+      await expect(
+        tools.call("github_branch_create", { ...REPO_ARGS, branch: "b", fromRef: "nope" }),
+      ).rejects.toThrow('ref "nope" not found');
+    });
+  });
+
+  it("a 422 with another message is a real error, not a not-found", async () => {
+    const stub = serve(
+      table({
+        [`GET ${COMMITS}/refs/heads/main`]: {
+          status: 422,
+          body: '{"message":"Validation Failed"}',
+        },
+      }),
+    );
+    await run(async () => {
+      await expect(
+        tools.call("github_branch_create", { ...REPO_ARGS, branch: "b", fromRef: "main" }),
+      ).rejects.toThrow("422");
+    });
+    expect(stub.calls).toHaveLength(1);
   });
 
   it("does not fall through to tags on a non-404 error", async () => {
-    const stub = serve(table({ [`GET ${COMMITS}/heads/main`]: { status: 500, body: "boom" } }));
+    const stub = serve(
+      table({ [`GET ${COMMITS}/refs/heads/main`]: { status: 500, body: "boom" } }),
+    );
     await run(async () => {
       await expect(
         tools.call("github_branch_create", { ...REPO_ARGS, branch: "b", fromRef: "main" }),
@@ -348,14 +427,14 @@ describe("github branch create / ref get (gateway mode)", () => {
 
   it("a heads/ or tags/ prefixed ref is one GET, never retried under the other kind", async () => {
     const stub = serve(
-      table({ [`GET ${COMMITS}/heads/feat/a`]: { status: 404, body: '{"message":"nope"}' } }),
+      table({ [`GET ${COMMITS}/refs/heads/feat/a`]: { status: 404, body: '{"message":"nope"}' } }),
     );
     await run(async () => {
       await expect(
         tools.call("github_branch_create", { ...REPO_ARGS, branch: "b", fromRef: "heads/feat/a" }),
       ).rejects.toThrow("404");
     });
-    expect(log(stub)).toEqual([`GET ${COMMITS}/heads/feat/a`]);
+    expect(log(stub)).toEqual([`GET ${COMMITS}/refs/heads/feat/a`]);
   });
 
   it("a 40-hex fromRef is used as given, with no lookup", async () => {
@@ -368,7 +447,7 @@ describe("github branch create / ref get (gateway mode)", () => {
   });
 
   it("refuses a lookup body that is not a 40-hex sha, and sends no POST", async () => {
-    const stub = serve(table({ [`GET ${COMMITS}/heads/main`]: "<html>oops</html>" }));
+    const stub = serve(table({ [`GET ${COMMITS}/refs/heads/main`]: "<html>oops</html>" }));
     await run(async () => {
       await expect(
         tools.call("github_branch_create", { ...REPO_ARGS, branch: "b", fromRef: "main" }),
@@ -380,7 +459,7 @@ describe("github branch create / ref get (gateway mode)", () => {
   it("surfaces the 422 body when GitHub refuses the ref", async () => {
     serve(
       table({
-        [`GET ${COMMITS}/heads/main`]: SHA,
+        [`GET ${COMMITS}/refs/heads/main`]: SHA,
         [`POST ${API}/repos/acme/api/git/refs`]: {
           status: 422,
           body: '{"message":"Reference already exists"}',
@@ -397,7 +476,7 @@ describe("github branch create / ref get (gateway mode)", () => {
   it("expectedSha: a mismatch throws BEFORE any POST, a match proceeds", async () => {
     const stub = serve(
       table({
-        [`GET ${COMMITS}/heads/main`]: SHA,
+        [`GET ${COMMITS}/refs/heads/main`]: SHA,
         [`POST ${API}/repos/acme/api/git/refs`]: { status: 201, body: "{}" },
       }),
     );
@@ -411,7 +490,7 @@ describe("github branch create / ref get (gateway mode)", () => {
         }),
       ).rejects.toThrow(`fromRef resolves to ${SHA}, not the approved ${SHA2}`);
     });
-    expect(log(stub)).toEqual([`GET ${COMMITS}/heads/main`]);
+    expect(log(stub)).toEqual([`GET ${COMMITS}/refs/heads/main`]);
     await run(() =>
       tools.call("github_branch_create", {
         ...REPO_ARGS,
@@ -487,7 +566,7 @@ describe("github branch create / ref get (gateway mode)", () => {
     process.env["GITHUB_API_BASE_URL"] = "https://ghe.example.com/api/v3";
     const stub = serve(
       table({
-        "GET https://ghe.example.com/api/v3/repos/acme/api/commits/heads/main": SHA,
+        "GET https://ghe.example.com/api/v3/repos/acme/api/commits/refs/heads/main": SHA,
         "POST https://ghe.example.com/api/v3/repos/acme/api/git/refs": { status: 201, body: "{}" },
       }),
     );
@@ -500,9 +579,9 @@ describe("github branch create / ref get (gateway mode)", () => {
   it("ref_get reports a branch, a tag, and a sha", async () => {
     serve(
       table({
-        [`GET ${COMMITS}/heads/main`]: SHA,
-        [`GET ${COMMITS}/tags/v2`]: SHA2,
-        [`GET ${COMMITS}/heads/v2`]: { status: 404, body: "{}" },
+        [`GET ${COMMITS}/refs/heads/main`]: SHA,
+        [`GET ${COMMITS}/refs/tags/v2`]: SHA2,
+        [`GET ${COMMITS}/refs/heads/v2`]: { status: 404, body: "{}" },
       }),
     );
     await run(async () => {

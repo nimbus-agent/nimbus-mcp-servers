@@ -129,7 +129,11 @@ export interface ResolvedCommit {
 
 const FULL_SHA = /^[0-9a-f]{40}$/i;
 
-/** One `GET /commits/<ref>` with the SHA media type; `undefined` on a 404, a throw on anything else. */
+/**
+ * One `GET /commits/<ref>` with the SHA media type; `undefined` when the ref does not exist, a throw
+ * on anything else. GitHub answers a missing ref with a 422 ("No commit found for SHA: ..."), not a
+ * 404, so both count as not found; a 422 with any other message is a real error.
+ */
 async function commitShaFor(
   token: string,
   owner: string,
@@ -141,6 +145,7 @@ async function commitShaFor(
     headers: { Accept: "application/vnd.github.sha" },
   });
   if (res.status === 404) return undefined;
+  if (res.status === 422 && /no commit found/i.test(res.text)) return undefined;
   if (!res.ok) {
     throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
   }
@@ -151,13 +156,19 @@ async function commitShaFor(
   return sha.toLowerCase();
 }
 
-/** The names to try for `ref`, in order: a `heads/` or `tags/` prefix is one, a bare name is both. */
+/**
+ * The names to try for `ref`, in order. A `heads/` or `tags/` prefix (or the full `refs/heads/` /
+ * `refs/tags/`) is one candidate; a bare name is both. Always the full `refs/...` form: GitHub's
+ * `/commits/tags/<x>` answers 422 for an existing tag, while `/commits/refs/tags/<x>` resolves.
+ */
 function refCandidates(ref: string): { readonly name: string; readonly kind: "branch" | "tag" }[] {
-  if (ref.startsWith("heads/")) return [{ name: ref, kind: "branch" }];
-  if (ref.startsWith("tags/")) return [{ name: ref, kind: "tag" }];
+  if (ref.startsWith("refs/heads/")) return [{ name: ref, kind: "branch" }];
+  if (ref.startsWith("refs/tags/")) return [{ name: ref, kind: "tag" }];
+  if (ref.startsWith("heads/")) return [{ name: `refs/${ref}`, kind: "branch" }];
+  if (ref.startsWith("tags/")) return [{ name: `refs/${ref}`, kind: "tag" }];
   return [
-    { name: `heads/${ref}`, kind: "branch" },
-    { name: `tags/${ref}`, kind: "tag" },
+    { name: `refs/heads/${ref}`, kind: "branch" },
+    { name: `refs/tags/${ref}`, kind: "tag" },
   ];
 }
 
@@ -165,7 +176,7 @@ function refCandidates(ref: string): { readonly name: string; readonly kind: "br
  * Resolve a branch, tag or commit to a COMMIT sha. `ref` must already satisfy {@link isSafeGitRef}.
  *
  * A 40-hex string is returned as is. `heads/*` or `tags/*` is one GET. A bare name tries
- * `heads/<ref>` then `tags/<ref>`, falling through only on a 404. It reads `/commits/<ref>` and not
+ * `refs/heads/<ref>` then `refs/tags/<ref>`, falling through only on a not-found (404, or 422 "No commit found"). It reads `/commits/<ref>` and not
  * `/git/ref/<ref>` so an annotated tag is peeled to a commit (a branch cannot point at a tag object).
  * The read tool and the write tool share this, so what a name means cannot differ between the
  * before-state the owner saw and the write that runs.
