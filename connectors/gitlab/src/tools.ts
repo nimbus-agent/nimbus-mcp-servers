@@ -44,7 +44,12 @@ async function glFetch(token: string, path: string, init?: RequestInit): Promise
       ? baseHeaders
       : { ...baseHeaders, ...(init.headers as Record<string, string>) };
   // guardedFetch: the PRIVATE-TOKEN header must never follow a redirect to another origin.
-  const res = await guardedFetch("GitLab", url, { ...init, headers: mergedHeaders });
+  const res = await guardedFetch(
+    "GitLab",
+    url,
+    { ...init, headers: mergedHeaders },
+    { requireSecureBase: false },
+  );
   return toRestFetchResult(res);
 }
 
@@ -121,7 +126,12 @@ async function fetchJobTrace(parsed: {
   const token = requireProcessEnv("GITLAB_PAT");
   const enc = encodeURIComponent(parsed.projectPath);
   const url = `${apiBase()}/projects/${enc}/jobs/${String(parsed.jobId)}/trace`;
-  const res = await guardedFetch("GitLab", url, { headers: { "PRIVATE-TOKEN": token } });
+  const res = await guardedFetch(
+    "GitLab",
+    url,
+    { headers: { "PRIVATE-TOKEN": token } },
+    { requireSecureBase: false },
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`GitLab ${String(res.status)}: ${text.slice(0, 300)}`);
@@ -399,18 +409,23 @@ export function registerGitlabTools(
       // header), so this one request bypasses glFetch. Never the private_token query parameter:
       // a token in a URL is logged.
       const res = await toRestFetchResult(
-        await guardedFetch("GitLab", graphqlUrl(), {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            query: SET_ASSIGNEES_APPEND,
-            variables: {
-              projectPath: parsed.projectPath,
-              iid: String(parsed.issueIid),
-              assigneeUsernames: parsed.assigneeUsernames,
-            },
-          }),
-        }),
+        await guardedFetch(
+          "GitLab",
+          graphqlUrl(),
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: SET_ASSIGNEES_APPEND,
+              variables: {
+                projectPath: parsed.projectPath,
+                iid: String(parsed.issueIid),
+                assigneeUsernames: parsed.assigneeUsernames,
+              },
+            }),
+          },
+          { requireSecureBase: false },
+        ),
       );
       if (!res.ok) {
         throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);

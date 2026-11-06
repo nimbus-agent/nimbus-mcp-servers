@@ -460,6 +460,47 @@ describe("createJsonGetter redirects", () => {
     ]);
   });
 
+  it("carries a custom credential header on a same-origin hop and never to another origin", async () => {
+    const seenHeaders: { url: string; key: string | null }[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seenHeaders.push({ url, key: new Headers(init?.headers).get("zotero-api-key") });
+      if (url === "https://api.test/a") {
+        return new Response(null, { status: 301, headers: { location: "/b" } });
+      }
+      if (url === "https://api.test/b") {
+        return new Response(null, { status: 302, headers: { location: "https://evil.test/c" } });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    process.env[ENV] = "tok";
+    const get = createJsonGetter({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV, scheme: "", header: "Zotero-API-Key" }),
+    });
+    await expect(get("/a")).rejects.toThrow(/another origin/);
+    expect(seenHeaders).toEqual([
+      { url: "https://api.test/a", key: "tok" },
+      { url: "https://api.test/b", key: "tok" },
+    ]);
+  });
+
+  it("follows a plain-http base's same-origin redirect and its same-host https upgrade", async () => {
+    route({
+      "http://ci.internal/x": { status: 301, location: "/y" },
+      "http://ci.internal/y": { status: 301, location: "https://ci.internal/z" },
+      "https://ci.internal/z": { status: 200, body: "[1]" },
+    });
+    process.env[ENV] = "tok";
+    const get = createJsonGetter({
+      base: "http://ci.internal",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    expect(await get("/x")).toEqual([1]);
+  });
+
   it("still allows a plain-http base that does not redirect (self-hosted callers)", async () => {
     route({ "http://ci.internal/x": { status: 200, body: "[]" } });
     process.env[ENV] = "tok";

@@ -166,14 +166,14 @@ describe("ghFetch redirects", () => {
     script([moved(301, `${GH_API}/repositories/1/git/refs`), new Response("{}", { status: 200 })]);
     await expect(
       ghFetch("t", `${ghRepoPath("o", "r")}/git/refs`, { method: "POST", body: "{}" }),
-    ).rejects.toThrow(/redirected a POST; refused/);
+    ).rejects.toThrow(/answered a POST with a redirect/);
     expect(seen).toHaveLength(1);
   });
 
   it("refuses a redirect on a PATCH", async () => {
     script([moved(308, `${GH_API}/repositories/1/pulls/2`)]);
     await expect(ghFetch("t", "/repos/o/r/pulls/2", { method: "PATCH" })).rejects.toThrow(
-      /redirected a PATCH/,
+      /answered a PATCH with a redirect/,
     );
     expect(seen).toHaveLength(1);
   });

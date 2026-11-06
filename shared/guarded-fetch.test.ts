@@ -99,8 +99,54 @@ describe("guardedFetch redirects", () => {
     const t = scripted([redirect(301, "/moved")]);
     await expect(
       guardedFetch("Svc", "https://api.example.com/x", { method: "POST" }, { fetch: t.fetch }),
-    ).rejects.toThrow(/redirected a POST/);
+    ).rejects.toThrow(/answered a POST with a redirect \(301\); the write may or may not have been applied/);
     expect(t.calls).toHaveLength(1);
+  });
+});
+
+describe("guardedFetch http bases", () => {
+  const opts = (t: ReturnType<typeof scripted>) => ({ fetch: t.fetch, requireSecureBase: false });
+
+  it("follows a same-host http -> https upgrade, re-sending the credential header", async () => {
+    const t = scripted([redirect(301, "https://ci.internal/x"), ok()]);
+    const res = await guardedFetch(
+      "Svc",
+      "http://ci.internal/x",
+      { headers: { "Zotero-API-Key": "k" } },
+      opts(t),
+    );
+    expect(res.status).toBe(200);
+    expect(t.calls.map((c) => c.url)).toEqual(["http://ci.internal/x", "https://ci.internal/x"]);
+    expect((t.calls[1]?.init.headers as Record<string, string>)["Zotero-API-Key"]).toBe("k");
+  });
+
+  it("refuses an http -> https redirect to another host", async () => {
+    const t = scripted([redirect(301, "https://evil.test/x")]);
+    await expect(guardedFetch("Svc", "http://ci.internal/x", {}, opts(t))).rejects.toThrow(
+      /another origin/,
+    );
+    expect(t.calls).toHaveLength(1);
+  });
+
+  it("refuses an http -> https upgrade that changes the port", async () => {
+    const t = scripted([redirect(301, "https://ci.internal:8443/x")]);
+    await expect(guardedFetch("Svc", "http://ci.internal/x", {}, opts(t))).rejects.toThrow(
+      /another origin/,
+    );
+  });
+
+  it("follows a same-origin http -> http redirect on a plain-http base", async () => {
+    const t = scripted([redirect(302, "/y"), ok()]);
+    const res = await guardedFetch("Svc", "http://ci.internal/x", {}, opts(t));
+    expect(res.status).toBe(200);
+    expect(t.calls[1]?.url).toBe("http://ci.internal/y");
+  });
+
+  it("never follows https -> http", async () => {
+    const t = scripted([redirect(302, "http://ci.internal/x")]);
+    await expect(guardedFetch("Svc", "https://ci.internal/x", {}, opts(t))).rejects.toThrow(
+      /another origin/,
+    );
   });
 });
 

@@ -9,8 +9,10 @@
  * - a redirect on a mutation (anything but GET/HEAD) is refused: replaying a write is not ours to
  *   decide, and the credential must not follow it;
  * - a redirect on a GET/HEAD is followed (at most {@link MAX_REDIRECT_HOPS} times) only when the
- *   `Location` resolves to the SAME origin as the request, over https (or a loopback http origin,
- *   for a local fake server); any other target is refused and nothing is sent there;
+ *   `Location` resolves to the SAME origin as the request, or is the same host's http -> https
+ *   upgrade (same hostname, same explicit port or both default); https -> http and any other
+ *   target is refused and nothing is sent there. The request headers (credentials included) are
+ *   re-sent unchanged, and only ever to that host;
  * - a request to a plain-http origin that is not loopback is refused before it is sent, since it
  *   would put the credential on the wire in clear.
  */
@@ -67,7 +69,9 @@ export async function guardedFetch(
     const res = await doFetch(current.toString(), { ...init, redirect: "manual" });
     if (!REDIRECT_STATUSES.has(res.status)) return res;
     if (!mayFollow) {
-      throw new Error(`${label} redirected a ${method}; refused`);
+      throw new Error(
+        `${label} answered a ${method} with a redirect (${String(res.status)}); the write may or may not have been applied`,
+      );
     }
     const location = res.headers.get("location");
     if (location === null || location === "") {
@@ -82,9 +86,15 @@ export async function guardedFetch(
     } catch {
       throw new Error(`${label} redirected to an invalid URL; refused`);
     }
+    // Same origin always (a plain-http base was only reachable with requireSecureBase off, or is
+    // loopback), plus ONE widening: the same host's http -> https upgrade. Never https -> http.
     const sameOrigin = next.origin === current.origin;
-    const secure = next.protocol === "https:" || isLoopbackHost(next.hostname);
-    if (!sameOrigin || !secure) {
+    const httpsUpgrade =
+      current.protocol === "http:" &&
+      next.protocol === "https:" &&
+      next.hostname === current.hostname &&
+      next.port === current.port;
+    if (!sameOrigin && !httpsUpgrade) {
       throw new Error(`${label} redirected to another origin; refused`);
     }
     current = next;

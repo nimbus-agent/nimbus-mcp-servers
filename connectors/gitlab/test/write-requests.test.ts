@@ -296,7 +296,7 @@ describe("gitlab never sends its token across origins", () => {
         targetBranch: "b",
         title: "t",
       }),
-    ).rejects.toThrow("GitLab redirected a POST; refused");
+    ).rejects.toThrow(/GitLab answered a POST with a redirect \(307\); the write may or may not have been applied/);
     expect(stub.calls).toHaveLength(1);
     expect(stub.calls[0]?.redirect).toBe("manual");
   });
@@ -305,7 +305,7 @@ describe("gitlab never sends its token across origins", () => {
     const stub = serve({ status: 307, headers: { Location: `${API}/elsewhere` } });
     await expect(
       tools.call("gitlab_pipeline_retry", { ...PROJECT, pipelineId: 1 }),
-    ).rejects.toThrow("redirected a POST; refused");
+    ).rejects.toThrow(/answered a POST with a redirect \(307\)/);
     expect(stub.calls).toHaveLength(1);
   });
 
@@ -382,18 +382,34 @@ describe("gitlab never sends its token across origins", () => {
         issueIid: 3,
         assigneeUsernames: ["ada"],
       }),
-    ).rejects.toThrow("redirected a POST; refused");
+    ).rejects.toThrow(/answered a POST with a redirect \(307\)/);
     expect(stub.calls).toHaveLength(1);
     expect(stub.calls[0]?.redirect).toBe("manual");
   });
 
-  it("refuses a configured base that is not https and not loopback, before any request", async () => {
+  it("works against a self-hosted plain-http base (no refusal before the request)", async () => {
     process.env[BASE_ENV] = "http://gitlab.example.com/api/v4";
     const stub = serve("{}");
-    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
-      /https/,
+    await tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 });
+    expect(stub.only.url).toBe(
+      "http://gitlab.example.com/api/v4/projects/group%2Frepo/merge_requests/1",
     );
-    expect(stub.calls).toEqual([]);
+  });
+
+  it("follows a same-host http -> https upgrade on a GET, and not to another host", async () => {
+    process.env[BASE_ENV] = "http://gitlab.example.com/api/v4";
+    const stub = serve((req) =>
+      req.url.startsWith("http://")
+        ? { status: 301, headers: { Location: req.url.replace("http://", "https://") } }
+        : { status: 200, body: "{}" },
+    );
+    await tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 });
+    expect(stub.calls.map((c) => c.url.slice(0, 5))).toEqual(["http:", "https"]);
+    const other = serve({ status: 301, headers: { Location: "https://evil.example/x" } });
+    await expect(tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 })).rejects.toThrow(
+      "another origin",
+    );
+    expect(other.calls).toHaveLength(1);
   });
 
   it("still allows a loopback http base", async () => {

@@ -160,7 +160,7 @@ function sendFor(
     // A credential must go only where the base names, and a runtime follows a 3xx by default
     // (re-sending a custom header such as LaunchDarkly's bare Authorization or Flagsmith's Token
     // to whatever Location says). So a mutation's 3xx is refused outright, and a GET follows only
-    // a same-origin https (or loopback) Location, at most 3 hops, each hop asked for manually.
+    // a same-origin Location or the same host's http -> https upgrade, at most 3 hops, each hop asked for manually.
     const reqInit = init(headers());
     const url = `${root}${path}`;
     const method = (reqInit.method ?? "GET").toUpperCase();
@@ -172,7 +172,9 @@ function sendFor(
           })
         : await doFetch(url, { ...reqInit, redirect: "manual" });
     if (res.status >= 300 && res.status < 400) {
-      throw new Error(`${errorPrefix} ${String(res.status)}: redirect refused`);
+      throw new Error(
+        `${errorPrefix}: the server answered with a redirect (${String(res.status)}); the write may or may not have been applied`,
+      );
     }
     const text = await res.text();
     if (!res.ok) {
