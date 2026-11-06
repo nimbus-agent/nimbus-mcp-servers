@@ -11,7 +11,15 @@ name: Registry publish
 
 on:
   workflow_dispatch:
+  # A caller must pass both keys by name (release.yml does): an environment secret a caller does not
+  # pass resolves to an empty string here, silently. `required` makes a caller that omits one fail
+  # to start; it cannot check the value, which `Write the publisher key` still refuses when empty.
   workflow_call:
+    secrets:
+      NIMBUS_PUBLISHER_KEY:
+        required: true
+      NIMBUS_REGISTRY_ROOT_KEY:
+        required: true
 
 permissions:
   contents: read

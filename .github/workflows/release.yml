@@ -210,8 +210,13 @@ jobs:
   # Sign the Readwise extension and add it to the official Nimbus extension registry (gh-pages).
   # A no-op unless connectors/readwise/nimbus.extension.json carries a version the registry lacks.
   # It runs after the npm publish and cannot affect it. Its keys are the official-registry
-  # environment's own secrets, released only on a reviewer's approval, so nothing is passed down:
-  # `secrets: inherit` would hand the release-bot key to a job that has no use for it.
+  # environment's own secrets, released only on a reviewer's approval to the called jobs that set
+  # `environment`. The caller must still NAME them: "If the caller workflow doesn't pass an
+  # environment secret, the secret resolves to an empty string in the reusable workflow" (GitHub,
+  # "Reuse workflows", retrieved 2026-11-06), which is why the 0.4.0 release saw an empty
+  # publisher key. Passed by name, never `secrets: inherit`, which would also hand the release-bot
+  # key to a workflow that has no use for it. Naming them here releases nothing early: this job
+  # has no environment, and only the called job that sets one receives the environment's value.
   publish-registry:
     needs: [release-please, publish]
     # OFFICIAL_REGISTRY_ENABLED is a repository variable the owner sets to 'true' last, once the
@@ -220,3 +225,6 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/registry-publish.yml
+    secrets:
+      NIMBUS_PUBLISHER_KEY: ${{ secrets.NIMBUS_PUBLISHER_KEY }}
+      NIMBUS_REGISTRY_ROOT_KEY: ${{ secrets.NIMBUS_REGISTRY_ROOT_KEY }}
