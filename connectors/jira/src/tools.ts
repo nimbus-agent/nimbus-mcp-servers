@@ -83,9 +83,17 @@ function refuseRedirect(what: string, res: HttpText): HttpText {
   return res;
 }
 
+function isAtlassianCloudHost(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase().endsWith(".atlassian.net");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The site's cloud id: `JIRA_CLOUD_ID` when set, else `GET {site}/_edge/tenant_info` once per
- * process (Atlassian's documented lookup, sent with the same Basic header as every other Jira call,
+ * process per site, only for an `*.atlassian.net` base (Atlassian's documented lookup, sent with the same Basic header as every other Jira call,
  * so the credential goes only to the host it already goes to). Fails closed: no id, no ops call.
  */
 async function resolveCloudId(cfg: JiraConfig): Promise<string> {
@@ -95,6 +103,13 @@ async function resolveCloudId(cfg: JiraConfig): Promise<string> {
   }
   const cached = discoveredCloudIds.get(cfg.baseUrl);
   if (cached !== undefined) return cached;
+  // tenant_info is an Atlassian Cloud endpoint. A Data Center or proxied site has none, so no
+  // request is made to guess: the owner names the cloud id.
+  if (!isAtlassianCloudHost(cfg.baseUrl)) {
+    throw new Error(
+      "JIRA_CLOUD_ID is required: JIRA_BASE_URL is not an *.atlassian.net site, so the cloud id cannot be discovered",
+    );
+  }
   const res = refuseRedirect(
     "Jira tenant_info",
     await jiraFetch(cfg.baseUrl, cfg.email, cfg.token, "/_edge/tenant_info", {
@@ -158,11 +173,22 @@ function acceptedResult(res: HttpText): ReturnType<typeof jsonResult> {
   if (!res.ok) {
     throw new Error(`Jira Operations ${String(res.status)}: ${res.text.slice(0, 400)}`);
   }
-  const body = (res.text === "" ? {} : JSON.parse(res.text)) as {
-    requestId?: unknown;
-    took?: unknown;
-  };
-  return jsonResult({ status: "accepted", requestId: body.requestId, took: body.took });
+  // A 2xx means Atlassian accepted the request; a body that is not JSON must not turn that into
+  // an error the owner would read as "nothing happened" and retry.
+  let body: { requestId?: unknown; took?: unknown } = {};
+  if (res.text !== "") {
+    try {
+      const parsed: unknown = JSON.parse(res.text);
+      if (parsed !== null && typeof parsed === "object") body = parsed;
+    } catch {
+      body = {};
+    }
+  }
+  return jsonResult({
+    status: "accepted",
+    requestId: typeof body.requestId === "string" ? body.requestId : null,
+    took: body.took,
+  });
 }
 
 /** Tool names exposed by this connector — for contract/introspection tests. */

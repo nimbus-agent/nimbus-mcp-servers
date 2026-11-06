@@ -116,6 +116,59 @@ describe("jira JSM Operations alerts (gateway mode)", () => {
     expect(stub.calls[0]?.redirect).toBe("manual");
   });
 
+  it("keeps a separate discovered cloud id for each site in one process", async () => {
+    const OTHER_ID = "11111111-2222-3333-4444-555555555555";
+    const stub = serve((req) => {
+      if (req.url === `${SITE}/_edge/tenant_info`) return JSON.stringify({ cloudId: CLOUD_ID });
+      if (req.url === "https://other.atlassian.net/_edge/tenant_info") {
+        return JSON.stringify({ cloudId: OTHER_ID });
+      }
+      return { status: 202, body: ACCEPTED };
+    });
+    await discovering(async () => {
+      await tools.call("jira_ops_alert_close", { alertId: "A1" });
+    });
+    await withEnv(
+      { ...SITE_ENV, JIRA_BASE_URL: "https://other.atlassian.net", JIRA_CLOUD_ID: undefined },
+      async () => {
+        await tools.call("jira_ops_alert_close", { alertId: "A2" });
+        await tools.call("jira_ops_alert_close", { alertId: "A3" });
+      },
+    );
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${SITE}/_edge/tenant_info`,
+      `POST ${OPS}/alerts/A1/close`,
+      "GET https://other.atlassian.net/_edge/tenant_info",
+      `POST https://api.atlassian.com/jsm/ops/api/${OTHER_ID}/v1/alerts/A2/close`,
+      `POST https://api.atlassian.com/jsm/ops/api/${OTHER_ID}/v1/alerts/A3/close`,
+    ]);
+  });
+
+  it("does not discover a cloud id on a non-atlassian.net host, and sends nothing", async () => {
+    const stub = serve("{}");
+    await withEnv(
+      { ...SITE_ENV, JIRA_BASE_URL: "https://jira.corp.example", JIRA_CLOUD_ID: undefined },
+      async () => {
+        await expect(tools.call("jira_ops_alert_close", { alertId: "A1" })).rejects.toThrow(
+          /JIRA_CLOUD_ID/,
+        );
+      },
+    );
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("a non-JSON 2xx on acknowledge/close is accepted with requestId null", async () => {
+    serve({ status: 202, body: "<html>ok</html>" });
+    await withCloudId(async () => {
+      for (const name of ["jira_ops_alert_acknowledge", "jira_ops_alert_close"]) {
+        expect(await tools.callJson(name, { alertId: "A1" })).toMatchObject({
+          status: "accepted",
+          requestId: null,
+        });
+      }
+    });
+  });
+
   it("fails closed on a malformed cloud id, with no further request", async () => {
     const stub = serve(JSON.stringify({ cloudId: "../../evil" }));
     await discovering(async () => {
