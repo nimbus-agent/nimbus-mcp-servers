@@ -119,7 +119,7 @@ describe("guardedFetch http bases", () => {
     );
     expect(res.status).toBe(200);
     expect(t.calls.map((c) => c.url)).toEqual(["http://ci.internal/x", "https://ci.internal/x"]);
-    expect((t.calls[1]?.init.headers as Record<string, string>)["Zotero-API-Key"]).toBe("k");
+    expect(new Headers(t.calls[1]?.init.headers).get("Zotero-API-Key")).toBe("k");
   });
 
   it("refuses an http -> https redirect to another host", async () => {
