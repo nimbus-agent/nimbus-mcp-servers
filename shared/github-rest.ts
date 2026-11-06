@@ -8,8 +8,10 @@
  * places, so a bump had to find all three.
  */
 
+import { resolveUrlWithBase } from "@nimbus-dev/sdk/connector-kit";
 import { optionalBaseUrl } from "./env-json-api.ts";
-import { makeRestFetcher, type RestFetchResult } from "./rest-tool-kit.ts";
+import { guardedFetch } from "./guarded-fetch.ts";
+import { type RestFetchResult, toRestFetchResult } from "./rest-tool-kit.ts";
 
 export const GH_API = "https://api.github.com";
 
@@ -33,13 +35,34 @@ export const GH_HEADERS: Record<string, string> = {
   "X-GitHub-Api-Version": GH_API_VERSION,
 };
 
-/** A Bearer-authenticated JSON request against {@link ghApiBase} (a relative path or a same-origin URL). */
-export function ghFetch(token: string, path: string, init?: RequestInit): Promise<RestFetchResult> {
-  return makeRestFetcher({ apiBase: ghApiBase(), token, defaultHeaders: GH_HEADERS })(path, init);
+/**
+ * A Bearer-authenticated JSON request against {@link ghApiBase} (a relative path or a same-origin
+ * URL). It goes through {@link guardedFetch}: a write that GitHub answers with a redirect (a renamed
+ * or transferred repository) is refused, not replayed as a GET that would report a false success,
+ * and a GET follows only a same-origin https redirect, at most 3 hops.
+ */
+export async function ghFetch(
+  token: string,
+  path: string,
+  init?: RequestInit,
+): Promise<RestFetchResult> {
+  const url = resolveUrlWithBase(ghApiBase(), path);
+  const headers = new Headers({ Authorization: `Bearer ${token}`, ...GH_HEADERS });
+  if (init?.headers !== undefined) {
+    for (const [k, v] of new Headers(init.headers)) headers.set(k, v);
+  }
+  const res = await guardedFetch("GitHub", url, { ...init, headers }, { requireSecureBase: false });
+  return toRestFetchResult(res);
 }
 
-/** `/repos/<owner>/<repo>`, both segments URI-encoded. */
+/**
+ * `/repos/<owner>/<repo>`, both segments URI-encoded. `.` and `..` are refused: `encodeURIComponent`
+ * leaves them alone and a URL parser collapses them (`/repos/../../pulls/9`).
+ */
 export function ghRepoPath(owner: string, repo: string): string {
+  for (const seg of [owner, repo]) {
+    if (seg === "." || seg === "..") throw new Error("owner and repo cannot be a dot segment");
+  }
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
