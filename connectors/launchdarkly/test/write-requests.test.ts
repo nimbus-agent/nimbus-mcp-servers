@@ -81,6 +81,7 @@ describe("launchdarkly writes (gateway mode)", () => {
     await withToken(async () => {
       expect(await tools.callJson("launchdarkly_flag_toggle", { ...FLAG, on: true })).toEqual({
         ok: true,
+        confirmed: true,
         ...FLAG,
         on: true,
       });
@@ -93,6 +94,60 @@ describe("launchdarkly writes (gateway mode)", () => {
       environmentKey: "production",
       comment: COMMENT,
       instructions: [{ kind: "turnFlagOn" }],
+    });
+  });
+
+  it("toggle reports confirmed:false when the reply echoes the opposite state or none", async () => {
+    await withToken(async () => {
+      serve('{"environments":{"production":{"on":false}}}');
+      expect(await tools.callJson("launchdarkly_flag_toggle", { ...FLAG, on: true })).toMatchObject(
+        { ok: true, confirmed: false, on: false },
+      );
+      serve("{}");
+      expect(await tools.callJson("launchdarkly_flag_toggle", { ...FLAG, on: true })).toMatchObject(
+        { ok: true, confirmed: false },
+      );
+      serve('{"environments":{"production":{"on":"true"}}}');
+      expect(await tools.callJson("launchdarkly_flag_toggle", { ...FLAG, on: true })).toMatchObject(
+        { ok: true, confirmed: false },
+      );
+    });
+  });
+
+  it("rollout_set confirms only when the echoed weights equal the request", async () => {
+    const weights = [
+      { variationId: "var-a", percent: 60 },
+      { variationId: "var-b", percent: 40 },
+    ];
+    const echo = (a: number, b: number): unknown => ({
+      variations: [{ _id: "var-a" }, { _id: "var-b" }],
+      environments: {
+        production: {
+          on: true,
+          fallthrough: {
+            rollout: {
+              variations: [
+                { variation: 0, weight: a },
+                { variation: 1, weight: b },
+              ],
+            },
+          },
+        },
+      },
+    });
+    await withToken(async () => {
+      serve(JSON.stringify(echo(60000, 40000)));
+      expect(
+        await tools.callJson("launchdarkly_flag_rollout_set", { ...FLAG, weights }),
+      ).toMatchObject({ ok: true, confirmed: true });
+      serve(JSON.stringify(echo(25000, 75000)));
+      expect(
+        await tools.callJson("launchdarkly_flag_rollout_set", { ...FLAG, weights }),
+      ).toMatchObject({ ok: true, confirmed: false });
+      serve("{}");
+      expect(
+        await tools.callJson("launchdarkly_flag_rollout_set", { ...FLAG, weights }),
+      ).toMatchObject({ ok: true, confirmed: false });
     });
   });
 
@@ -129,7 +184,7 @@ describe("launchdarkly writes (gateway mode)", () => {
   it("refuses keys that could reach another path, before any request", async () => {
     const stub = serve("{}");
     await withToken(async () => {
-      for (const bad of ["../x", "a/b", "a b", "a?x=1", ""]) {
+      for (const bad of ["../x", "a/b", "a b", "a?x=1", "", ".", ".."]) {
         await expect(
           tools.call("launchdarkly_flag_toggle", { ...FLAG, flagKey: bad, on: true }),
         ).rejects.toThrow();
@@ -282,6 +337,22 @@ describe("launchdarkly_flag_state_get", () => {
       });
     });
     expect(stub.only.url).toBe(`${API}/flags/web/new-checkout?env=production`);
+  });
+
+  it("reports a rollout's bucketBy and contextKind when the read returns them", async () => {
+    const doc = structuredClone(FLAG_DOC);
+    Object.assign(doc.environments.production.fallthrough.rollout, {
+      bucketBy: "email",
+      contextKind: "user",
+    });
+    serve(JSON.stringify(doc));
+    await withToken(async () => {
+      const out = (await tools.callJson("launchdarkly_flag_state_get", FLAG)) as {
+        fallthrough: Record<string, unknown>;
+      };
+      expect(out.fallthrough["rolloutBucketBy"]).toBe("email");
+      expect(out.fallthrough["rolloutContextKind"]).toBe("user");
+    });
   });
 
   it("shows a single-variation fallthrough", async () => {

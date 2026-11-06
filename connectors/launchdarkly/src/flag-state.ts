@@ -39,6 +39,48 @@ export function rolloutWeightsOf(weights: readonly RolloutWeightInput[]): Record
   return out;
 }
 
+/** The `on` a flag-change reply shows for `environmentKey`, when it is a boolean. */
+export function echoedOn(response: unknown, environmentKey: string): boolean | undefined {
+  const envs =
+    isRecord(response) && isRecord(response["environments"]) ? response["environments"] : {};
+  const env = envs[environmentKey];
+  return isRecord(env) && typeof env["on"] === "boolean" ? env["on"] : undefined;
+}
+
+/**
+ * True only when the reply carries `environmentKey`'s fallthrough rollout and its weights (by
+ * variation id, a missing id counting as 0) equal `requested`. A reply without them is not a
+ * confirmation.
+ */
+export function rolloutEchoed(
+  response: unknown,
+  environmentKey: string,
+  requested: Readonly<Record<string, number>>,
+): boolean {
+  if (!isRecord(response)) return false;
+  const envs = isRecord(response["environments"]) ? response["environments"] : {};
+  const env = envs[environmentKey];
+  const fallthrough = isRecord(env) && isRecord(env["fallthrough"]) ? env["fallthrough"] : {};
+  const rollout = fallthrough["rollout"];
+  if (!isRecord(rollout) || !Array.isArray(rollout["variations"])) return false;
+  const variations = Array.isArray(response["variations"]) ? response["variations"] : [];
+  const echoed: Record<string, number> = {};
+  for (const entry of rollout["variations"]) {
+    const row = isRecord(entry) ? entry : {};
+    const index = row["variation"];
+    const weight = row["weight"];
+    const variation = typeof index === "number" ? variations[index] : undefined;
+    const id = isRecord(variation) ? variation["_id"] : undefined;
+    if (typeof id !== "string" || typeof weight !== "number") return false;
+    echoed[id] = weight;
+  }
+  const ids = new Set([...Object.keys(requested), ...Object.keys(echoed)]);
+  for (const id of ids) {
+    if ((requested[id] ?? 0) !== (echoed[id] ?? 0)) return false;
+  }
+  return true;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
@@ -90,6 +132,13 @@ export function projectFlagState(
         weightPercent: weight === undefined ? undefined : weight / 1000,
       };
     });
+  }
+  if (isRecord(rollout)) {
+    if (typeof rollout["bucketBy"] === "string")
+      fallthrough["rolloutBucketBy"] = rollout["bucketBy"];
+    if (typeof rollout["contextKind"] === "string") {
+      fallthrough["rolloutContextKind"] = rollout["contextKind"];
+    }
   }
   return {
     projectKey: ids.projectKey,

@@ -99,7 +99,9 @@ describe("guardedFetch redirects", () => {
     const t = scripted([redirect(301, "/moved")]);
     await expect(
       guardedFetch("Svc", "https://api.example.com/x", { method: "POST" }, { fetch: t.fetch }),
-    ).rejects.toThrow(/answered a POST with a redirect \(301\); the write may or may not have been applied/);
+    ).rejects.toThrow(
+      /answered a POST with a redirect \(301\); the write may or may not have been applied/,
+    );
     expect(t.calls).toHaveLength(1);
   });
 });

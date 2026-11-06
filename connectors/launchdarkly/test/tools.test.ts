@@ -87,6 +87,25 @@ describe("launchdarkly tools", () => {
     expect(stub.only.url).toBe(`${API}/flags/web/new%2Fcheckout`);
   });
 
+  it("the read tools refuse a '.' or '..' key before any request", async () => {
+    const stub = serve("{}");
+    await configured(async () => {
+      for (const bad of [".", ".."]) {
+        await expect(tools.call("launchdarkly_list", { projectKey: bad })).rejects.toThrow();
+        await expect(
+          tools.call("launchdarkly_get", { projectKey: "web", flagKey: bad }),
+        ).rejects.toThrow();
+        await expect(
+          tools.call("launchdarkly_get", { projectKey: bad, flagKey: "x" }),
+        ).rejects.toThrow();
+        await expect(
+          tools.call("launchdarkly_search", { projectKey: bad, query: "x" }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
   it("talks to the configured base URL, keeping it as given", async () => {
     const stub = serve('{"items":[]}');
     await withEnv(

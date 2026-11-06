@@ -13,7 +13,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
-import { projectFlagState, rolloutWeightsOf } from "./flag-state.ts";
+import { echoedOn, projectFlagState, rolloutEchoed, rolloutWeightsOf } from "./flag-state.ts";
 import { filterLaunchDarklyFlags } from "./search-filter.ts";
 
 const DEFAULT_BASE = "https://app.launchdarkly.com";
@@ -51,10 +51,22 @@ export const LAUNCHDARKLY_TOOL_NAMES = [
   "launchdarkly_flag_rollout_set",
 ] as const;
 
-/** LaunchDarkly project, environment and flag keys: letters, digits, `.`, `_`, `-`. */
+/**
+ * LaunchDarkly project, environment and flag keys: letters, digits, `.`, `_`, `-`, but never `.` or
+ * `..` alone: `encodeURIComponent("..")` is `..`, and a URL parser collapses it out of the path.
+ */
 const keyArg = z
   .string()
-  .regex(/^[A-Za-z0-9._-]{1,128}$/, "letters, digits, '.', '_' and '-' only");
+  .regex(
+    /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}$/,
+    "letters, digits, '.', '_' and '-' only; not '.' or '..'",
+  );
+
+/** The read tools keep accepting any key (it is percent-encoded), but never a dot segment. */
+const readKeyArg = z
+  .string()
+  .min(1)
+  .regex(/^(?!\.{1,2}$)/, "not '.' or '..'");
 
 const flagArgs = z.object({
   projectKey: keyArg,
@@ -75,11 +87,20 @@ async function readFlagState(p: FlagArgs): Promise<Record<string, unknown>> {
   return projectFlagState(raw, p);
 }
 
-/** The result of a flag change: the facts, not LaunchDarkly's whole flag document. */
-function changed(p: FlagArgs, response: unknown): Record<string, unknown> {
+/**
+ * The result of a flag change: the facts, not LaunchDarkly's whole flag document. `confirmed` is
+ * true only when the reply SHOWS the requested state; false means the server accepted the write
+ * but its reply does not show the new state.
+ */
+function changed(
+  p: FlagArgs,
+  response: unknown,
+  confirmed: (response: unknown) => boolean,
+): Record<string, unknown> {
   const flag = (response ?? {}) as { environments?: Record<string, { on?: unknown }> };
   return {
     ok: true,
+    confirmed: confirmed(response),
     projectKey: p.projectKey,
     environmentKey: p.environmentKey,
     flagKey: p.flagKey,
@@ -106,7 +127,7 @@ export function registerLaunchdarklyTools(
     "launchdarkly_list",
     "List LaunchDarkly projects, or feature flags for a project. Without `projectKey`, returns the account's projects (`/projects`). With `projectKey`, returns that project's flags (`/flags/{projectKey}`), capped at `limit` (default 100).",
     z.object({
-      projectKey: z.string().min(1).optional(),
+      projectKey: readKeyArg.optional(),
       limit: z.number().int().min(1).max(500).optional(),
     }),
     async (p) => {
@@ -124,8 +145,8 @@ export function registerLaunchdarklyTools(
     "launchdarkly_get",
     "Fetch one LaunchDarkly feature flag by project key + flag key. Throws when no match is found.",
     z.object({
-      projectKey: z.string().min(1),
-      flagKey: z.string().min(1),
+      projectKey: readKeyArg,
+      flagKey: readKeyArg,
     }),
     async (p) => {
       return jsonResult(
@@ -138,7 +159,7 @@ export function registerLaunchdarklyTools(
     "launchdarkly_search",
     "Substring search across a project's feature flags. Matches the query against flag key, name, description, and tags (case-insensitive). Returns a `{ matches: [...] }` envelope.",
     z.object({
-      projectKey: z.string().min(1),
+      projectKey: readKeyArg,
       query: z.string().min(1),
       limit: z.number().int().min(1).max(200).optional(),
     }),
@@ -177,7 +198,7 @@ export function registerLaunchdarklyTools(
         },
         SEMANTIC_PATCH_HEADERS,
       );
-      return jsonResult(changed(p, response));
+      return jsonResult(changed(p, response, (r) => echoedOn(r, p.environmentKey) === p.on));
     },
   );
 
@@ -185,12 +206,13 @@ export function registerLaunchdarklyTools(
     "launchdarkly_flag_rollout_set",
     {
       mutates: "launchdarkly.flag.rollout.set",
-      // The previous fallthrough (variation or weights) is captured so a rollout can be put back.
+      // The previous fallthrough (variation or weights, bucketBy, context kind) is recorded in the
+      // audit pre-state. This tool does not restore it, so the write is not marked recoverable.
       recoverable: false,
       capturePreState: readFlagState,
       scopeTargetOf: flagScope,
     },
-    "Set a feature flag's fallthrough to a percentage rollout in ONE environment (`PATCH /flags/{projectKey}/{flagKey}`, semantic patch updateFallthroughVariationOrRollout). `weights` maps variation ids (from `launchdarkly_flag_state_get`) to percent; they must sum to exactly 100 with at most 3 decimals, else nothing is sent.",
+    "Set a feature flag's fallthrough to a percentage rollout in ONE environment (`PATCH /flags/{projectKey}/{flagKey}`, semantic patch updateFallthroughVariationOrRollout). `weights` maps variation ids (from `launchdarkly_flag_state_get`) to percent; they must sum to exactly 100 with at most 3 decimals, else nothing is sent. The previous fallthrough is recorded in the audit pre-state; this tool does not restore it, and a rollout's bucketBy / context kind are not set by it.",
     flagArgs.extend({
       weights: z
         .array(
@@ -216,7 +238,9 @@ export function registerLaunchdarklyTools(
         },
         SEMANTIC_PATCH_HEADERS,
       );
-      return jsonResult(changed(p, response));
+      return jsonResult(
+        changed(p, response, (r) => rolloutEchoed(r, p.environmentKey, rolloutWeights)),
+      );
     },
   );
 }
