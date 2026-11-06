@@ -4,10 +4,11 @@ import { join, relative, resolve } from "node:path";
 // The launcher's own line scan, not a twin of it, so the two cannot disagree about what a
 // registration line looks like. Which FILES they scan still differs: this audit reads every source
 // file of a connector, the launcher only its server.ts and tools.ts.
+import { PREPARE_TOOL_IDS } from "../shared/prepare-tool-ids.ts";
 import { registersWriteTool } from "../standalone/src/launcher.ts";
 
 export type ConsentViolation = {
-  readonly rule: "mode-setter-confined" | "mutation-declared";
+  readonly rule: "mode-setter-confined" | "mutation-declared" | "prepare-tool-registrar";
   readonly file: string;
   readonly reason: string;
 };
@@ -205,6 +206,38 @@ function undeclaredWriteViolations(
 }
 
 /**
+ * The one callee a prepare tool id may be the first argument of. `registerPrepareTool` is the name
+ * every connector gives `createPrepareToolRegistrar(...)`'s result.
+ */
+const PREPARE_CALLEE = "registerPrepareTool";
+
+/**
+ * A listed prepare tool id registered through anything but the prepare registrar.
+ *
+ * The id is the FIRST ARGUMENT of a call (`name(` then optional whitespace then the quoted id), so
+ * the same id sitting in a `*_TOOL_NAMES` array, which is not a call, does not count. A
+ * `reg("github_commit_prepare", ...)` would make it an ordinary read the model could call before
+ * any approval; a `registerWriteTool(...)` would put it in the gateway's write manifest.
+ */
+function prepareRegistrarViolations({ rel, src }: Source): ConsentViolation[] {
+  const out: ConsentViolation[] = [];
+  for (const id of PREPARE_TOOL_IDS) {
+    const call = new RegExp(String.raw`([A-Za-z_$][\w$]*)\(\s*"${id}"`, "g");
+    for (const m of src.matchAll(call)) {
+      if (m[1] === PREPARE_CALLEE) continue;
+      out.push({
+        rule: "prepare-tool-registrar",
+        file: rel,
+        reason:
+          `${id} is a prepare tool but is registered through ${m[1] ?? "?"}(...). Register it only ` +
+          `through ${PREPARE_CALLEE}, the result of createPrepareToolRegistrar`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Split into readSources / modeSetterViolation / undeclaredWriteViolations because this function
  * was doing all three at once, at a cognitive complexity of 22 against the 15 allowed. The pieces
  * are also the units worth testing separately: "which files does it read" and "what counts as a
@@ -221,6 +254,7 @@ export function checkConnectorConsent(
   for (const source of readSources(root, bases)) {
     const violation = modeSetterViolation(source);
     if (violation !== undefined) out.push(violation);
+    out.push(...prepareRegistrarViolations(source));
     // A CALL, not the declaration. `const registerWriteTool = createWriteToolRegistrar(...)`
     // contains the identifier too, so a substring check called a connector hardened even after
     // every one of its write registrations had been reverted — caught by red-proving this gate.

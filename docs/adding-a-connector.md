@@ -106,6 +106,13 @@ That registrar is what enforces consent, the write-scope allow-list and the muta
 connector that declares `write` or `delete` in `hitlRequired` without registering through it fails
 `bun run audit:connector-consent`, and the launcher refuses to start it with exit code `3`.
 
+A tool that only reads the state a write is bound to, for the gateway to call before the approval
+prompt, is a **prepare tool**: add its id to `PREPARE_TOOL_IDS` in `shared/prepare-tool-ids.ts` and
+register it through `createPrepareToolRegistrar` (named `registerPrepareTool`), which takes a
+`scopeTargetOf` and no `mutates`. The id must not end in a read verb (`get`, `list`, ...), because the
+gateway treats such a tool as a plain read. `audit:connector-consent` fails a listed id registered
+any other way.
+
 Do not call `setConnectorMode` anywhere. The mode comes from the entry point; the audit enforces
 that, because a second caller could re-gate a connector mid-process.
 

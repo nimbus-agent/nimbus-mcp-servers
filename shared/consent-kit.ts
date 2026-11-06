@@ -2,8 +2,9 @@ import type { McpListResult, ZodObjectSchema } from "@nimbus-dev/sdk/connector-k
 
 import { type AuditOutcome, appendAuditEntry } from "./audit-chain.ts";
 import { getConnectorMode } from "./connector-mode.ts";
+import { isPrepareToolId } from "./prepare-tool-ids.ts";
 import { createWriteBudget, parseWriteBudget, WRITE_BUDGET_ENV } from "./write-budget.ts";
-import { parseWriteScope, scopeAllows } from "./write-scope.ts";
+import { parseWriteScope, type ScopeTerm, scopeAllows } from "./write-scope.ts";
 
 /** The subset of the SDK's `RegisteredTool` this kit needs. */
 export type ToolHandle = { disable(): void };
@@ -158,40 +159,35 @@ function registerOn<T>(
   handles.push(handle);
 }
 
-/**
- * Build a connector's write-tool registrar.
- *
- * In `"gateway"` mode the raw handler is registered immediately: `executor.ts` (I2) is the gate
- * there, client capabilities are irrelevant, and the connector adds nothing.
- *
- * In `"standalone"` mode registration is QUEUED and flushed on `oninitialized`, because client
- * capabilities are not knowable at module scope — verified against the real SDK, where
- * `getClientCapabilities()` returns `undefined` before `initialize`. Deciding at registration time
- * would register nothing, for every client, forever.
- */
-export function createWriteToolRegistrar(
-  server: ConsentServer,
-  cfg: {
-    readonly connector: string;
-    readonly scopeEnv: string;
-    /**
-     * Scope kinds this connector accepts. Declared once per connector rather than per tool: the
-     * allow-list is parsed at registrar construction, before any tool has registered, so a
-     * per-tool declaration would arrive too late to validate the env value.
-     */
-    readonly scopeKinds: readonly string[];
-  },
-): WriteToolRegistrar {
-  const handles: ToolHandle[] = [];
-  const pending: Array<() => void> = [];
-  let flushed = false;
+/** What both registrars share: the parsed write scope and the audit/log record. */
+type ConsentContext = {
+  readonly scope: readonly ScopeTerm[];
+  readonly record: (
+    tool: string,
+    outcome: AuditOutcome,
+    detail: Record<string, unknown>,
+  ) => Promise<void>;
+};
 
+type RegistrarConfig = {
+  readonly connector: string;
+  readonly scopeEnv: string;
+  /**
+   * Scope kinds this connector accepts. Declared once per connector rather than per tool: the
+   * allow-list is parsed at registrar construction, before any tool has registered, so a
+   * per-tool declaration would arrive too late to validate the env value.
+   */
+  readonly scopeKinds: readonly string[];
+};
+
+/**
+ * The scope parse and the record function, built once per registrar. Extracted (not copied) so the
+ * write registrar and the prepare registrar cannot drift apart on what a scope term means or on
+ * which channels a record reaches.
+ */
+function createConsentContext(server: ConsentServer, cfg: RegistrarConfig): ConsentContext {
   const scope = parseWriteScope(process.env[cfg.scopeEnv], cfg.scopeKinds);
   const auditLog = process.env["NIMBUS_MCP_AUDIT_LOG"];
-  // Throws on a value that is not plain digits, an empty one included, as the scope parse above
-  // does on a malformed term: read with `Number()`, `abc` became NaN, which `remaining <= 0` never
-  // refused.
-  const budget = createWriteBudget(parseWriteBudget(process.env[WRITE_BUDGET_ENV]));
 
   async function record(
     tool: string,
@@ -226,6 +222,34 @@ export function createWriteToolRegistrar(
         .catch(() => undefined);
     }
   }
+
+  return { scope, record };
+}
+
+/**
+ * Build a connector's write-tool registrar.
+ *
+ * In `"gateway"` mode the raw handler is registered immediately: `executor.ts` (I2) is the gate
+ * there, client capabilities are irrelevant, and the connector adds nothing.
+ *
+ * In `"standalone"` mode registration is QUEUED and flushed on `oninitialized`, because client
+ * capabilities are not knowable at module scope — verified against the real SDK, where
+ * `getClientCapabilities()` returns `undefined` before `initialize`. Deciding at registration time
+ * would register nothing, for every client, forever.
+ */
+export function createWriteToolRegistrar(
+  server: ConsentServer,
+  cfg: RegistrarConfig,
+): WriteToolRegistrar {
+  const handles: ToolHandle[] = [];
+  const pending: Array<() => void> = [];
+  let flushed = false;
+
+  const { scope, record } = createConsentContext(server, cfg);
+  // Throws on a value that is not plain digits, an empty one included, as the scope parse above
+  // does on a malformed term: read with `Number()`, `abc` became NaN, which `remaining <= 0` never
+  // refused.
+  const budget = createWriteBudget(parseWriteBudget(process.env[WRITE_BUDGET_ENV]));
 
   /**
    * Take one unit of budget if any is left. Spending the last unit disables every write tool and
@@ -396,5 +420,76 @@ export function createWriteToolRegistrar(
     pending.push(() => {
       registerOn(server, name, description, schema, guarded, handles);
     });
+  };
+}
+
+/** What a prepare tool declares: only the scope target, since it mutates nothing. */
+export type PrepareToolConfig<T> = {
+  /** The scope target this invocation reads on behalf of, checked against the allow-list. */
+  readonly scopeTargetOf: (args: T) => { kind: string; value: string };
+};
+
+export type PrepareToolRegistrar = <T>(
+  name: string,
+  cfg: PrepareToolConfig<T>,
+  description: string,
+  schema: ZodObjectSchema<T>,
+  handler: (args: T) => Promise<McpListResult>,
+) => void;
+
+/**
+ * Build a connector's prepare-tool registrar.
+ *
+ * A prepare tool reads the state a write is bound to (the head a commit is prepared against) and is
+ * called by the gateway BEFORE the write's approval prompt. It is not a write: it is registered
+ * under its own registrar so the gateway's manifest scan, which follows the write registrar's data
+ * flow, does not list it as one. And it is not an ordinary read either: a tool is accepted only when
+ * its name is in {@link PREPARE_TOOL_IDS} (shared/prepare-tool-ids.ts), so the class is one literal
+ * list and not a naming convention.
+ *
+ * In `"gateway"` mode the raw handler is registered: the executor's prepare step is the gate there.
+ * In `"standalone"` mode it is registered at once for EVERY client (a prepare tool prompts no one,
+ * so no elicitation capability is needed), behind the same write scope as the writes it serves, and
+ * each in-scope run is audited as `prepared`. It spends no write budget and is never disabled by
+ * the budget running out: a second prompt before the apply prompt would only train click-through.
+ */
+export function createPrepareToolRegistrar(
+  server: ConsentServer,
+  cfg: RegistrarConfig,
+): PrepareToolRegistrar {
+  const { scope, record } = createConsentContext(server, cfg);
+  // Prepare tools are not budget-gated, so nothing ever disables them; the handles are not kept.
+  const handles: ToolHandle[] = [];
+
+  return <T>(
+    name: string,
+    toolCfg: PrepareToolConfig<T>,
+    description: string,
+    schema: ZodObjectSchema<T>,
+    handler: (args: T) => Promise<McpListResult>,
+  ): void => {
+    if (!isPrepareToolId(name)) {
+      throw new Error(
+        `${name}: not a listed prepare tool — add the id to PREPARE_TOOL_IDS in ` +
+          "shared/prepare-tool-ids.ts, or register it as a read or a write",
+      );
+    }
+
+    if (getConnectorMode() === "gateway") {
+      registerOn(server, name, description, schema, handler, handles);
+      return;
+    }
+
+    const guarded = async (args: T): Promise<McpListResult> => {
+      const target = toolCfg.scopeTargetOf(args);
+      if (!scopeAllows(scope, target.kind, target.value)) {
+        await record(name, "refused", { reason: "out of scope", target });
+        return refused(`out of scope: ${target.kind}:${target.value} is not in ${cfg.scopeEnv}`);
+      }
+      const result = await handler(args);
+      await record(name, "prepared", { target });
+      return result;
+    };
+    registerOn(server, name, description, schema, guarded, handles);
   };
 }

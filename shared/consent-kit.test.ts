@@ -9,6 +9,7 @@ import { verifyAuditChain } from "./audit-chain.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "./connector-mode.ts";
 import {
   type ConsentServer,
+  createPrepareToolRegistrar,
   createWriteToolRegistrar,
   type WriteToolRegistrar,
 } from "./consent-kit.ts";
@@ -1012,4 +1013,179 @@ describe("NIMBUS_MCP_WRITE_BUDGET at the registrar", () => {
       });
     },
   );
+});
+
+describe("prepare tool registrar", () => {
+  beforeEach(() => {
+    resetConnectorModeForTests();
+  });
+  afterEach(() => {
+    resetConnectorModeForTests();
+  });
+
+  type Handler = (args: unknown) => Promise<McpListResult>;
+
+  /** A server that keeps every registered handler by name and counts the consent prompts. */
+  function multiServer(): ConsentServer & {
+    handlers: Map<string, Handler>;
+    prompts: { count: number };
+    handshake: () => void;
+  } {
+    const handlers = new Map<string, Handler>();
+    const prompts = { count: 0 };
+    let capsReadable = false;
+    const srv = {
+      handlers,
+      prompts,
+      server: {
+        getClientCapabilities: () => (capsReadable ? { elicitation: {} } : undefined),
+        oninitialized: undefined as (() => void) | undefined,
+        elicitInput: () => {
+          prompts.count += 1;
+          return Promise.resolve({ action: "accept" as const, content: { confirm: true } });
+        },
+      },
+      registerTool: (name: string, _config: unknown, cb: Handler) => {
+        handlers.set(name, cb);
+        return { disable: () => handlers.delete(name) };
+      },
+      sendToolListChanged: () => undefined,
+      sendLoggingMessage: () => Promise.resolve(),
+      handshake: () => {
+        capsReadable = true;
+        srv.server.oninitialized?.();
+      },
+    } as unknown as ConsentServer & {
+      handlers: Map<string, Handler>;
+      prompts: { count: number };
+      handshake: () => void;
+    };
+    return srv;
+  }
+
+  const prepCfg = {
+    scopeTargetOf: (a: { branch: string }) => ({ kind: "repo", value: a.branch }),
+  };
+
+  function kit(
+    srv: ConsentServer,
+    scope: string | undefined,
+    opts: { budget?: string; auditLog?: string } = {},
+  ) {
+    if (scope === undefined) delete process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"];
+    else process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"] = scope;
+    if (opts.budget === undefined) delete process.env["NIMBUS_MCP_WRITE_BUDGET"];
+    else process.env["NIMBUS_MCP_WRITE_BUDGET"] = opts.budget;
+    if (opts.auditLog === undefined) delete process.env["NIMBUS_MCP_AUDIT_LOG"];
+    else process.env["NIMBUS_MCP_AUDIT_LOG"] = opts.auditLog;
+    const cfg = {
+      connector: "github",
+      scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
+      scopeKinds: ["repo"],
+    };
+    return {
+      registerPrepareTool: createPrepareToolRegistrar(srv, cfg),
+      registerWriteTool: createWriteToolRegistrar(srv, cfg),
+    };
+  }
+
+  test("a name that is not in PREPARE_TOOL_IDS throws at registration", () => {
+    setConnectorMode("gateway");
+    const srv = multiServer();
+    const { registerPrepareTool } = kit(srv, undefined);
+    expect(() =>
+      registerPrepareTool("github_files_get", prepCfg, "d", schema, async () => ok()),
+    ).toThrow(/not a listed prepare tool/);
+    expect(srv.handlers.size).toBe(0);
+  });
+
+  test("gateway mode registers the raw handler and records nothing", async () => {
+    setConnectorMode("gateway");
+    const log = await tempAuditPath();
+    const srv = multiServer();
+    const { registerPrepareTool } = kit(srv, undefined, { auditLog: log });
+    registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => ok());
+    const cb = srv.handlers.get("github_commit_prepare");
+    expect(cb).toBeDefined();
+    await cb?.({ branch: "acme/api" });
+    expect(await readFile(log, "utf8").catch(() => "")).toBe("");
+    expect(srv.prompts.count).toBe(0);
+  });
+
+  test("standalone with an empty scope refuses before the handler, names the target and audits it", async () => {
+    setConnectorMode("standalone");
+    const log = await tempAuditPath();
+    const srv = multiServer();
+    const { registerPrepareTool } = kit(srv, undefined, { auditLog: log });
+    let calls = 0;
+    registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => {
+      calls += 1;
+      return ok();
+    });
+    // Registered for EVERY client: no handshake, no elicitation capability needed.
+    const cb = srv.handlers.get("github_commit_prepare");
+    if (cb === undefined) throw new Error("not registered");
+    const res = await cb({ branch: "acme/api" });
+    expect(calls).toBe(0);
+    expect(JSON.stringify(res)).toContain("out of scope: repo:acme/api");
+    const lines = (await readFile(log, "utf8")).trim().split("\n");
+    expect(
+      lines.map((l) => (JSON.parse(l) as { entry: { outcome: string } }).entry.outcome),
+    ).toEqual(["refused"]);
+  });
+
+  test("standalone in scope runs the handler, records prepared and never prompts", async () => {
+    setConnectorMode("standalone");
+    const log = await tempAuditPath();
+    const srv = multiServer();
+    const { registerPrepareTool } = kit(srv, "repo:acme/api", { auditLog: log });
+    let calls = 0;
+    registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => {
+      calls += 1;
+      return ok();
+    });
+    const cb = srv.handlers.get("github_commit_prepare");
+    if (cb === undefined) throw new Error("not registered");
+    await cb({ branch: "acme/api" });
+    expect(calls).toBe(1);
+    expect(srv.prompts.count).toBe(0);
+    const entries = (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => (JSON.parse(l) as { entry: { outcome: string; tool: string } }).entry);
+    expect(entries.map((e) => `${e.tool}:${e.outcome}`)).toEqual([
+      "github_commit_prepare:prepared",
+    ]);
+    expect((await verifyAuditChain(log)).ok).toBe(true);
+  });
+
+  test("prepares spend no write budget: budget 1, two prepares and one write all succeed", async () => {
+    setConnectorMode("standalone");
+    const srv = multiServer();
+    const { registerPrepareTool, registerWriteTool } = kit(srv, "repo:acme/api", {
+      budget: "1",
+    });
+    let prepared = 0;
+    let wrote = 0;
+    registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => {
+      prepared += 1;
+      return ok();
+    });
+    registerWriteTool("github_branch_delete", cfgFor(), "d", schema, async () => {
+      wrote += 1;
+      return ok();
+    });
+    srv.handshake();
+    const prepare = srv.handlers.get("github_commit_prepare");
+    const write = srv.handlers.get("github_branch_delete");
+    if (prepare === undefined || write === undefined) throw new Error("not registered");
+    await prepare({ branch: "acme/api" });
+    await prepare({ branch: "acme/api" });
+    await write({ branch: "acme/api" });
+    expect(prepared).toBe(2);
+    expect(wrote).toBe(1);
+    // The write spent the only unit and the write tool left the listing; the prepare tool stays.
+    expect(srv.handlers.has("github_branch_delete")).toBe(false);
+    expect(srv.handlers.has("github_commit_prepare")).toBe(true);
+  });
 });
