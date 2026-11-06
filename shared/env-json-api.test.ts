@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   createJsonGetter,
   createJsonPoster,
+  createJsonSender,
   DEFAULT_SNIPPET_MAX,
   envAuthHeaders,
   optionalBaseUrl,
@@ -289,5 +290,94 @@ describe("createJsonPoster", () => {
     expect(await post("/x", {})).toEqual({ via: "seam" });
     expect(seen).toEqual(["https://api.test/x"]);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createJsonSender", () => {
+  const cfg = () => ({
+    base: "https://api.test",
+    label: "Test",
+    headers: envAuthHeaders({ env: ENV }),
+  });
+
+  it("sends the method it is given, with the factory headers and a JSON Content-Type", async () => {
+    const { calls } = stubFetch({ body: '{"ok":true}' });
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    expect(await send("PATCH", "/flags/a", { on: true })).toEqual({ ok: true });
+    const call = calls[0];
+    expect(call?.method).toBe("PATCH");
+    expect(call?.url).toBe("https://api.test/flags/a");
+    expect(call?.headers.get("authorization")).toBe("Bearer tok");
+    expect(call?.headers.get("content-type")).toBe("application/json");
+    expect(await call?.text()).toBe('{"on":true}');
+  });
+
+  it("lets extraHeaders replace the default Content-Type and add others", async () => {
+    const { calls } = stubFetch({});
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    await send(
+      "PATCH",
+      "/x",
+      {},
+      { "Content-Type": "application/json; domain-model=x", "X-A": "1" },
+    );
+    expect(calls[0]?.headers.get("content-type")).toBe("application/json; domain-model=x");
+    expect(calls[0]?.headers.get("x-a")).toBe("1");
+    expect(calls[0]?.headers.get("authorization")).toBe("Bearer tok");
+  });
+
+  it("names label, method and path in the error", async () => {
+    stubFetch({ status: 405, body: "needs approval" });
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    await expect(send("PATCH", "/flags/a", {})).rejects.toThrow(
+      "Test PATCH /flags/a 405: needs approval",
+    );
+  });
+
+  it("resolves an empty 2xx body to {}", async () => {
+    stubFetch({ body: "" });
+    process.env[ENV] = "tok";
+    expect(await createJsonSender(cfg())("PUT", "/x", {})).toEqual({});
+  });
+
+  it("refuses before sending anything when the credential is missing", async () => {
+    const { calls } = stubFetch({});
+    await expect(createJsonSender(cfg())("PATCH", "/x", {})).rejects.toThrow(`${ENV} is not set`);
+    expect(calls).toEqual([]);
+  });
+
+  it("asks fetch not to follow redirects and refuses a 3xx without a second request", async () => {
+    const seen: (RequestRedirect | undefined)[] = [];
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(String(input));
+      seen.push(init?.redirect);
+      return new Response("", { status: 302, headers: { Location: "https://evil.test/steal" } });
+    }) as typeof globalThis.fetch;
+    process.env[ENV] = "tok";
+    await expect(createJsonSender(cfg())("PATCH", "/x", {})).rejects.toThrow(/redirect/i);
+    expect(seen).toEqual(["manual"]);
+    expect(calls).toEqual(["https://api.test/x"]);
+  });
+});
+
+describe("createJsonPoster redirects", () => {
+  it("refuses a 3xx and never follows it", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(`${String(input)} ${String(init?.redirect)}`);
+      return new Response("", { status: 307, headers: { Location: "https://evil.test/" } });
+    }) as typeof globalThis.fetch;
+    process.env[ENV] = "tok";
+    const post = createJsonPoster({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    await expect(post("/x", {})).rejects.toThrow(/redirect/i);
+    expect(calls).toEqual(["https://api.test/x manual"]);
   });
 });

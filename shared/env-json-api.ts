@@ -156,7 +156,13 @@ function sendFor(
   const doFetch = config.fetch ?? ((url, init) => fetch(url, init));
   return async (path, init, errorPrefix) => {
     const root = typeof base === "string" ? base : base();
-    const res = await doFetch(`${root}${path}`, init(headers()));
+    // `redirect: "manual"`: a mutation's credential must go only where the base names. A runtime
+    // follows a 3xx by default and (for a custom header such as LaunchDarkly's bare Authorization or
+    // Flagsmith's Token) would re-send it to whatever Location says. Refuse instead.
+    const res = await doFetch(`${root}${path}`, { ...init(headers()), redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(`${errorPrefix} ${String(res.status)}: redirect refused`);
+    }
     const text = await res.text();
     if (!res.ok) {
       throw new Error(`${errorPrefix} ${String(res.status)}: ${text.slice(0, snippetMax)}`);
@@ -180,6 +186,41 @@ export function createJsonGetter(config: JsonApiConfig): (path: string) => Promi
 }
 
 /**
+ * A `(method, path, body, extraHeaders?) => Promise<unknown>` JSON client for any mutating verb
+ * (PATCH, PUT, DELETE, POST). `Content-Type: application/json` is the default and `extraHeaders`
+ * override it key for key (LaunchDarkly's semantic patch needs `application/json;
+ * domain-model=launchdarkly.semanticpatch`). Resolves to the parsed response, `{}` when empty.
+ *
+ * Throws `"<errorPrefix> <status>: <body snippet>"`; the prefix defaults to
+ * `"<label> <method> <path>"` and is taken explicitly so {@link createJsonPoster} keeps its own
+ * `"<label> <path>"` format. A 3xx is refused, never followed (see `sendFor`).
+ */
+export function createJsonSender(
+  config: JsonApiConfig,
+  errorPrefix: (method: string, path: string) => string = (method, path) =>
+    `${config.label} ${method} ${path}`,
+): (
+  method: string,
+  path: string,
+  body: unknown,
+  extraHeaders?: Record<string, string>,
+) => Promise<unknown> {
+  const send = sendFor(config);
+  return async (method, path, body, extraHeaders) => {
+    const text = await send(
+      path,
+      (headers) => ({
+        method,
+        headers: { ...headers, "Content-Type": "application/json", ...extraHeaders },
+        body: JSON.stringify(body),
+      }),
+      errorPrefix(method, path),
+    );
+    return text === "" ? {} : (JSON.parse(text) as unknown);
+  };
+}
+
+/**
  * The mutating twin of {@link createJsonGetter}: a `(path, body) => Promise<unknown>`
  * POST client that sends `body` as JSON (adding `Content-Type: application/json` to
  * the request headers) and resolves to the parsed response — `{}` when the response
@@ -192,18 +233,6 @@ export function createJsonGetter(config: JsonApiConfig): (path: string) => Promi
 export function createJsonPoster(
   config: JsonApiConfig,
 ): (path: string, body: unknown) => Promise<unknown> {
-  const { label } = config;
-  const send = sendFor(config);
-  return async (path: string, body: unknown): Promise<unknown> => {
-    const text = await send(
-      path,
-      (headers) => ({
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      `${label} ${path}`,
-    );
-    return text === "" ? {} : (JSON.parse(text) as unknown);
-  };
+  const send = createJsonSender(config, (_method, path) => `${config.label} ${path}`);
+  return (path: string, body: unknown): Promise<unknown> => send("POST", path, body);
 }
