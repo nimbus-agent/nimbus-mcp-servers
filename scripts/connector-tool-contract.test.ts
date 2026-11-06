@@ -146,6 +146,8 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   ["jira", { transitionId: "31" }],
   // Discord channel ids are snowflakes (17-20 digits).
   ["discord", { channelId: "123456789012345678" }],
+  // LaunchDarkly rollout weights are a list of objects that must total exactly 100 percent.
+  ["launchdarkly", { weights: [{ variationId: "v1", percent: 100 }] }],
   ["firebase", { appId: "1:1234567890:android:abcdef0123456789" }],
   // CircleCI's pipeline and workflow ids are `z.uuid()`; no generic string
   // satisfies that.
