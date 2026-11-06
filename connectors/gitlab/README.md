@@ -23,9 +23,10 @@ request's title, description or target branch (the old values are recorded first
 touched). Each write asks for approval; standalone is limited by
 `NIMBUS_MCP_GITLAB_WRITE_SCOPE=repo:<group/project>`.
 
-`PRIVATE-TOKEN` is never sent to another origin: a redirect on a write is refused, a read follows a
-redirect only within the same https origin (at most 3 hops), and `GITLAB_API_BASE_URL` must be https
-(plain http only for localhost).
+`PRIVATE-TOKEN` is never sent to another origin: a redirect on a write is refused, and a read
+follows at most 3 redirects, only to the same origin or the same host's http -> https upgrade
+(never https -> http). A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the
+token is then sent in clear.
 
 ## See also
 

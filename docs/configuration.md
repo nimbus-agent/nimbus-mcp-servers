@@ -95,10 +95,11 @@ term. `jira` also accepts `alert:<alertId>` for its Operations alerts, by exact 
 Do not derive it from a connector's tool names or action types — `monte-carlo`'s are
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
 
-**Redirects.** The `gitlab` connector no longer follows a redirect that leaves the GitLab origin, and
-refuses any redirect on a write. `GITLAB_API_BASE_URL` must be https (plain http only for localhost).
-The flag connectors and the JSM Operations tools refuse redirects on writes, and follow a read
-redirect only within the same https origin, so a credential header is never re-sent elsewhere.
+**Redirects.** A credential header is never sent to another origin. The `gitlab` connector, the flag
+connectors and the JSM Operations tools refuse any redirect on a write. A read follows at most 3
+redirects, only to the same origin or the same host's http -> https upgrade (never https -> http).
+A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the token is then sent in
+clear.
 
 ## Three behaviours that look like bugs and are not
 
