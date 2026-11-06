@@ -17,7 +17,7 @@ nimbus ask "Summarize my recent activity in Gitlab"
 
 ## Writes
 
-`gitlab_branch_create`, `gitlab_mr_create` and `gitlab_mr_update` create a branch from a ref, open a
+`gitlab_branch_create` (optionally pinned with `expectedSha`, so a ref that moved after you approved is refused), `gitlab_mr_create` and `gitlab_mr_update` create a branch from a ref, open a
 merge request (title and description verbatim; no draft, labels or assignees) and edit a merge
 request's title, description or target branch (the old values are recorded first; its state is never
 touched). Each write asks for approval; standalone is limited by

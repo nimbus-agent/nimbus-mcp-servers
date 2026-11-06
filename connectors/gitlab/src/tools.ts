@@ -5,6 +5,7 @@ import {
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
 import { optionalBaseUrl } from "../../../shared/env-json-api.ts";
+import { isSafeGitRef } from "../../../shared/github-rest.ts";
 import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
@@ -431,31 +432,75 @@ export function registerGitlabTools(
     (parsed) => jsonBody("PUT", { state_event: parsed.stateEvent }),
   );
 
-  /** A branch name or ref GitLab takes in a query: no whitespace, control characters, `..` or leading `-`. */
+  /**
+   * A branch or ref name placed in a URL and sent to GitLab: the same rule as GitHub's
+   * (`isSafeGitRef`, ASCII only, so no format, control or surrogate character can pass).
+   */
   const gitlabRefSchema = z
     .string()
     .min(1)
     .max(255)
+    .refine(isSafeGitRef, "not a valid branch or ref name");
+
+  const FULL_SHA = /^[0-9a-f]{40}$/i;
+
+  /**
+   * A branch name that goes in a JSON body: GitLab's own rules apply, but a format (invisible or
+   * bidi), control or lone-surrogate character is refused, so an approval prompt shows what is sent.
+   */
+  const branchNameSchema = z
+    .string()
+    .min(1)
+    .max(255)
     .refine(
-      (r) =>
-        !r.includes("..") &&
-        !r.startsWith("-") &&
-        [...r].every((c) => c.trim() !== "" && c.charCodeAt(0) > 31 && c.charCodeAt(0) !== 127),
-      "not a valid branch or ref name",
+      (v) => !/[\p{Cf}\p{Cc}\p{Cs}]/u.test(v),
+      "branch name has an invisible or control character",
     );
 
-  registerGitlabWriteTool(
+  registerWriteTool(
     "gitlab_branch_create",
     // A new branch is undone by deleting it, so nothing needs capturing first.
-    { mutates: "gitlab.branch.create", recoverable: true },
-    "Create a branch from a branch name or commit SHA (fromRef).",
-    projectPathArg.extend({ branch: gitlabRefSchema, fromRef: gitlabRefSchema }),
-    (parsed) =>
-      listUrl(`/projects/${encodeURIComponent(parsed.projectPath)}/repository/branches`, (q) => {
-        q.set("branch", parsed.branch);
-        q.set("ref", parsed.fromRef);
-      }),
-    () => ({ method: "POST" }),
+    {
+      mutates: "gitlab.branch.create",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
+    },
+    "Create a branch from a branch, tag or commit (fromRef). If expectedSha is given and fromRef now resolves to a different commit, nothing is created, and the branch is made from the resolved commit.",
+    projectPathArg.extend({
+      branch: gitlabRefSchema,
+      fromRef: gitlabRefSchema,
+      expectedSha: z.string().regex(FULL_SHA).optional(),
+    }),
+    async (parsed) => {
+      const token = requireProcessEnv("GITLAB_PAT");
+      const project = encodeURIComponent(parsed.projectPath);
+      let ref = parsed.fromRef;
+      if (parsed.expectedSha !== undefined) {
+        // https://docs.gitlab.com/api/commits/#get-a-single-commit — `sha` is a hash or a branch or
+        // tag name; the response's `id` is the full commit hash.
+        const commit = await glFetch(
+          token,
+          `/projects/${project}/repository/commits/${encodeURIComponent(parsed.fromRef)}`,
+        );
+        const id = (commit.json as { id?: unknown } | null)?.id;
+        if (!commit.ok || typeof id !== "string" || !FULL_SHA.test(id)) {
+          throw new Error(`GitLab ${String(commit.status)}: ${commit.text.slice(0, 300)}`);
+        }
+        if (id.toLowerCase() !== parsed.expectedSha.toLowerCase()) {
+          throw new Error(`fromRef resolves to ${id}, not the approved ${parsed.expectedSha}`);
+        }
+        ref = id.toLowerCase();
+      }
+      const res = await glFetch(
+        token,
+        listUrl(`/projects/${project}/repository/branches`, (q) => {
+          q.set("branch", parsed.branch);
+          q.set("ref", ref);
+        }),
+        { method: "POST" },
+      );
+      return mcpJsonResultIfOk("GitLab", res);
+    },
   );
 
   registerGitlabWriteTool(
@@ -463,8 +508,8 @@ export function registerGitlabTools(
     { mutates: "gitlab.mr.create", recoverable: true },
     "Open a merge request from sourceBranch into targetBranch. Title and description are sent exactly as given.",
     projectPathArg.extend({
-      sourceBranch: z.string().min(1).max(255),
-      targetBranch: z.string().min(1).max(255),
+      sourceBranch: branchNameSchema,
+      targetBranch: branchNameSchema,
       title: z.string().min(1).max(255),
       description: z.string().max(65_000).optional(),
     }),
@@ -505,7 +550,7 @@ export function registerGitlabTools(
     gitlabMrGetSchema.extend({
       title: z.string().min(1).max(255).optional(),
       description: z.string().max(65_000).optional(),
-      targetBranch: z.string().min(1).max(255).optional(),
+      targetBranch: branchNameSchema.optional(),
     }),
     mrPath,
     (parsed) => {

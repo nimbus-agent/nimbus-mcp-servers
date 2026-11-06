@@ -84,9 +84,12 @@ describe("gitlab branch, merge request create and update (gateway mode)", () => 
     expect(stub.calls).toEqual([]);
   });
 
-  it("branch_create encodes a query-hostile ref rather than splicing it in", async () => {
-    const req = await request("gitlab_branch_create", { branch: "a&b=c", fromRef: "main" });
-    expect(req.url).toBe(`${ENC}/repository/branches?branch=a%26b%3Dc&ref=main`);
+  it("branch_create refuses a query-hostile branch name instead of encoding it", async () => {
+    const stub = serve("{}");
+    await expect(
+      tools.call("gitlab_branch_create", { ...PROJECT, branch: "a&b=c", fromRef: "main" }),
+    ).rejects.toThrow();
+    expect(stub.calls).toEqual([]);
   });
 
   it("mr_create POSTs exactly the documented fields, absent keys absent", async () => {
@@ -399,6 +402,124 @@ describe("gitlab never sends its token across origins", () => {
     await tools.call("gitlab_mr_get", { ...PROJECT, mergeRequestIid: 1 });
     expect(stub.only.url).toBe("http://localhost:9/api/v4/projects/group%2Frepo/merge_requests/1");
   });
+});
+
+describe("gitlab branch_create ref rules and expectedSha", () => {
+  let tools: CapturedTools;
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const OTHER = "fedcba9876543210fedcba9876543210fedcba98";
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGitlabTools);
+  });
+
+  it("refuses refs isSafeGitRef refuses, and invisible or control characters", async () => {
+    const stub = serve("{}");
+    const bad = [
+      "a/",
+      "/a",
+      "a//b",
+      ".hidden",
+      "a/.b",
+      "x.lock",
+      "a.",
+      "café",
+      "a​b",
+      "a‮b",
+      "a\u0085b",
+      "a\ud800b",
+      "a:b",
+      "a~b",
+      "a^b",
+      "a*b",
+      "a@{b",
+    ];
+    for (const b of bad) {
+      await expect(
+        tools.call("gitlab_branch_create", { ...PROJECT, branch: b, fromRef: "main" }),
+      ).rejects.toThrow();
+      await expect(
+        tools.call("gitlab_branch_create", { ...PROJECT, branch: "ok", fromRef: b }),
+      ).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("creates from the resolved sha when expectedSha matches", async () => {
+    const stub = serve((req) =>
+      req.method === "GET" ? JSON.stringify({ id: SHA }) : '{"name":"b"}',
+    );
+    await tools.call("gitlab_branch_create", {
+      ...PROJECT,
+      branch: "feat/x",
+      fromRef: "rel/1",
+      expectedSha: SHA.toUpperCase(),
+    });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${ENC}/repository/commits/rel%2F1`,
+      `POST ${ENC}/repository/branches?branch=feat%2Fx&ref=${SHA}`,
+    ]);
+  });
+
+  it("refuses before the POST when the ref no longer resolves to expectedSha", async () => {
+    const stub = serve((req) => (req.method === "GET" ? JSON.stringify({ id: OTHER }) : "{}"));
+    await expect(
+      tools.call("gitlab_branch_create", {
+        ...PROJECT,
+        branch: "b",
+        fromRef: "main",
+        expectedSha: SHA,
+      }),
+    ).rejects.toThrow(/resolves to .* not the approved/);
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+
+  it("refuses when the ref cannot be resolved, and sends no POST", async () => {
+    const stub = serve({ status: 404, body: '{"message":"404 Commit Not Found"}' });
+    await expect(
+      tools.call("gitlab_branch_create", {
+        ...PROJECT,
+        branch: "b",
+        fromRef: "gone",
+        expectedSha: SHA,
+      }),
+    ).rejects.toThrow(/404/);
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+
+  it("rejects a malformed expectedSha before any request", async () => {
+    const stub = serve("{}");
+    await expect(
+      tools.call("gitlab_branch_create", {
+        ...PROJECT,
+        branch: "b",
+        fromRef: "main",
+        expectedSha: "abc",
+      }),
+    ).rejects.toThrow();
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+it("mr_create and mr_update refuse invisible or control characters in a branch name", async () => {
+  setConnectorMode("gateway");
+  const t = captureTools(registerGitlabTools);
+  const stub = serve("{}");
+  for (const bad of ["a​b", "a‮b", "a\u0007b", "a\ud800b"]) {
+    await expect(
+      t.call("gitlab_mr_create", {
+        ...PROJECT,
+        sourceBranch: bad,
+        targetBranch: "main",
+        title: "t",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      t.call("gitlab_mr_update", { ...PROJECT, mergeRequestIid: 1, targetBranch: bad }),
+    ).rejects.toThrow();
+  }
+  expect(stub.calls).toEqual([]);
 });
 
 describe("gitlab project path (path confusion)", () => {
