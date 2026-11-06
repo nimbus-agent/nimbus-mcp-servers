@@ -381,3 +381,93 @@ describe("createJsonPoster redirects", () => {
     expect(calls).toEqual(["https://api.test/x manual"]);
   });
 });
+
+describe("createJsonGetter redirects", () => {
+  /** Answers each URL from `routes`; records every request's URL, header and redirect mode. */
+  function route(routes: Record<string, { status: number; location?: string; body?: string }>): {
+    seen: { url: string; auth: string | null; redirect: string | undefined }[];
+  } {
+    const seen: { url: string; auth: string | null; redirect: string | undefined }[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({
+        url,
+        auth: new Headers(init?.headers).get("authorization"),
+        redirect: init?.redirect,
+      });
+      const hit = routes[url];
+      if (hit === undefined) return new Response("{}", { status: 404 });
+      return new Response(hit.body ?? "", {
+        status: hit.status,
+        headers: hit.location === undefined ? {} : { Location: hit.location },
+      });
+    }) as typeof globalThis.fetch;
+    return { seen };
+  }
+
+  const getter = () =>
+    createJsonGetter({
+      base: "https://api.test",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV, scheme: "" }),
+    });
+
+  it("follows a same-origin https redirect, asking for manual on every hop", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 301, location: "/a/" },
+      "https://api.test/a/": { status: 200, body: '{"ok":true}' },
+    });
+    process.env[ENV] = "tok";
+    expect(await getter()("/a")).toEqual({ ok: true });
+    expect(seen.map((s) => s.url)).toEqual(["https://api.test/a", "https://api.test/a/"]);
+    expect(seen.map((s) => s.redirect)).toEqual(["manual", "manual"]);
+    expect(seen.map((s) => s.auth)).toEqual(["tok", "tok"]);
+  });
+
+  it("refuses a cross-origin redirect and sends nothing to the other origin", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 302, location: "https://evil.test/steal" },
+    });
+    process.env[ENV] = "tok";
+    await expect(getter()("/a")).rejects.toThrow(/another origin/);
+    expect(seen.map((s) => s.url)).toEqual(["https://api.test/a"]);
+  });
+
+  it("refuses a redirect from https down to plain http", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 302, location: "http://api.test/a" },
+    });
+    process.env[ENV] = "tok";
+    await expect(getter()("/a")).rejects.toThrow(/another origin/);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("refuses the fourth hop", async () => {
+    const { seen } = route({
+      "https://api.test/a": { status: 301, location: "/b" },
+      "https://api.test/b": { status: 301, location: "/c" },
+      "https://api.test/c": { status: 301, location: "/d" },
+      "https://api.test/d": { status: 301, location: "/e" },
+      "https://api.test/e": { status: 200, body: "{}" },
+    });
+    process.env[ENV] = "tok";
+    await expect(getter()("/a")).rejects.toThrow(/too many redirects/);
+    expect(seen.map((s) => s.url)).toEqual([
+      "https://api.test/a",
+      "https://api.test/b",
+      "https://api.test/c",
+      "https://api.test/d",
+    ]);
+  });
+
+  it("still allows a plain-http base that does not redirect (self-hosted callers)", async () => {
+    route({ "http://ci.internal/x": { status: 200, body: "[]" } });
+    process.env[ENV] = "tok";
+    const get = createJsonGetter({
+      base: "http://ci.internal",
+      label: "T",
+      headers: envAuthHeaders({ env: ENV }),
+    });
+    expect(await get("/x")).toEqual([]);
+  });
+});

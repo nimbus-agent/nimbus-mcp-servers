@@ -31,6 +31,17 @@ function assertSecureTransport(label: string, url: URL): void {
   throw new Error(`${label} base URL must be https (or loopback http); refused`);
 }
 
+export interface GuardedFetchOptions {
+  /** The transport to use (a timeout-wrapping fetch, say). Defaults to the global `fetch`. */
+  readonly fetch?: (url: string, init: RequestInit) => Promise<Response>;
+  /**
+   * Refuse a first request to a plain-http, non-loopback origin. Defaults to true. The JSON GET
+   * client turns it off: its callers have always been allowed a self-hosted http base, so only
+   * what a redirect points at is the new decision.
+   */
+  readonly requireSecureBase?: boolean;
+}
+
 /**
  * `fetch(url, init)` with the redirect policy above. `label` names the service in a refusal
  * ("GitLab redirected a POST; refused"). Resolves to the final non-redirect response.
@@ -39,13 +50,15 @@ export async function guardedFetch(
   label: string,
   url: string,
   init: RequestInit = {},
+  options: GuardedFetchOptions = {},
 ): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
   const mayFollow = method === "GET" || method === "HEAD";
+  const doFetch = options.fetch ?? ((u: string, i: RequestInit) => fetch(u, i));
   let current = new URL(url);
-  assertSecureTransport(label, current);
+  if (options.requireSecureBase !== false) assertSecureTransport(label, current);
   for (let hop = 0; ; hop += 1) {
-    const res = await fetch(current.toString(), { ...init, redirect: "manual" });
+    const res = await doFetch(current.toString(), { ...init, redirect: "manual" });
     if (!REDIRECT_STATUSES.has(res.status)) return res;
     if (!mayFollow) {
       throw new Error(`${label} redirected a ${method}; refused`);

@@ -38,6 +38,7 @@
  * fail with "X_TOKEN is not set" on the tool call rather than at startup.
  */
 
+import { guardedFetch } from "./guarded-fetch.ts";
 import { stripTrailingSlashes } from "./strip-trailing-slashes.ts";
 
 /** Body-snippet length in the thrown error. The value every connector used. */
@@ -156,10 +157,20 @@ function sendFor(
   const doFetch = config.fetch ?? ((url, init) => fetch(url, init));
   return async (path, init, errorPrefix) => {
     const root = typeof base === "string" ? base : base();
-    // `redirect: "manual"`: a mutation's credential must go only where the base names. A runtime
-    // follows a 3xx by default and (for a custom header such as LaunchDarkly's bare Authorization or
-    // Flagsmith's Token) would re-send it to whatever Location says. Refuse instead.
-    const res = await doFetch(`${root}${path}`, { ...init(headers()), redirect: "manual" });
+    // A credential must go only where the base names, and a runtime follows a 3xx by default
+    // (re-sending a custom header such as LaunchDarkly's bare Authorization or Flagsmith's Token
+    // to whatever Location says). So a mutation's 3xx is refused outright, and a GET follows only
+    // a same-origin https (or loopback) Location, at most 3 hops, each hop asked for manually.
+    const reqInit = init(headers());
+    const url = `${root}${path}`;
+    const method = (reqInit.method ?? "GET").toUpperCase();
+    const res =
+      method === "GET" || method === "HEAD"
+        ? await guardedFetch(errorPrefix, url, reqInit, {
+            fetch: doFetch,
+            requireSecureBase: false,
+          })
+        : await doFetch(url, { ...reqInit, redirect: "manual" });
     if (res.status >= 300 && res.status < 400) {
       throw new Error(`${errorPrefix} ${String(res.status)}: redirect refused`);
     }
