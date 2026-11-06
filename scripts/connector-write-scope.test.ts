@@ -40,6 +40,7 @@ import { registerCircleciTools } from "../connectors/circleci/src/tools.ts";
 import { registerConfluenceTools } from "../connectors/confluence/src/tools.ts";
 import { registerDiscordTools } from "../connectors/discord/src/tools.ts";
 import { registerFastmailTools } from "../connectors/fastmail/src/tools.ts";
+import { registerFlagsmithTools } from "../connectors/flagsmith/src/tools.ts";
 import { registerFluxTools } from "../connectors/flux/src/server.ts";
 import { registerGcpTools } from "../connectors/gcp/src/tools.ts";
 import { registerGithubTools } from "../connectors/github/src/tools.ts";
@@ -255,6 +256,17 @@ const WRITES: Readonly<
   fastmail: {
     register: (server: never) => registerFastmailTools(server, UNREACHABLE),
     cases: [["fastmail_mail_send", "fastmail.mail.send", MAIL_TO, "recipient:ada@example.com"]],
+  },
+  flagsmith: {
+    register: registerFlagsmithTools,
+    cases: [
+      [
+        "flagsmith_feature_state_set",
+        "flagsmith.feature.state.set",
+        { environmentKey: "env-y", featureId: 314 },
+        "flag:env-y/314",
+      ],
+    ],
   },
   flux: {
     register: registerFluxTools,

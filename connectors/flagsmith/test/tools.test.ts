@@ -7,6 +7,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { FLAGSMITH_TOOL_NAMES, registerFlagsmithTools } from "../src/tools.ts";
 
 const API = "https://api.flagsmith.com/api/v1";
@@ -36,10 +37,13 @@ function configured(fn: () => Promise<void>): Promise<void> {
 }
 
 beforeEach(() => {
+  resetConnectorModeForTests();
+  setConnectorMode("gateway");
   tools = captureTools(registerFlagsmithTools);
 });
 
 afterEach(() => {
+  resetConnectorModeForTests();
   http?.restore();
   http = undefined;
 });

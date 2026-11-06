@@ -5,12 +5,12 @@
 First-party Nimbus MCP connector for [Flagsmith](https://flagsmith.com)
 feature flags. Indexes the user's **feature-flag definitions** across all
 Flagsmith projects as `flagsmith:feature_flag` items in the local index and
-exposes three read-only tools to the Nimbus agent (`flagsmith_list`,
-`flagsmith_get`, `flagsmith_search`). Useful for incident correlation —
+exposes read tools and one owner-approved write tool to the Nimbus agent (`flagsmith_list`,
+`flagsmith_get`, `flagsmith_search`, `flagsmith_feature_state_get`, `flagsmith_feature_state_set`). Useful for incident correlation —
 "did this flag exist when the alert fired?".
 
-v1 indexes flag **definitions only** — per-environment on/off state and
-segments are a deferred follow-up.
+The index holds flag **definitions only** — per-environment on/off state and
+segments are read live with `flagsmith_feature_state_get`.
 
 ## Install
 
@@ -56,8 +56,30 @@ Tools exposed:
 | `flagsmith_get` | Fetch one flag by `projectId` + `featureName` (search + exact-name narrow). |
 | `flagsmith_search` | Substring search across a project's flags (name, description, tags). |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. The
-`flagsmith.flag.toggle` write tool is a deferred Phase 8 follow-up.
+| `flagsmith_feature_state_get` | Read one feature in ONE environment: `environment_default` and `segment_overrides` (capped at 50, the rest counted). |
+| `flagsmith_feature_state_set` (write) | Enable or disable a feature in ONE environment, optionally with a typed value (`string`, `integer` or `boolean`, value sent as a string). Segment and identity overrides are untouched. |
+
+`flagsmith_feature_state_set` declares `hitlRequired: ["write"]` and records the previous state
+before it writes. Outside the gateway, scope it with
+`NIMBUS_MCP_FLAGSMITH_WRITE_SCOPE=flag:<environmentKey>/<featureId>`.
+
+### Which endpoint, and why
+
+The two state tools use Flagsmith's **experimental** `GET`/`PATCH
+/api/__future__/environments/{environment_key}/features/{feature_id}/` ("may change without
+notice", <https://docs.flagsmith.com/managing-flags/updating-flags>). The v1 environment
+feature-state endpoints (`/api/v1/environments/{key}/featurestates/{id}/`) are still in the
+published swagger, but Flagsmith's own repository calls them "deprecated" (PR 8732, "the legacy
+feature state APIs"), the docs site documents only the `__future__` pair, and the v1 write needs a
+feature-state id looked up first. The path is built in one place (`apiFuture` in `src/tools.ts`), so
+a change is one edit. Flagsmith refuses the write while change requests are enabled for the
+environment; its message is returned as is.
+
+Authentication: the state tools send the same `Authorization: Token <token>` header as the reads.
+The swagger lists that scheme (`tokenAuth`) on the `__future__` operations; the docs page shows
+`Api-Key`, the organisation master-key scheme. Unverified against a live key: if a token is
+rejected, `flagsmithHeaders` is the one line to change. Redirects are never followed to another
+origin.
 
 ## See also
 
