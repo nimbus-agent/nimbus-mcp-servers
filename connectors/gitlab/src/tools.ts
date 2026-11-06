@@ -21,6 +21,14 @@ import {
   toRestFetchResult,
 } from "../../../shared/rest-tool-kit.ts";
 
+/**
+ * A project reference that reaches a URL path: a numeric id, or `/`-separated segments of
+ * `[A-Za-z0-9._-]`, none of them `.` or `..` (a URL parser collapses those out of the path).
+ */
+function isSafeProjectPath(p: string): boolean {
+  return p.split("/").every((seg) => /^[A-Za-z0-9._-]+$/.test(seg) && seg !== "." && seg !== "..");
+}
+
 function apiBase(): string {
   return optionalBaseUrl("GITLAB_API_BASE_URL", "https://gitlab.com/api/v4");
 }
@@ -199,7 +207,7 @@ export function registerGitlabTools(
   const projectPathArg = z.object({
     projectPath: z
       .string()
-      .min(1)
+      .refine(isSafeProjectPath, "not a valid project path or numeric id")
       .describe("URL-encoded path or numeric project id, e.g. group/repo"),
   });
 

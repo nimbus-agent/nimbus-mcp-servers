@@ -8,6 +8,7 @@ import {
   ghFetch,
   ghQueryPath,
   ghRepoPath,
+  isSafeGhSlug,
   isSafeGitRef,
   resolveCommitSha,
   setGhPaging,
@@ -107,8 +108,8 @@ export function registerGithubTools(
   });
 
   const repoSlugArgs = z.object({
-    owner: z.string().min(1),
-    repo: z.string().min(1),
+    owner: z.string().refine(isSafeGhSlug, "not a valid GitHub owner name"),
+    repo: z.string().refine(isSafeGhSlug, "not a valid GitHub repository name"),
   });
 
   const githubRepoListSchema = z.object({

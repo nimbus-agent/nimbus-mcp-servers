@@ -760,3 +760,34 @@ describe("github branch create / pr update (standalone mode)", () => {
     }
   });
 });
+
+describe("github owner and repo (path confusion)", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGithubTools);
+  });
+
+  it("refuses dot segments, slashes and odd characters before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      for (const bad of [".", "..", "a/b", "a b", "a?b", "a%2fb", "", "x".repeat(101), "a​b"]) {
+        await expect(tools.call("github_repo_get", { owner: bad, repo: "r" })).rejects.toThrow();
+        await expect(tools.call("github_repo_get", { owner: "o", repo: bad })).rejects.toThrow();
+        await expect(
+          tools.call("github_pr_update", { owner: bad, repo: "r", pullNumber: 1, title: "t" }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("still accepts ordinary names, dots and underscores", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await tools.call("github_repo_get", { owner: "my-org", repo: "my_repo.js" });
+    });
+    expect(stub.only.url).toBe(`${API}/repos/my-org/my_repo.js`);
+  });
+});

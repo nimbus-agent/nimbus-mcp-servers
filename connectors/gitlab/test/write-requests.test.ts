@@ -400,3 +400,50 @@ describe("gitlab never sends its token across origins", () => {
     expect(stub.only.url).toBe("http://localhost:9/api/v4/projects/group%2Frepo/merge_requests/1");
   });
 });
+
+describe("gitlab project path (path confusion)", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGitlabTools);
+  });
+
+  it("refuses dot segments and odd characters in any segment, before any request", async () => {
+    const stub = serve("{}");
+    for (const bad of [
+      "..",
+      ".",
+      "group/..",
+      "../x",
+      "a/./b",
+      "a//b",
+      "a b/c",
+      "a?b",
+      "/a",
+      "a/",
+      "a%2fb",
+    ]) {
+      await expect(
+        tools.call("gitlab_mr_get", { projectPath: bad, mergeRequestIid: 1 }),
+      ).rejects.toThrow();
+      await expect(
+        tools.call("gitlab_mr_update", { projectPath: bad, mergeRequestIid: 1, title: "t" }),
+      ).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("accepts a numeric id, a nested group path and dotted names", async () => {
+    const stub = serve("{}");
+    await tools.call("gitlab_mr_get", { projectPath: "42", mergeRequestIid: 1 });
+    await tools.call("gitlab_mr_get", {
+      projectPath: "g/sub.group/my_repo.js",
+      mergeRequestIid: 1,
+    });
+    expect(stub.calls.map((c) => c.url)).toEqual([
+      `${API}/projects/42/merge_requests/1`,
+      `${API}/projects/g%2Fsub.group%2Fmy_repo.js/merge_requests/1`,
+    ]);
+  });
+});

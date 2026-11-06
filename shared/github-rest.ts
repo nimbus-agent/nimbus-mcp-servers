@@ -56,6 +56,14 @@ export async function ghFetch(
 }
 
 /**
+ * Whether `seg` is a safe GitHub `owner` or `repo`: 1..100 of `[A-Za-z0-9._-]`, and not `.` or `..`
+ * (a URL parser collapses those out of the path, turning `/repos/../../pulls/9` into another endpoint).
+ */
+export function isSafeGhSlug(seg: string): boolean {
+  return /^[A-Za-z0-9._-]{1,100}$/.test(seg) && seg !== "." && seg !== "..";
+}
+
+/**
  * `/repos/<owner>/<repo>`, both segments URI-encoded. `.` and `..` are refused: `encodeURIComponent`
  * leaves them alone and a URL parser collapses them (`/repos/../../pulls/9`).
  */

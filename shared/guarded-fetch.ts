@@ -59,7 +59,8 @@ export async function guardedFetch(
 ): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
   const mayFollow = method === "GET" || method === "HEAD";
-  const doFetch = options.fetch ?? ((u: string, i: RequestInit) => fetchWithTimeout(u, i, DEFAULT_TIMEOUT_MS));
+  const doFetch =
+    options.fetch ?? ((u: string, i: RequestInit) => fetchWithTimeout(u, i, DEFAULT_TIMEOUT_MS));
   let current = new URL(url);
   if (options.requireSecureBase !== false) assertSecureTransport(label, current);
   for (let hop = 0; ; hop += 1) {
