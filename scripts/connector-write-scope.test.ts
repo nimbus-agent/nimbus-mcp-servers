@@ -104,7 +104,11 @@ type WriteCase = readonly [
 ];
 
 const MAIL_TO = { to: "ada@example.com" };
-const GITHUB_REPO = { owner: "acme", repo: "api" };
+/**
+ * A repo no tool source may contain as a literal: a scope target hard-coded to a "typical" repo
+ * (acme/api, group/repo) must fail here, not coincide with the fixture and pass.
+ */
+const GITHUB_REPO = { owner: "zeta-labs", repo: "quokka" };
 /** iCloud event times are format-checked (UTC `YYYYMMDDTHHMMSSZ`), which `fixtureFor` cannot guess. */
 const ICLOUD_TIMES = { start: "20260101T000000Z", end: "20260101T010000Z" };
 
@@ -285,51 +289,76 @@ const WRITES: Readonly<
   github: {
     register: registerGithubTools,
     cases: [
-      ["github_issue_create", "github.issue.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_pr_merge", "github.pr.merge", GITHUB_REPO, "repo:acme/api"],
-      ["github_pr_close", "github.pr.close", GITHUB_REPO, "repo:acme/api"],
-      ["github_branch_delete", "github.branch.delete", GITHUB_REPO, "repo:acme/api"],
-      ["github_tag_create", "github.tag.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_comment_create", "github.issue.comment.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_labels_add", "github.issue.labels.add", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_assignees_add", "github.issue.assignees.add", GITHUB_REPO, "repo:acme/api"],
-      ["github_issue_state_set", "github.issue.state.set", GITHUB_REPO, "repo:acme/api"],
-      ["github_branch_create", "github.branch.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:acme/api"],
-      ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:acme/api"],
+      ["github_issue_create", "github.issue.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_merge", "github.pr.merge", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_close", "github.pr.close", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_branch_delete", "github.branch.delete", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_tag_create", "github.tag.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
+        "github_issue_comment_create",
+        "github.issue.comment.create",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      ["github_issue_labels_add", "github.issue.labels.add", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
+        "github_issue_assignees_add",
+        "github.issue.assignees.add",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      ["github_issue_state_set", "github.issue.state.set", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_branch_create", "github.branch.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:zeta-labs/quokka"],
     ],
   },
   "github-actions": {
     register: registerGithubActionsTools,
     cases: [
-      ["gha_run_trigger", "github_actions.run.trigger", GITHUB_REPO, "repo:acme/api"],
-      ["gha_run_cancel", "github_actions.run.cancel", GITHUB_REPO, "repo:acme/api"],
+      ["gha_run_trigger", "github_actions.run.trigger", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      ["gha_run_cancel", "github_actions.run.cancel", GITHUB_REPO, "repo:zeta-labs/quokka"],
     ],
   },
   gitlab: {
     register: registerGitlabTools,
     cases: [
-      ["gitlab_mr_merge", "gitlab.mr.merge", { projectPath: "group/repo" }, "repo:group/repo"],
+      [
+        "gitlab_mr_merge",
+        "gitlab.mr.merge",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
       [
         "gitlab_pipeline_retry",
         "gitlab.pipeline.retry",
-        { projectPath: "group/repo" },
-        "repo:group/repo",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
       ],
       [
         "gitlab_pipeline_cancel",
         "gitlab.pipeline.cancel",
-        { projectPath: "group/repo" },
-        "repo:group/repo",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
       ],
       [
         "gitlab_branch_create",
         "gitlab.branch.create",
-        { projectPath: "group/repo" },
-        "repo:group/repo",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
       ],
-      ["gitlab_mr_create", "gitlab.mr.create", { projectPath: "group/repo" }, "repo:group/repo"],
-      ["gitlab_mr_update", "gitlab.mr.update", { projectPath: "group/repo" }, "repo:group/repo"],
+      [
+        "gitlab_mr_create",
+        "gitlab.mr.create",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
+      [
+        "gitlab_mr_update",
+        "gitlab.mr.update",
+        { projectPath: "zeta-group/quokka" },
+        "repo:zeta-group/quokka",
+      ],
       ...(
         [
           ["gitlab_issue_create", "gitlab.issue.create"],
@@ -343,8 +372,8 @@ const WRITES: Readonly<
         ([tool, mutates]): WriteCase => [
           tool,
           mutates,
-          { projectPath: "group/repo" },
-          "repo:group/repo",
+          { projectPath: "zeta-group/quokka" },
+          "repo:zeta-group/quokka",
         ],
       ),
     ],
