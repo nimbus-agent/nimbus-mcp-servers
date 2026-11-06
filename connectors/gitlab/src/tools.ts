@@ -265,11 +265,14 @@ export function registerGitlabTools(
       `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests/${String(parsed.mergeRequestIid)}`,
   );
 
+  const FULL_SHA = /^[0-9a-f]{40}$/i;
+
   const gitlabMrMergeSchema = projectPathArg.extend({
     mergeRequestIid: z.number().int().min(1),
     mergeCommitMessage: z.string().max(10_000).optional(),
     squash: z.boolean().optional(),
     shouldRemoveSourceBranch: z.boolean().optional(),
+    sha: z.string().regex(FULL_SHA, "a full 40-hex commit sha").optional(),
   });
 
   registerGitlabWriteTool(
@@ -278,7 +281,7 @@ export function registerGitlabTools(
       mutates: "gitlab.mr.merge",
       recoverable: true,
     },
-    "Merge a merge request.",
+    "Merge a merge request. If `sha` (40 hex) is given it is sent as the API's `sha` parameter, and GitLab fails the merge when the source branch head is no longer that commit (https://docs.gitlab.com/api/merge_requests/#merge-a-merge-request).",
     gitlabMrMergeSchema,
     (parsed) =>
       `/projects/${encodeURIComponent(parsed.projectPath)}/merge_requests/${String(parsed.mergeRequestIid)}/merge`,
@@ -292,6 +295,9 @@ export function registerGitlabTools(
       }
       if (parsed.shouldRemoveSourceBranch !== undefined) {
         body["should_remove_source_branch"] = parsed.shouldRemoveSourceBranch;
+      }
+      if (parsed.sha !== undefined) {
+        body["sha"] = parsed.sha;
       }
       return {
         method: "PUT",
@@ -457,8 +463,6 @@ export function registerGitlabTools(
     .max(255)
     .refine(isSafeGitRef, "not a valid branch or ref name");
 
-  const FULL_SHA = /^[0-9a-f]{40}$/i;
-
   /**
    * A branch name that goes in a JSON body: GitLab's own rules apply, but a format (invisible or
    * bidi), control or lone-surrogate character is refused, so an approval prompt shows what is sent.
@@ -480,7 +484,7 @@ export function registerGitlabTools(
       recoverable: true,
       scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
     },
-    "Create a branch from a branch, tag or commit (fromRef). If expectedSha is given and fromRef now resolves to a different commit, nothing is created, and the branch is made from the resolved commit.",
+    "Create a branch from a branch, tag or commit (fromRef). If expectedSha (40 hex) is given, fromRef is first resolved to a commit: when that commit is not expectedSha nothing is created, otherwise the branch is created from exactly that commit.",
     projectPathArg.extend({
       branch: gitlabRefSchema,
       fromRef: gitlabRefSchema,

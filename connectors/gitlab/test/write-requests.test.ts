@@ -296,7 +296,9 @@ describe("gitlab never sends its token across origins", () => {
         targetBranch: "b",
         title: "t",
       }),
-    ).rejects.toThrow(/GitLab answered a POST with a redirect \(307\); the write may or may not have been applied/);
+    ).rejects.toThrow(
+      /GitLab answered a POST with a redirect \(307\); the write may or may not have been applied/,
+    );
     expect(stub.calls).toHaveLength(1);
     expect(stub.calls[0]?.redirect).toBe("manual");
   });
