@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.5.0...connectors-v0.6.0) (2026-11-06)
+
+
+### Features
+
+* **connectors:** Wave 3 write tools for GitHub, GitLab, LaunchDarkly, Flagsmith and JSM Operations ([#69](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/69)) ([79f558a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/79f558aa742373d08e4af80a493342fc827aec92))
+
 ## [0.5.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.4.0...connectors-v0.5.0) (2026-11-05)
 
 
