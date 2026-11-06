@@ -737,6 +737,27 @@ describe("the registry workflow", () => {
     );
   });
 
+  // The 0.4.0 release (run 41997287916) failed with an EMPTY publisher key: a reusable workflow
+  // receives an environment secret only when its caller passes it, and an unpassed one resolves to
+  // "" silently (GitHub, "Reuse workflows", retrieved 2026-11-06). Pinned on the parsed files.
+  test("release.yml passes exactly the two keys by name, never inherit, and holds no environment", () => {
+    const releaseParsed = Bun.YAML.parse(release) as {
+      jobs: Record<string, { secrets?: unknown; environment?: unknown }>;
+    };
+    const caller = releaseParsed.jobs["publish-registry"];
+    expect(caller?.secrets).toEqual({
+      NIMBUS_PUBLISHER_KEY: gha("secrets.NIMBUS_PUBLISHER_KEY"),
+      NIMBUS_REGISTRY_ROOT_KEY: gha("secrets.NIMBUS_REGISTRY_ROOT_KEY"),
+    });
+    expect(caller?.environment).toBeUndefined();
+    const called = (Bun.YAML.parse(workflow) as { on: { workflow_call?: { secrets?: unknown } } })
+      .on;
+    expect(called.workflow_call?.secrets).toEqual({
+      NIMBUS_PUBLISHER_KEY: { required: true },
+      NIMBUS_REGISTRY_ROOT_KEY: { required: true },
+    });
+  });
+
   // Every assertion below reads the PARSED workflow, so a comment that mentions a protection does
   // not count as the protection.
   const parsed = Bun.YAML.parse(workflow) as Workflow;
