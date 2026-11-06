@@ -318,7 +318,7 @@ describe("gitlab never sends its token across origins", () => {
     );
     expect(stub.calls).toHaveLength(1);
     expect(credentialed(stub).every((u) => new URL(u).origin === "https://gitlab.com")).toBe(true);
-    expect(stub.calls.some((c) => c.url.startsWith("https://evil.example"))).toBe(false);
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
   });
 
   it("a same-origin https 301 on a GET is followed, with the token", async () => {
@@ -443,8 +443,8 @@ describe("gitlab branch_create ref rules and expectedSha", () => {
       "x.lock",
       "a.",
       "café",
-      "a​b",
-      "a‮b",
+      "a\u{200b}b",
+      "a\u{202e}b",
       "a\u0085b",
       "a\ud800b",
       "a:b",
@@ -524,7 +524,7 @@ it("mr_create and mr_update refuse invisible or control characters in a branch n
   setConnectorMode("gateway");
   const t = captureTools(registerGitlabTools);
   const stub = serve("{}");
-  for (const bad of ["a​b", "a‮b", "a\u0007b", "a\ud800b"]) {
+  for (const bad of ["a\u{200b}b", "a\u{202e}b", "a\u0007b", "a\ud800b"]) {
     await expect(
       t.call("gitlab_mr_create", {
         ...PROJECT,

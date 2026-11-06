@@ -228,7 +228,7 @@ describe("jira JSM Operations alerts (gateway mode)", () => {
       );
     });
     expect(stub.calls).toHaveLength(1);
-    expect(stub.only.url.startsWith("https://api.atlassian.com/")).toBe(true);
+    expect(new URL(stub.only.url).host).toBe("api.atlassian.com");
   });
 
   it("quotes 401, 403 and 404 answers", async () => {

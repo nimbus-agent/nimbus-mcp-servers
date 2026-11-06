@@ -851,7 +851,17 @@ describe("github owner and repo (path confusion)", () => {
   it("refuses dot segments, slashes and odd characters before any request", async () => {
     const stub = serve("{}");
     await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
-      for (const bad of [".", "..", "a/b", "a b", "a?b", "a%2fb", "", "x".repeat(101), "a​b"]) {
+      for (const bad of [
+        ".",
+        "..",
+        "a/b",
+        "a b",
+        "a?b",
+        "a%2fb",
+        "",
+        "x".repeat(101),
+        "a\u{200b}b",
+      ]) {
         await expect(tools.call("github_repo_get", { owner: bad, repo: "r" })).rejects.toThrow();
         await expect(tools.call("github_repo_get", { owner: "o", repo: bad })).rejects.toThrow();
         await expect(
