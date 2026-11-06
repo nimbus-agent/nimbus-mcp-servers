@@ -15,8 +15,13 @@
  *   would put the credential on the wire in clear.
  */
 
+import { fetchWithTimeout } from "@nimbus-dev/sdk/connector-kit";
+
 /** Followed redirects allowed on one GET/HEAD; the next one is refused. */
 export const MAX_REDIRECT_HOPS = 3;
+
+/** Per-request timeout when the caller supplies no transport; the SDK's default for every connector. */
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
@@ -32,7 +37,7 @@ function assertSecureTransport(label: string, url: URL): void {
 }
 
 export interface GuardedFetchOptions {
-  /** The transport to use (a timeout-wrapping fetch, say). Defaults to the global `fetch`. */
+  /** The transport to use. Defaults to the SDK's `fetchWithTimeout` (15 s per request, per hop). */
   readonly fetch?: (url: string, init: RequestInit) => Promise<Response>;
   /**
    * Refuse a first request to a plain-http, non-loopback origin. Defaults to true. The JSON GET
@@ -54,7 +59,7 @@ export async function guardedFetch(
 ): Promise<Response> {
   const method = (init.method ?? "GET").toUpperCase();
   const mayFollow = method === "GET" || method === "HEAD";
-  const doFetch = options.fetch ?? ((u: string, i: RequestInit) => fetch(u, i));
+  const doFetch = options.fetch ?? ((u: string, i: RequestInit) => fetchWithTimeout(u, i, DEFAULT_TIMEOUT_MS));
   let current = new URL(url);
   if (options.requireSecureBase !== false) assertSecureTransport(label, current);
   for (let hop = 0; ; hop += 1) {
