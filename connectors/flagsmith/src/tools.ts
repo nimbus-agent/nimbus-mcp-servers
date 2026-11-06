@@ -200,7 +200,7 @@ export function registerFlagsmithTools(
       capturePreState: readFeatureState,
       scopeTargetOf: (p) => ({ kind: "flag", value: `${p.environmentKey}/${String(p.featureId)}` }),
     },
-    "Enable or disable a feature in ONE environment, optionally setting its typed value (`PATCH /api/__future__/environments/{environmentKey}/features/{featureId}/`, an EXPERIMENTAL Flagsmith endpoint that may change without notice). Omitting `value` is intended to leave the value alone (PATCH merge semantics are unverified against a live server); segment and identity overrides are untouched. Flagsmith refuses it while change requests are enabled for the environment, with its own message. The result carries `confirmed`: true only when the reply shows the requested `enabled`; false means the server accepted the write but its reply does not show the new state.",
+    "Enable or disable a feature in ONE environment, optionally setting its typed value (`PATCH /api/__future__/environments/{environmentKey}/features/{featureId}/`, an EXPERIMENTAL Flagsmith endpoint that may change without notice). Omitting `value` is intended to leave the value alone (PATCH merge semantics are unverified against a live server); segment and identity overrides are untouched. Flagsmith refuses it while change requests are enabled for the environment, with its own message. The result carries `confirmed`: true only when the reply shows the requested `enabled` and, when `value` was given, that value; false means the server accepted the write but its reply does not show the new state.",
     featureStateArgs.extend({ enabled: z.boolean(), value: valueSchema.optional() }),
     async (p) => {
       // Validated here, not with `.refine`: a refined schema loses `.shape` (the registrar needs it).
@@ -210,15 +210,25 @@ export function registerFlagsmithTools(
           enabled: p.enabled,
           ...(p.value === undefined ? {} : { value: p.value }),
         },
-      })) as { environment_default?: { enabled?: unknown } } | null;
+      })) as { environment_default?: { enabled?: unknown; value?: unknown } } | null;
+      const echoed = response?.environment_default;
+      // The value comes back as `{type, value}` like it is sent; its inner value may be typed or a
+      // string, so the string forms are compared, and a type the reply names must be the one sent.
+      const shown = echoed?.value as { type?: unknown; value?: unknown } | undefined;
+      const valueShown =
+        p.value === undefined ||
+        (shown !== undefined &&
+          shown !== null &&
+          String(shown.value) === p.value.value &&
+          (shown.type === undefined || shown.type === p.value.type));
       return jsonResult({
         ok: true,
         environmentKey: p.environmentKey,
         featureId: p.featureId,
         // true only when the reply shows the state that was asked for; false means the server
         // accepted the write but its reply does not show the new state.
-        confirmed: response?.environment_default?.enabled === p.enabled,
-        enabled: response?.environment_default?.enabled,
+        confirmed: echoed?.enabled === p.enabled && valueShown,
+        enabled: echoed?.enabled,
       });
     },
   );

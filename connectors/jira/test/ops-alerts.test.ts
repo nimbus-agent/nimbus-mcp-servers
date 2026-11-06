@@ -157,6 +157,19 @@ describe("jira JSM Operations alerts (gateway mode)", () => {
     expect(stub.calls).toEqual([]);
   });
 
+  it("does not discover a cloud id over plain http, even on an atlassian.net host", async () => {
+    const stub = serve("{}");
+    await withEnv(
+      { ...SITE_ENV, JIRA_BASE_URL: "http://acme.atlassian.net", JIRA_CLOUD_ID: undefined },
+      async () => {
+        await expect(tools.call("jira_ops_alert_close", { alertId: "A1" })).rejects.toThrow(
+          /JIRA_CLOUD_ID/,
+        );
+      },
+    );
+    expect(stub.calls).toEqual([]);
+  });
+
   it("a non-JSON 2xx on acknowledge/close is accepted with requestId null", async () => {
     serve({ status: 202, body: "<html>ok</html>" });
     await withCloudId(async () => {

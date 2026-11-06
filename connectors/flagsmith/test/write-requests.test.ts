@@ -165,6 +165,26 @@ describe("flagsmith feature state (gateway mode)", () => {
     }
   });
 
+  it("set with a value confirms only when the reply shows that value too", async () => {
+    const value = { type: "integer", value: "42" };
+    const cases: ReadonlyArray<readonly [string, boolean]> = [
+      ['{"environment_default":{"enabled":true,"value":{"type":"integer","value":"42"}}}', true],
+      ['{"environment_default":{"enabled":true,"value":{"type":"integer","value":42}}}', true],
+      ['{"environment_default":{"enabled":true,"value":{"type":"integer","value":"7"}}}', false],
+      ['{"environment_default":{"enabled":true,"value":{"type":"string","value":"42"}}}', false],
+      ['{"environment_default":{"enabled":true}}', false],
+    ];
+    for (const [reply, confirmed] of cases) {
+      serve(reply);
+      await withToken(async () => {
+        expect(
+          await tools.callJson("flagsmith_feature_state_set", { ...ARGS, enabled: true, value }),
+          reply,
+        ).toMatchObject({ ok: true, confirmed });
+      });
+    }
+  });
+
   it("states the PATCH merge semantics as unverified in its description", () => {
     expect(tools.get("flagsmith_feature_state_set").description).toMatch(
       /unverified against a live server/,

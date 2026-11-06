@@ -78,14 +78,18 @@ function assertCloudId(value: unknown, source: string): string {
 /** A request is never allowed to follow a redirect: the credential goes only where it was aimed. */
 function refuseRedirect(what: string, res: HttpText): HttpText {
   if (res.status >= 300 && res.status < 400) {
-    throw new Error(`${what} answered ${String(res.status)} with a redirect; refused`);
+    throw new Error(
+      `${what} answered ${String(res.status)} with a redirect; refused (for a write, it may or may not have been applied)`,
+    );
   }
   return res;
 }
 
 function isAtlassianCloudHost(baseUrl: string): boolean {
   try {
-    return new URL(baseUrl).hostname.toLowerCase().endsWith(".atlassian.net");
+    // https only: over plain http an on-path attacker could answer tenant_info with another tenant's id.
+    const u = new URL(baseUrl);
+    return u.protocol === "https:" && u.hostname.toLowerCase().endsWith(".atlassian.net");
   } catch {
     return false;
   }
