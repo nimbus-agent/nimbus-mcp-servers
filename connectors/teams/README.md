@@ -15,6 +15,10 @@ nimbus connector auth teams
 nimbus ask "Summarize my recent activity in Teams"
 ```
 
+## ChatOps adaptive cards
+
+`teams_chat_post` (the bot reply surface) takes an optional `attachments` array of exactly one `{ contentType: "application/vnd.microsoft.card.adaptive", content: <card object> }`, at most 28 KiB serialised. It is sent in the Bot Framework activity unchanged; when absent the activity is plain text as before.
+
 ## See also
 
 - [Teams Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)

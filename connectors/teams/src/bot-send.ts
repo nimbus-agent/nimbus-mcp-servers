@@ -55,10 +55,14 @@ function serviceUrlBase(): string {
   return base.endsWith("/") ? base : `${base}/`;
 }
 
-/** Send a plain-text message activity to a Teams conversation via the Bot Framework. */
+/**
+ * Send a message activity to a Teams conversation via the Bot Framework. `attachments` (an Adaptive
+ * Card) goes into the activity body only when given.
+ */
 export async function teamsBotSendActivity(
   conversationId: string,
   text: string,
+  attachments?: readonly unknown[],
 ): Promise<GraphLikeResult> {
   const appId = requireProcessEnv("TEAMS_BOT_APP_ID");
   const appPassword = requireProcessEnv("TEAMS_BOT_APP_PASSWORD");
@@ -67,6 +71,10 @@ export async function teamsBotSendActivity(
   return fetchBearerAuthorizedJson(url, token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "message", text }),
+    body: JSON.stringify(
+      attachments === undefined
+        ? { type: "message", text }
+        : { type: "message", text, attachments },
+    ),
   });
 }

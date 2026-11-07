@@ -102,8 +102,16 @@ export const SLACK_TOOL_NAMES = [
   "slack_message_post_dm",
   "slack_user_info",
   "slack_chat_post",
+  "slack_views_open",
   "slack_socket_open",
 ] as const;
+
+/** Largest serialised `blocks` array / `view` object Slack accepts from this connector (16 KiB). */
+export const SLACK_PAYLOAD_MAX_BYTES = 16 * 1024;
+
+function serialisedBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
 
 export function registerSlackTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
@@ -122,7 +130,7 @@ export function registerSlackTools(
     scopeEnv: "NIMBUS_MCP_SLACK_WRITE_SCOPE",
     // `user` scopes a direct message by the recipient's user id, which is all a DM has before
     // `conversations.open` creates its channel.
-    scopeKinds: ["channel", "user"],
+    scopeKinds: ["channel", "user", "view"],
   });
 
   const slackChannelListSchema = z.object({
@@ -341,7 +349,19 @@ export function registerSlackTools(
       ),
   );
 
-  const slackChatPostSchema = z.object({ channel: z.string().min(1), text: z.string().min(1) });
+  const slackChatPostSchema = z.object({
+    channel: z.string().min(1),
+    text: z.string().min(1),
+    // Block Kit blocks, sent to Slack verbatim beside `text` (which stays the notification fallback).
+    blocks: z
+      .array(z.looseObject({ type: z.string() }))
+      .min(1)
+      .max(50)
+      .refine((b) => serialisedBytes(b) <= SLACK_PAYLOAD_MAX_BYTES, {
+        message: `blocks must serialise to at most ${SLACK_PAYLOAD_MAX_BYTES} bytes`,
+      })
+      .optional(),
+  });
   registerWriteTool(
     "slack_chat_post",
     {
@@ -351,12 +371,43 @@ export function registerSlackTools(
     },
     "Post an operational bot message to a channel (ChatOps reply surface; bot token).",
     slackChatPostSchema,
+    async (parsed) => {
+      const body: Record<string, unknown> = { channel: parsed.channel, text: parsed.text };
+      if (parsed.blocks !== undefined) {
+        body["blocks"] = parsed.blocks;
+      }
+      return slackInvokeJsonWithToken(
+        requireProcessEnv("SLACK_BOT_TOKEN"),
+        "chat.postMessage",
+        body,
+        "Slack chat.postMessage",
+      );
+    },
+  );
+
+  const slackViewsOpenSchema = z.object({
+    trigger_id: z.string().min(1),
+    view: z
+      .looseObject({ type: z.literal("modal") })
+      .refine((v) => serialisedBytes(v) <= SLACK_PAYLOAD_MAX_BYTES, {
+        message: `view must serialise to at most ${SLACK_PAYLOAD_MAX_BYTES} bytes`,
+      }),
+  });
+  registerWriteTool(
+    "slack_views_open",
+    {
+      mutates: "slack.views.open",
+      recoverable: true,
+      scopeTargetOf: () => ({ kind: "view", value: "modal" }),
+    },
+    "Open a confirmation modal for a user who clicked a ChatOps card button (ChatOps operational surface; bot token).",
+    slackViewsOpenSchema,
     async (parsed) =>
       slackInvokeJsonWithToken(
         requireProcessEnv("SLACK_BOT_TOKEN"),
-        "chat.postMessage",
-        { channel: parsed.channel, text: parsed.text },
-        "Slack chat.postMessage",
+        "views.open",
+        { trigger_id: parsed.trigger_id, view: parsed.view },
+        "Slack views.open",
       ),
   );
 
