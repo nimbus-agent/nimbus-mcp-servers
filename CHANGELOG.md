@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.7.0...connectors-v0.8.0) (2026-11-07)
+
+
+### Features
+
+* **connectors:** Wave 4 reads, commit tools and the prepare-tool kit ([#73](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/73)) ([3b56b31](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/3b56b3146f11f728237a216f766012a66cb7ce4d))
+
 ## [0.7.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.6.0...connectors-v0.7.0) (2026-11-07)
 
 
