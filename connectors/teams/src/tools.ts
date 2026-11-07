@@ -14,6 +14,9 @@ import {
 } from "../../../shared/mcp-tool-kit.ts";
 import { teamsBotSendActivity } from "./bot-send.ts";
 
+/** Largest serialised `attachments` array `teams_chat_post` accepts (28 KiB). */
+export const TEAMS_ATTACHMENTS_MAX_BYTES = 28 * 1024;
+
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
 async function graphRequest(
@@ -265,6 +268,20 @@ export function registerTeamsTools(
   const teamsChatPostSchema = z.object({
     conversationId: z.string().min(1),
     text: z.string().min(1),
+    // Exactly one Adaptive Card, sent in the activity verbatim; at most 28 KiB serialised.
+    attachments: z
+      .array(
+        z.object({
+          contentType: z.literal("application/vnd.microsoft.card.adaptive"),
+          content: z.record(z.string(), z.unknown()),
+        }),
+      )
+      .length(1)
+      .refine(
+        (a) => new TextEncoder().encode(JSON.stringify(a)).length <= TEAMS_ATTACHMENTS_MAX_BYTES,
+        { message: `attachments must serialise to at most ${TEAMS_ATTACHMENTS_MAX_BYTES} bytes` },
+      )
+      .optional(),
   });
   registerWriteTool(
     "teams_chat_post",
@@ -276,7 +293,7 @@ export function registerTeamsTools(
     "Post an operational bot message to a Teams conversation (ChatOps reply surface; bot app creds).",
     teamsChatPostSchema,
     async (parsed) => {
-      const r = await teamsBotSendActivity(parsed.conversationId, parsed.text);
+      const r = await teamsBotSendActivity(parsed.conversationId, parsed.text, parsed.attachments);
       return graphListResult(r);
     },
   );

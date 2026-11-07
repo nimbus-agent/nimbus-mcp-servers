@@ -643,6 +643,12 @@ const WRITES: Readonly<
     register: registerSlackTools,
     cases: [
       ["slack_chat_post", "slack.chat.post", { channel: "C123" }, "channel:C123"],
+      [
+        "slack_views_open",
+        "slack.views.open",
+        { trigger_id: "T1", view: { type: "modal" } },
+        "view:modal",
+      ],
       ["slack_message_post", "slack.message.post", { channel: "C123" }, "channel:C123"],
       ["slack_message_post_dm", "slack.message.post", { user_ids: "U123" }, "user:U123"],
     ],

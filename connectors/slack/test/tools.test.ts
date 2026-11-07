@@ -202,6 +202,107 @@ describe("slack tools (gateway mode)", () => {
     });
   });
 
+  /** A value that serialises to exactly `bytes` bytes once `make(pad)` wraps it. */
+  function sizedTo<T>(bytes: number, make: (pad: string) => T): T {
+    const overhead = JSON.stringify(make("")).length;
+    return make("x".repeat(bytes - overhead));
+  }
+
+  async function expectRefused(name: string, args: Record<string, unknown>): Promise<void> {
+    const stub = serve('{"ok":true}');
+    await withEnv(TOKENS, async () => {
+      await expect(tools.call(name, args)).rejects.toThrow();
+    });
+    expect(stub.calls).toEqual([]);
+  }
+
+  it("slack_chat_post sends blocks verbatim beside text, and omits them when absent", async () => {
+    const blocks = [
+      { type: "section", text: { type: "mrkdwn", text: "Restart?" }, block_id: "b1" },
+      { type: "actions", elements: [{ type: "button", action_id: "go", value: "v" }] },
+    ];
+    const withBlocks = await request("slack_chat_post", {
+      channel: "C1",
+      text: "fallback",
+      blocks,
+    });
+    expect(body(withBlocks)).toEqual({ channel: "C1", text: "fallback", blocks });
+    const plain = await request("slack_chat_post", { channel: "C1", text: "fallback" });
+    expect(Object.keys(body(plain) as object)).toEqual(["channel", "text"]);
+  });
+
+  it("slack_chat_post blocks: 1 to 50 objects with a string type, at most 16 KiB", async () => {
+    const block = { type: "divider" };
+    const fifty = Array.from({ length: 50 }, () => block);
+    expect(
+      (
+        body(await request("slack_chat_post", { channel: "C", text: "t", blocks: fifty })) as {
+          blocks: unknown[];
+        }
+      ).blocks,
+    ).toHaveLength(50);
+    await expectRefused("slack_chat_post", { channel: "C", text: "t", blocks: [] });
+    await expectRefused("slack_chat_post", {
+      channel: "C",
+      text: "t",
+      blocks: Array.from({ length: 51 }, () => block),
+    });
+    await expectRefused("slack_chat_post", {
+      channel: "C",
+      text: "t",
+      blocks: [{ text: "no type" }],
+    });
+    await expectRefused("slack_chat_post", { channel: "C", text: "t", blocks: [{ type: 7 }] });
+    await expectRefused("slack_chat_post", { channel: "C", text: "t", blocks: ["section"] });
+
+    const atCap = [sizedTo(16384, (pad) => [{ type: "section", pad }])][0];
+    const sent = await request("slack_chat_post", { channel: "C", text: "t", blocks: atCap });
+    expect((body(sent) as { blocks: unknown }).blocks).toEqual(atCap);
+    const overCap = sizedTo(16385, (pad) => [{ type: "section", pad }]);
+    await expectRefused("slack_chat_post", { channel: "C", text: "t", blocks: overCap });
+  });
+
+  it("slack_views_open calls views.open with the bot token and the view verbatim", async () => {
+    const view = {
+      type: "modal",
+      callback_id: "confirm",
+      title: { type: "plain_text", text: "Confirm" },
+      blocks: [{ type: "input", block_id: "i1" }],
+    };
+    const req = await request("slack_views_open", { trigger_id: "T1", view });
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe(`${API}/views.open`);
+    expect(req.headers["authorization"]).toBe("Bearer xoxb-bot");
+    expect(body(req)).toEqual({ trigger_id: "T1", view });
+  });
+
+  it("slack_views_open refuses a bad trigger_id or view, and a view over 16 KiB", async () => {
+    const modal = { type: "modal" };
+    await expectRefused("slack_views_open", { trigger_id: "", view: modal });
+    await expectRefused("slack_views_open", { view: modal });
+    await expectRefused("slack_views_open", { trigger_id: "T", view: { type: "home" } });
+    await expectRefused("slack_views_open", { trigger_id: "T", view: {} });
+    await expectRefused("slack_views_open", { trigger_id: "T", view: "modal" });
+
+    const atCap = sizedTo(16384, (pad) => ({ type: "modal", pad }));
+    const sent = await request("slack_views_open", { trigger_id: "T", view: atCap });
+    expect((body(sent) as { view: unknown }).view).toEqual(atCap);
+    await expectRefused("slack_views_open", {
+      trigger_id: "T",
+      view: sizedTo(16385, (pad) => ({ type: "modal", pad })),
+    });
+  });
+
+  it("slack_views_open needs the bot token before any request", async () => {
+    const stub = serve('{"ok":true}');
+    await withEnv({ ...TOKENS, SLACK_BOT_TOKEN: undefined }, async () => {
+      await expect(
+        tools.call("slack_views_open", { trigger_id: "T", view: { type: "modal" } }),
+      ).rejects.toThrow("SLACK_BOT_TOKEN is not set");
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
   it("the ChatOps tools use the bot and app tokens, not the user token", async () => {
     const info = await request("slack_user_info", { user: "U1" });
     expect(info.url).toBe(`${API}/users.info`);

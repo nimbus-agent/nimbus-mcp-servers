@@ -53,6 +53,21 @@ describe("teamsBotSendActivity", () => {
     expect(String(sent?.body)).toContain('"type":"message"');
   });
 
+  test("puts attachments in the activity body only when given", async () => {
+    const calls = installFetch((c) =>
+      c.url.includes("/oauth2/") ? tokenResponse() : new Response("{}", { status: 200 }),
+    );
+    const attachments = [{ contentType: "application/vnd.microsoft.card.adaptive", content: {} }];
+    await teamsBotSendActivity("c", "hi", attachments);
+    await teamsBotSendActivity("c", "hi");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({
+      type: "message",
+      text: "hi",
+      attachments,
+    });
+    expect(JSON.parse(String(calls[3]?.init?.body))).toEqual({ type: "message", text: "hi" });
+  });
+
   test("respects TEAMS_BOT_SERVICE_URL and normalizes a missing trailing slash", async () => {
     process.env["TEAMS_BOT_SERVICE_URL"] = "https://smba.trafficmanager.net/amer";
     const calls = installFetch((c) =>

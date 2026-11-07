@@ -179,6 +179,67 @@ describe("teams_chat_post through the Bot Framework (gateway mode)", () => {
     );
   });
 
+  const CARD_TYPE = "application/vnd.microsoft.card.adaptive";
+
+  /** An attachments array that serialises to exactly `bytes` bytes. */
+  function cardsOfSize(bytes: number): unknown[] {
+    const make = (pad: string): unknown[] => [{ contentType: CARD_TYPE, content: { pad } }];
+    return make("x".repeat(bytes - JSON.stringify(make("")).length));
+  }
+
+  async function postWith(attachments: unknown): Promise<void> {
+    await withEnv({ ...BOT, TEAMS_BOT_SERVICE_URL: undefined }, async () => {
+      await tools.call("teams_chat_post", { conversationId: "c1", text: "hi", attachments });
+    });
+  }
+
+  it("sends the attachments verbatim in the activity, and omits them when absent", async () => {
+    botServer('{"access_token":"bot-token"}');
+    const attachments = [
+      { contentType: CARD_TYPE, content: { type: "AdaptiveCard", version: "1.4", body: [] } },
+    ];
+    await postWith(attachments);
+    expect(JSON.parse(fetchStub.calls[1]?.body ?? "null")).toEqual({
+      type: "message",
+      text: "hi",
+      attachments,
+    });
+
+    fetchStub.restore();
+    botServer('{"access_token":"bot-token"}');
+    await withEnv({ ...BOT, TEAMS_BOT_SERVICE_URL: undefined }, async () => {
+      await tools.call("teams_chat_post", { conversationId: "c1", text: "hi" });
+    });
+    expect(JSON.parse(fetchStub.calls[1]?.body ?? "null")).toEqual({ type: "message", text: "hi" });
+  });
+
+  it("accepts attachments of exactly 28 KiB and refuses one byte more", async () => {
+    botServer('{"access_token":"bot-token"}');
+    await postWith(cardsOfSize(28 * 1024));
+    expect(fetchStub.calls).toHaveLength(2);
+
+    fetchStub.restore();
+    botServer('{"access_token":"bot-token"}');
+    await expect(postWith(cardsOfSize(28 * 1024 + 1))).rejects.toThrow();
+    expect(fetchStub.calls).toEqual([]);
+  });
+
+  it("refuses attachments that are not exactly one Adaptive Card", async () => {
+    botServer('{"access_token":"bot-token"}');
+    const card = { contentType: CARD_TYPE, content: {} };
+    for (const bad of [
+      [],
+      [card, card],
+      [{ contentType: "text/html", content: {} }],
+      [{ contentType: CARD_TYPE }],
+      [{ contentType: CARD_TYPE, content: "card" }],
+      "card",
+    ]) {
+      await expect(postWith(bad)).rejects.toThrow();
+    }
+    expect(fetchStub.calls).toEqual([]);
+  });
+
   for (const [answer, error] of [
     ['"not-an-object"', "Bot Framework token: missing access_token"],
     ['{"token_type":"Bearer"}', "Bot Framework token: missing access_token"],

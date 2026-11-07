@@ -149,6 +149,8 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   // LaunchDarkly rollout weights are a list of objects that must total exactly 100 percent.
   ["launchdarkly", { weights: [{ variationId: "v1", percent: 100 }] }],
   ["firebase", { appId: "1:1234567890:android:abcdef0123456789" }],
+  // Slack's modal `view` must be an object whose `type` is "modal"; no generic object satisfies that.
+  ["slack", { view: { type: "modal" } }],
   // CircleCI's pipeline and workflow ids are `z.uuid()`; no generic string
   // satisfies that.
   [
