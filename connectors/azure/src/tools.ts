@@ -18,9 +18,50 @@ async function azJson(args: string[]): Promise<unknown> {
   return (await runCliJsonThrowing(cmd, azEnv())) ?? {};
 }
 
+/**
+ * The node-pool keys `az aks nodepool show` is projected to. The page
+ * (https://learn.microsoft.com/en-us/cli/azure/aks/nodepool) does not list the output fields, so
+ * only the keys PRESENT in the reply are kept and an absent one stays absent.
+ */
+const NODE_POOL_KEYS = [
+  "count",
+  "vmSize",
+  "mode",
+  "powerState",
+  "provisioningState",
+  "orchestratorVersion",
+  "enableAutoScaling",
+  "minCount",
+  "maxCount",
+] as const;
+
+function projectNodePool(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("node pool not found");
+  }
+  const rec = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of NODE_POOL_KEYS) {
+    if (rec[k] !== undefined && rec[k] !== null) out[k] = rec[k];
+  }
+  // None of the keys present: not a node pool reply, so the owner is not shown an empty before-state.
+  if (Object.keys(out).length === 0) throw new Error("node pool not found");
+  // powerState is an object ({code}) in az's output; report its code as the plain string it is.
+  const ps = out["powerState"];
+  if (
+    typeof ps === "object" &&
+    ps !== null &&
+    typeof (ps as { code?: unknown }).code === "string"
+  ) {
+    out["powerState"] = (ps as { code: string }).code;
+  }
+  return out;
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const AZURE_TOOL_NAMES = [
   "azure_app_service_list",
+  "azure_aks_node_pool_get",
   "azure_app_service_restart",
   "azure_aks_node_pool_scale",
 ] as const;
@@ -58,6 +99,35 @@ export function registerAzureTools(
           "--resource-group",
           p.resourceGroup,
         ]),
+      ),
+  );
+
+  reg(
+    "azure_aks_node_pool_get",
+    "Get one AKS node pool's state (count, vmSize, mode, powerState, provisioningState, orchestratorVersion, autoscaler bounds; absent keys omitted). The before-state of azure_aks_node_pool_scale; same keys.",
+    z.object({
+      subscriptionId: azCliArg,
+      resourceGroup: azCliArg,
+      clusterName: azCliArg,
+      poolName: azCliArg,
+    }),
+    async (p) =>
+      jsonResult(
+        projectNodePool(
+          await azJson([
+            "aks",
+            "nodepool",
+            "show",
+            "--subscription",
+            p.subscriptionId,
+            "--resource-group",
+            p.resourceGroup,
+            "--cluster-name",
+            p.clusterName,
+            "--name",
+            p.poolName,
+          ]),
+        ),
       ),
   );
 

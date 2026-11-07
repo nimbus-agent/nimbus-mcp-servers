@@ -152,3 +152,66 @@ describe("azure_app_service_list", () => {
     );
   });
 });
+
+describe("azure_aks_node_pool_get", () => {
+  const ARGS = { subscriptionId: "s1", resourceGroup: "rg", clusterName: "aks", poolName: "np1" };
+
+  it("shows exactly that pool and projects only the keys that are present", async () => {
+    const stub = cli({
+      stdout: JSON.stringify({
+        count: 3,
+        vmSize: "Standard_D2s_v3",
+        mode: "User",
+        powerState: { code: "Running" },
+        provisioningState: "Succeeded",
+        enableAutoScaling: false,
+        name: "np1",
+        secretish: "dropped",
+      }),
+    });
+    expect(await tools.callJson("azure_aks_node_pool_get", ARGS)).toEqual({
+      count: 3,
+      vmSize: "Standard_D2s_v3",
+      mode: "User",
+      powerState: "Running",
+      provisioningState: "Succeeded",
+      enableAutoScaling: false,
+    });
+    expect(stub.calls.map((c) => c.command)).toEqual([
+      [
+        "az",
+        "aks",
+        "nodepool",
+        "show",
+        "--subscription",
+        "s1",
+        "--resource-group",
+        "rg",
+        "--cluster-name",
+        "aks",
+        "--name",
+        "np1",
+        "-o",
+        "json",
+      ],
+    ]);
+  });
+
+  it("a reply that is not an object is 'node pool not found'", async () => {
+    cli({ stdout: "null" });
+    await expect(tools.call("azure_aks_node_pool_get", ARGS)).rejects.toThrow(
+      "node pool not found",
+    );
+  });
+
+  it("refuses a flag-like or @file value before spawning", async () => {
+    const stub = cli({ stdout: "{}" });
+    await expect(
+      tools.call("azure_aks_node_pool_get", { ...ARGS, poolName: "--debug" }),
+    ).rejects.toThrow();
+    await expect(
+      tools.call("azure_aks_node_pool_get", { ...ARGS, clusterName: "@/etc/passwd" }),
+    ).rejects.toThrow();
+    expect(stub.calls).toEqual([]);
+  });
+});
