@@ -1,8 +1,8 @@
 {
   "format": 1,
   "rootKey": "tBHSfVjFZzyMoSVR69FbZfMyUstbLdUcfGwHKIaY/qA=",
-  "sequence": 3,
-  "generatedAt": "2026-11-04T07:45:01.204Z",
+  "sequence": 4,
+  "generatedAt": "2026-11-07T15:56:51.983Z",
   "extensions": {
     "com.nimbus.readwise": {
       "publisher": {
@@ -20,10 +20,46 @@
           "packageSizeBytes": 231438,
           "entryHash": "35dc77436d0cf139bc36a8dcd4b7e0fdf65196bd8d6880dddf5ce95329ecd594",
           "publishedAt": "2026-10-22T09:07:13.425Z"
+        },
+        "0.2.1": {
+          "channel": "stable",
+          "name": "com.nimbus.readwise",
+          "manifest": "extensions/com.nimbus.readwise/0.2.1/manifest.json",
+          "manifestSha256": "44cdea93d0600031466ab12466508aa75b4a22352e8c23f6980eba58afaac3f9",
+          "package": "extensions/com.nimbus.readwise/0.2.1/package.tgz",
+          "packageSha256": "eba020795a8812c68b917bfe56bd7860f0f532ea326b756f0e7a7321fe9c6366",
+          "packageSizeBytes": 232730,
+          "entryHash": "a6fa6b4af9a282d418b65eb441bedf98650e212bb8c83300cdedd2a4d929a315",
+          "publishedAt": "2026-11-07T15:56:51.983Z",
+          "quality": {
+            "scorer": 1,
+            "score": 100,
+            "cases": 7,
+            "passed": 7,
+            "rubrics": {
+              "exact": {
+                "cases": 6,
+                "passed": 6
+              },
+              "json-match": {
+                "cases": 1,
+                "passed": 1
+              },
+              "one-of": {
+                "cases": 0,
+                "passed": 0
+              }
+            }
+          },
+          "baseline": {
+            "scorer": 1,
+            "passed": true,
+            "tools": 7
+          }
         }
       }
     }
   },
   "livenessKey": "SDmbdq5LPTH/r7jfCBod2L/igvNQdFeBiiDRnWI53qc=",
-  "signature": "aV7hbRumb9rfIX4CsUcc8Syb23yw7JWMyMOAmqiYsYUrJs6WHpoFumdVxpUT7dsdSeNO8MHKZRogAwC9hzYRBw=="
+  "signature": "Jit+9KG2wVVUkAmhcvhK9pP0GbzPiyafjmU50BuL3nUfcU29/MuHqyIO0+Xy9QB23T8OyN1gSnFT9VMqRl8GDQ=="
 }
