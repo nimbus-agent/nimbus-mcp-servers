@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.6.0...connectors-v0.7.0) (2026-11-07)
+
+
+### Features
+
+* **connectors:** slack blocks and views.open, teams adaptive-card attachments for ChatOps typed confirmation ([#71](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/71)) ([357e8fd](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/357e8fd38ca036283d1bb6c5301a6817bb4e7831))
+
 ## [0.6.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.5.0...connectors-v0.6.0) (2026-11-06)
 
 
