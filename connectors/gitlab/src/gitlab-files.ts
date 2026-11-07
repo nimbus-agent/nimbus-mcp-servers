@@ -12,7 +12,7 @@
  *   full hash.
  */
 
-import { decodeBase64Text } from "../../../shared/commit-files.ts";
+import { decodeBase64Text, notOverwritable } from "../../../shared/commit-files.ts";
 import type { RestFetchResult } from "../../../shared/rest-tool-kit.ts";
 
 /** A GET against the GitLab API: a path relative to the API base, already carrying the token. */
@@ -73,6 +73,81 @@ export async function refCommit(get: GitlabGet, project: string, ref: string): P
   const id = isRecord(res.json) ? res.json["id"] : undefined;
   if (typeof id !== "string" || !FULL_SHA.test(id)) throw new Error("GitLab returned no commit id");
   return id.toLowerCase();
+}
+
+/** Entries per tree page (the API's own maximum is not stated on its page; 100 is what it is asked for). */
+const TREE_PAGE = 100;
+/** A directory of more than this many pages (5,000 entries) is refused rather than guessed about. */
+const TREE_MAX_PAGES = 50;
+
+type TreeEntry = { readonly path: string; readonly type: string; readonly mode: string };
+
+/**
+ * The entries of directory `dir` ("" for the root) at `sha`, paged until a short page.
+ * `GET /projects/:id/repository/tree?path=&ref=&per_page=&page=`; each entry has `id, name, path, mode,
+ * type` (https://docs.gitlab.com/api/repositories/). A 404 is a directory that does not exist.
+ */
+async function listTree(
+  get: GitlabGet,
+  project: string,
+  sha: string,
+  dir: string,
+): Promise<TreeEntry[]> {
+  const out: TreeEntry[] = [];
+  for (let page = 1; page <= TREE_MAX_PAGES; page++) {
+    const q = new URLSearchParams();
+    if (dir !== "") q.set("path", dir);
+    q.set("ref", sha);
+    q.set("per_page", String(TREE_PAGE));
+    q.set("page", String(page));
+    const res = await get(`/projects/${project}/repository/tree?${q.toString()}`); // NOSONAR S9382: pages are read in order until a short one.
+    if (res.status === 404) return out;
+    if (!res.ok) fail(res);
+    const entries = Array.isArray(res.json) ? res.json : [];
+    for (const e of entries) {
+      if (isRecord(e) && typeof e["path"] === "string" && typeof e["type"] === "string") {
+        out.push({
+          path: e["path"],
+          type: e["type"],
+          mode: typeof e["mode"] === "string" ? e["mode"] : "",
+        });
+      }
+    }
+    if (entries.length < TREE_PAGE) return out;
+  }
+  throw new Error(`GitLab directory "${dir}" has too many entries to check`);
+}
+
+/**
+ * Refuse a target the commit tools must not write over. The Repository Files API reports no mode, so
+ * a symlink reads as a text file holding its target; the tree listing does report one. For each
+ * distinct parent directory (sorted, one listing per directory, paged) every target path must be
+ * either absent or a plain `blob` whose mode is not 120000 (symlink) or 160000 (submodule); a
+ * directory or a submodule where a file is expected is refused too, and so is an existing file the
+ * listing does not show (it cannot be verified). Fail closed, before any write.
+ */
+export async function assertRegularTargets(
+  get: GitlabGet,
+  project: string,
+  sha: string,
+  files: readonly { readonly path: string; readonly exists: boolean }[],
+): Promise<void> {
+  const dirOf = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+  const dirs = [...new Set(files.map((f) => dirOf(f.path)))].sort((a, b) => a.localeCompare(b));
+  const byPath = new Map<string, TreeEntry>();
+  for (const dir of dirs) {
+    for (const entry of await listTree(get, project, sha, dir)) byPath.set(entry.path, entry); // NOSONAR S9382
+  }
+  for (const f of files) {
+    const entry = byPath.get(f.path);
+    if (entry === undefined) {
+      if (f.exists) throw notOverwritable(f.path);
+      continue;
+    }
+    if (entry.type !== "blob" || entry.mode === "120000" || entry.mode === "160000") {
+      throw notOverwritable(f.path);
+    }
+  }
 }
 
 /**

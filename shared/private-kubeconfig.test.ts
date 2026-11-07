@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   SCRATCH_DIR_ENV,
@@ -54,6 +54,19 @@ describe("singleKubeconfigPath", () => {
     expect(() => singleKubeconfigPath("/a/config:/b/config", ":")).toThrow(/more than one file/);
   });
 
+  test("one non-empty piece among empty ones is returned as that piece, not the raw value", () => {
+    expect(singleKubeconfigPath("/a/config:", ":")).toBe("/a/config");
+    expect(singleKubeconfigPath(":/a/config", ":")).toBe("/a/config");
+    expect(singleKubeconfigPath("::/a/config::", ":")).toBe("/a/config");
+    expect(singleKubeconfigPath(String.raw`C:\a\config;`, ";")).toBe(String.raw`C:\a\config`);
+    expect(singleKubeconfigPath(" ; /a/config ; ", ";")).toBe("/a/config");
+  });
+
+  test("a value that is only separators names no file", () => {
+    expect(() => singleKubeconfigPath(":", ":")).toThrow("KUBECONFIG env must be set");
+    expect(() => singleKubeconfigPath(" ; ;", ";")).toThrow("KUBECONFIG env must be set");
+  });
+
   test("a Windows drive path is ONE path where the delimiter is a semicolon", () => {
     expect(singleKubeconfigPath(String.raw`C:\Users\me\.kube\config`, ";")).toBe(
       String.raw`C:\Users\me\.kube\config`,
@@ -94,6 +107,8 @@ describe("withPrivateKubeconfig", () => {
       expect(readFileSync(env.KUBECONFIG, "utf8")).toBe("apiVersion: v1\nkind: Config\n");
       if (process.platform !== "win32") {
         expect(statSync(env.KUBECONFIG).mode & 0o777).toBe(0o600);
+        // The directory holding it is owner-only too: mkdtemp creates it 0700.
+        expect(statSync(dirname(env.KUBECONFIG)).mode & 0o777).toBe(0o700);
       }
     });
     expect(existsSync(seen)).toBe(false);

@@ -40,12 +40,21 @@ export function singleKubeconfigPath(
   if (p === undefined || p === "") {
     throw new Error("KUBECONFIG env must be set to a kubeconfig file path");
   }
-  if (p.split(separator).filter((piece) => piece.trim() !== "").length > 1) {
+  const pieces = p
+    .split(separator)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece !== "");
+  if (pieces.length > 1) {
     throw new Error(
       `KUBECONFIG names more than one file (separator "${separator}"); set it to ONE kubeconfig path`,
     );
   }
-  return p;
+  // A value that is only separators names no file at all.
+  const only = pieces[0];
+  if (only === undefined) throw new Error("KUBECONFIG env must be set to a kubeconfig file path");
+  // The one piece that remains, not the raw value: `/a/config:` names `/a/config`, and the copy is
+  // made from that path, never from a string with a separator in it.
+  return only;
 }
 
 /** The base directory private kubeconfigs are made under. */

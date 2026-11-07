@@ -49,6 +49,13 @@ create and Pull requests: write for PR create and update.
   page lists only 409 and 422, and any of them is surfaced as "head moved or ref update refused"),
   whether API commits made with a token are signed, and the status of a ref update refused by branch
   protection (surfaced verbatim).
+- Paths: a file path with a control, format (bidi, zero-width, byte-order mark), line or paragraph
+  separator or lone-surrogate character is refused, so the approval preview shows what is sent; so is any
+  `.`, `..` or `.git` segment including the spellings NTFS and HFS fold to it (`.git.`, `.GIT `, `git~1`).
+  A request naming a path and a path beneath it (`a` and `a/b`), or one path twice, is refused before any
+  request.
+- `github_files_get` caps the content of all its files together at 192 KiB: the first file that does
+  not fit, and every file after it, is reported with `withheld: "budget"` and no content.
 
 ## See also
 

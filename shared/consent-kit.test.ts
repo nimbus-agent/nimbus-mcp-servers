@@ -1159,6 +1159,51 @@ describe("prepare tool registrar", () => {
     expect((await verifyAuditChain(log)).ok).toBe(true);
   });
 
+  test("a prepare handler that throws is audited as failed and the error is rethrown", async () => {
+    setConnectorMode("standalone");
+    const log = await tempAuditPath();
+    const srv = multiServer();
+    const { registerPrepareTool } = kit(srv, "repo:acme/api", { auditLog: log });
+    registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => {
+      throw new Error("GitHub 500: boom");
+    });
+    const cb = srv.handlers.get("github_commit_prepare");
+    if (cb === undefined) throw new Error("not registered");
+    await expect(cb({ branch: "acme/api" })).rejects.toThrow("GitHub 500: boom");
+    const entries = (await readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      );
+    expect(entries.map((e) => e.outcome)).toEqual(["failed"]);
+    expect(entries[0]?.detail["error"]).toBe("GitHub 500: boom");
+    expect(entries[0]?.detail["target"]).toEqual({ kind: "repo", value: "acme/api" });
+    expect((await verifyAuditChain(log)).ok).toBe(true);
+  });
+
+  test("a prepare that throws, whose failure cannot be recorded, still leads with its own error", async () => {
+    setConnectorMode("standalone");
+    const dir = await mkdtemp(join(tmpdir(), "nimbus-consent-"));
+    tempDirs.push(dir);
+    const srv = multiServer();
+    // A log path whose parent is a regular file cannot be appended to.
+    const blocker = join(dir, "blocker");
+    await appendFile(blocker, "x");
+    const { registerPrepareTool } = kit(srv, "repo:acme/api", {
+      auditLog: join(blocker, "audit.jsonl"),
+    });
+    registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => {
+      throw new Error("GitHub 500: boom");
+    });
+    const cb = srv.handlers.get("github_commit_prepare");
+    if (cb === undefined) throw new Error("not registered");
+    await expect(cb({ branch: "acme/api" })).rejects.toThrow(
+      /github_commit_prepare failed: GitHub 500: boom/,
+    );
+  });
+
   test("prepares spend no write budget: budget 1, two prepares and one write all succeed", async () => {
     setConnectorMode("standalone");
     const srv = multiServer();

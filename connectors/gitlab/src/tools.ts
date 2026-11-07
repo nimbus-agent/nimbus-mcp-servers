@@ -33,6 +33,7 @@ import {
   toRestFetchResult,
 } from "../../../shared/rest-tool-kit.ts";
 import {
+  assertRegularTargets,
   branchHead,
   type GitlabFileRead,
   type GitlabGet,
@@ -814,6 +815,9 @@ export function registerGitlabTools(
         parsed.files.map((f) => f.path),
         READ_LIMIT,
       );
+      // The files API reports no mode, so a symlink looks like a text file: read the tree entries and
+      // refuse a symlink, a submodule or a directory before anything is written.
+      await assertRegularTargets(get, project, head, read);
       let oldBytes = 0;
       const files = read.map((f) => {
         if (!f.exists) return { path: f.path, exists: false };
@@ -860,7 +864,7 @@ export function registerGitlabTools(
       },
       scopeTargetOf: repoScopeOf,
     },
-    "Commit one or more whole text files to a branch as ONE commit, but only if the branch head is still expectedHeadSha (the head the owner approved). GitLab has no head-conditional commit: each update carries the file's last_commit_id read at that head, so a change to one of THESE files is refused, while a change to other files between the check and the commit is not detected, and the result reports movedHead when the new commit's parent is not the approved head. Never forced.",
+    "Commit one or more whole text files to a branch as ONE commit. The branch head is checked against expectedHeadSha (the head the owner approved) before the write, but GitLab has no head-conditional commit, so that check is NOT atomic with the write. What protects the files is last_commit_id: each update carries the file's last_commit_id read at the approved head, and GitLab refuses it if that file changed since. A commit to OTHER files that lands between the check and the write is not detected before the write; movedHead: true in the result reports it afterwards (the new commit's parent is not the approved head). Never forced.",
     gitlabCommitInputSchema.extend({
       message: z.string().min(1).max(5000),
       expectedHeadSha: fullShaSchema,
@@ -884,6 +888,9 @@ export function registerGitlabTools(
         parsed.files.map((f) => f.path),
         READ_LIMIT,
       );
+      // The files API reports no mode, so a symlink looks like a text file: read the tree entries and
+      // refuse a symlink, a submodule or a directory before anything is written.
+      await assertRegularTargets(get, project, head, read);
       let oldBytes = 0;
       const actions = parsed.files.map((f, i) => {
         const existing = read[i];

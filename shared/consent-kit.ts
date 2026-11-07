@@ -486,7 +486,22 @@ export function createPrepareToolRegistrar(
         await record(name, "refused", { reason: "out of scope", target });
         return refused(`out of scope: ${target.kind}:${target.value} is not in ${cfg.scopeEnv}`);
       }
-      const result = await handler(args);
+      let result: McpListResult;
+      try {
+        result = await handler(args);
+      } catch (e) {
+        // As a write does: record the failure, and if recording it fails too, the tool's own error
+        // still leads, since an audit error alone would read as a prepare that never started.
+        try {
+          await record(name, "failed", { target, error: messageOf(e) });
+        } catch (error_) {
+          throw new Error(
+            `${name} failed: ${messageOf(e)}. Recording that failure also failed: ${messageOf(error_)}`,
+            { cause: e },
+          );
+        }
+        throw e;
+      }
       await record(name, "prepared", { target });
       return result;
     };

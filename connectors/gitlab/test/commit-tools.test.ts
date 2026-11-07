@@ -24,6 +24,12 @@ type Repo = {
   /** path -> GitLab file reply (404 when absent). */
   files: Record<string, { content: string; lastCommitId: string; exec?: boolean; size?: number }>;
   commit: StubReply;
+  /** path -> the tree listing's mode, where it is not the plain one. */
+  modes: Record<string, string>;
+  /** Tree entries that are not in `files`: a submodule, a directory, a long listing. */
+  extra: { path: string; type: string; mode: string }[];
+  /** Paths the files API serves but the tree listing leaves out. */
+  hidden: string[];
 };
 
 let repo: Repo;
@@ -42,11 +48,15 @@ function freshRepo(): Repo {
       },
       "big.txt": { content: b64("x"), lastCommitId: "c4", size: 300_000 },
       "lib/class.rb": { content: b64("class A; end"), lastCommitId: "c5" },
+      "link.txt": { content: b64("README.md"), lastCommitId: "c6" },
       "p1.txt": { content: b64("x".repeat(100 * 1024)), lastCommitId: "d1" },
       "p2.txt": { content: b64("y".repeat(92 * 1024)), lastCommitId: "d2" },
       "p3.txt": { content: b64("z"), lastCommitId: "d3" },
       "p4.txt": { content: b64("w".repeat(92 * 1024 + 1)), lastCommitId: "d4" },
     },
+    modes: {},
+    extra: [],
+    hidden: [],
     commit: {
       status: 201,
       body: JSON.stringify({
@@ -63,6 +73,25 @@ function serve(): FetchStub {
   http = stubFetch((req: RecordedRequest) => {
     const url = new URL(req.url);
     const path = url.pathname.replace("/api/v4/projects/group%2Frepo", "");
+    if (path === "/repository/tree" && req.method === "GET") {
+      const dir = url.searchParams.get("path") ?? "";
+      const perPage = Number(url.searchParams.get("per_page") ?? "20");
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const dirOf = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+      const entries = [
+        ...Object.entries(repo.files)
+          .filter(([p]) => !repo.hidden.includes(p))
+          .map(([p, f]) => ({
+            path: p,
+            type: "blob",
+            mode: repo.modes[p] ?? (f.exec === true ? "100755" : "100644"),
+          })),
+        ...repo.extra,
+      ].filter((e) => dirOf(e.path) === dir);
+      if (entries.length === 0 && dir !== "") return { status: 404, body: "{}" };
+      const slice = entries.slice((page - 1) * perPage, page * perPage);
+      return JSON.stringify(slice.map((e) => ({ id: "x", name: e.path.split("/").at(-1), ...e })));
+    }
     if (path.startsWith("/repository/branches/")) {
       const name = decodeURIComponent(path.slice("/repository/branches/".length));
       return name === "gone"
@@ -324,6 +353,10 @@ describe("gitlab_commit_create", () => {
       `GET /projects/group%2Frepo/repository/files/README%2Emd?ref=${HEAD}`,
       `GET /projects/group%2Frepo/repository/files/lib%2Fclass%2Erb?ref=${HEAD}`,
       `GET /projects/group%2Frepo/repository/files/docs%2Fnew%2Emd?ref=${HEAD}`,
+      // One listing per distinct parent directory, in sorted order, after the reads and before the POST.
+      `GET /projects/group%2Frepo/repository/tree?ref=${HEAD}&per_page=100&page=1`,
+      `GET /projects/group%2Frepo/repository/tree?path=docs&ref=${HEAD}&per_page=100&page=1`,
+      `GET /projects/group%2Frepo/repository/tree?path=lib&ref=${HEAD}&per_page=100&page=1`,
       "POST /projects/group%2Frepo/repository/commits",
     ]);
     const post = stub.calls.at(-1);
@@ -430,6 +463,100 @@ describe("gitlab_commit_create", () => {
     ).rejects.toThrow("redirected to another origin");
     void stub;
     expect(http.calls).toHaveLength(1);
+  });
+});
+
+describe("gitlab symlinks, submodules and directories in the way (the files API reports no mode)", () => {
+  const ONE = (path: string) => [{ path, content: "x" }];
+
+  /** The refusal must come before any write, whichever tool is asked. */
+  async function refused(
+    path: string,
+    why: RegExp = /not a text file the commit tools can overwrite/,
+  ) {
+    const stub = serve();
+    await expect(
+      tools.call("gitlab_commit_prepare", { ...BASE, files: ONE(path) }),
+    ).rejects.toThrow(why);
+    await expect(
+      tools.call("gitlab_commit_create", {
+        ...BASE,
+        message: "m",
+        expectedHeadSha: HEAD,
+        files: ONE(path),
+      }),
+    ).rejects.toThrow(why);
+    expect(writes(stub)).toEqual([]);
+    return stub;
+  }
+
+  it("refuses a symlink (mode 120000), which the files API serves as plain text", async () => {
+    repo = freshRepo();
+    repo.modes["link.txt"] = "120000";
+    const stub = await refused("link.txt");
+    // The tree was read for its directory, with the exact request.
+    expect(stub.calls.map(line)).toContain(
+      `GET /projects/group%2Frepo/repository/tree?ref=${HEAD}&per_page=100&page=1`,
+    );
+  });
+
+  it("refuses a submodule (mode 160000, type commit) where a file is to be created", async () => {
+    repo = freshRepo();
+    repo.extra.push({ path: "vendor/sub", type: "commit", mode: "160000" });
+    await refused("vendor/sub");
+  });
+
+  it("refuses a directory where a file is expected", async () => {
+    repo = freshRepo();
+    repo.extra.push({ path: "docs", type: "tree", mode: "040000" });
+    await refused("docs");
+  });
+
+  it("refuses an existing file the listing does not show (it cannot be verified)", async () => {
+    repo = freshRepo();
+    repo.hidden.push("README.md");
+    await refused("README.md");
+  });
+
+  it("accepts a plain blob (100644 and 100755) and an absent path, and reads each directory once", async () => {
+    const stub = serve();
+    await tools.callJson("gitlab_commit_prepare", {
+      ...BASE,
+      files: [
+        { path: "README.md", content: "1" },
+        { path: "bin/run.sh", content: "2" },
+        { path: "bin/new.sh", content: "3" },
+      ],
+    });
+    const trees = stub.calls.map(line).filter((l) => l.includes("/repository/tree"));
+    expect(trees).toEqual([
+      `GET /projects/group%2Frepo/repository/tree?ref=${HEAD}&per_page=100&page=1`,
+      `GET /projects/group%2Frepo/repository/tree?path=bin&ref=${HEAD}&per_page=100&page=1`,
+    ]);
+  });
+
+  it("pages a long directory until a short page, and finds a file on the second page", async () => {
+    repo = freshRepo();
+    for (let i = 0; i < 150; i++) {
+      repo.extra.push({ path: `many/f${String(i)}.txt`, type: "blob", mode: "100644" });
+    }
+    repo.extra.push({ path: "many/link", type: "blob", mode: "120000" });
+    const stub = await refused("many/link");
+    const pages = stub.calls.map(line).filter((l) => l.includes("path=many"));
+    // 151 entries: a full page of 100, then a short one; each tool read both pages.
+    expect(pages.slice(0, 2)).toEqual([
+      `GET /projects/group%2Frepo/repository/tree?path=many&ref=${HEAD}&per_page=100&page=1`,
+      `GET /projects/group%2Frepo/repository/tree?path=many&ref=${HEAD}&per_page=100&page=2`,
+    ]);
+  });
+
+  it("a directory that does not exist (404) lists as empty, so a new file under it is allowed", async () => {
+    serve();
+    const out = (await tools.callJson("gitlab_commit_prepare", {
+      ...BASE,
+      files: [{ path: "brand/new/file.txt", content: "x" }],
+    })) as { files: { exists: boolean }[] };
+    expect(out.files[0]?.exists).toBe(false);
   });
 });
 
