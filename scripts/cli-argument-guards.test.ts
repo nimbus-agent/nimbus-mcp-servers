@@ -206,6 +206,7 @@ const SWEEP_REPLY = JSON.stringify({
   metadata: { name: "x" },
   count: 1,
   Reservations: [{ Instances: [{ InstanceId: "i-0123456789abcdef0" }] }],
+  services: [{ serviceName: "x" }],
 });
 
 /**

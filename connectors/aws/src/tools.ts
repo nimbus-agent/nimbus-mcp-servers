@@ -79,9 +79,36 @@ function projectInstance(raw: unknown): Record<string, unknown> {
   throw new Error("instance not found");
 }
 
+/**
+ * The projection of `aws ecs describe-services --cluster X --services Y`
+ * (https://docs.aws.amazon.com/cli/latest/reference/ecs/describe-services.html): `services[]` with
+ * `serviceName, status, desiredCount, runningCount, taskDefinition, launchType`, and `failures[]`
+ * for a service it could not describe (a missing one comes back there, with exit code 0). A service
+ * in `failures` with none in `services`, or no entry in `services` at all, is "service not found".
+ * An INACTIVE service is still listed by the API and is reported with its status.
+ */
+function projectEcsService(raw: unknown): Record<string, unknown> {
+  const services = isRecord(raw) && Array.isArray(raw["services"]) ? raw["services"] : [];
+  const service = services.find((s) => isRecord(s) && typeof s["serviceName"] === "string");
+  if (!isRecord(service)) throw new Error("service not found");
+  const out: Record<string, unknown> = {};
+  for (const k of [
+    "serviceName",
+    "status",
+    "desiredCount",
+    "runningCount",
+    "taskDefinition",
+    "launchType",
+  ] as const) {
+    if (service[k] !== undefined && service[k] !== null) out[k] = service[k];
+  }
+  return out;
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const AWS_TOOL_NAMES = [
   "aws_ecs_service_list",
+  "aws_ecs_service_get",
   "aws_lambda_list",
   "aws_ec2_instance_get",
   "aws_ecs_service_update",
@@ -111,6 +138,25 @@ export function registerAwsTools(
     "List ECS services in a cluster.",
     z.object({ cluster: awsCliArg }),
     async (p) => jsonResult(await awsJson(["ecs", "list-services", "--cluster", p.cluster])),
+  );
+
+  reg(
+    "aws_ecs_service_get",
+    "Get one ECS service's state: {serviceName, status, desiredCount, runningCount, taskDefinition, launchType}. The before-state of aws_ecs_service_update; same cluster and service. A service the API reports as a failure, or does not return, is 'service not found'.",
+    z.object({ cluster: awsCliArg, service: awsCliArg }),
+    async (p) =>
+      jsonResult(
+        projectEcsService(
+          await awsJson([
+            "ecs",
+            "describe-services",
+            "--cluster",
+            p.cluster,
+            "--services",
+            p.service,
+          ]),
+        ),
+      ),
   );
 
   reg("aws_lambda_list", "List Lambda functions (first page).", z.object({}), async () =>
