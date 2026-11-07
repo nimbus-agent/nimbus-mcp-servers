@@ -90,7 +90,7 @@ export function registerAppleTools(
     },
   );
 
-  // apple_calendar_list, apple_calendar_event_create, apple_calendar_event_delete
+  // apple_calendar_list, apple_calendar_event_get, apple_calendar_event_create, apple_calendar_event_delete
   registerAppleCalendarTools(server, {
     calendar,
     now,
@@ -107,6 +107,7 @@ export const APPLE_TOOL_NAMES = [
   "apple_mail_send",
   "apple_mail_draft_create",
   "apple_calendar_list",
+  "apple_calendar_event_get",
   "apple_calendar_event_create",
   "apple_calendar_event_delete",
 ] as const;

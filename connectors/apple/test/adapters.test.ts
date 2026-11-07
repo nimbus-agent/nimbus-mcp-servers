@@ -419,3 +419,123 @@ describe("the default client factories", () => {
     });
   });
 });
+
+describe("createAppleCalDavClient href confinement (getEvent and deleteEvent)", () => {
+  const HOME = "https://p01.icloud.test/cal/home/";
+  const ICS = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VEVENT",
+    "UID:e1",
+    "SUMMARY:Standup",
+    "DTSTART:20260102T090000Z",
+    "DTEND:20260102T091500Z",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+
+  function setup(): {
+    client: ReturnType<typeof createAppleCalDavClient>;
+    calls: string[];
+    fetched: unknown[];
+  } {
+    const calls: string[] = [];
+    const fetched: unknown[] = [];
+    const dav: DavClientLike = {
+      login: async () => undefined,
+      fetchCalendars: async () => {
+        calls.push("fetchCalendars");
+        return [{ url: HOME, displayName: "Home" }];
+      },
+      fetchCalendarObjects: async (p) => {
+        calls.push("fetchCalendarObjects");
+        fetched.push(p);
+        return [{ url: `${HOME}e1.ics`, etag: '"etag-1"', data: ICS }];
+      },
+      createCalendarObject: async () => undefined,
+      deleteCalendarObject: async () => {
+        calls.push("deleteCalendarObject");
+        return undefined;
+      },
+    };
+    return { client: createAppleCalDavClient("me@icloud.test", "pw", () => dav), calls, fetched };
+  }
+
+  const OUTSIDE = [
+    "https://evil.example/cal/home/e1.ics",
+    "https://p01.icloud.test/cal/home-evil/e1.ics",
+    "https://p01.icloud.test/cal/home/../other/e1.ics",
+    "https://p01.icloud.test/cal/home/%2e%2e/other/e1.ics",
+    "https://p01.icloud.test:8443/cal/home/e1.ics",
+    "http://p01.icloud.test/cal/home/e1.ics",
+    "https://p01.icloud.test@evil.example/cal/home/e1.ics",
+    "https://me:pw@p01.icloud.test/cal/home/e1.ics",
+    "/cal/home/e1.ics",
+    HOME,
+    "",
+  ];
+
+  it("getEvent discovers the calendars when none is cached, then fetches only that object, with its etag", async () => {
+    const { client, calls, fetched } = setup();
+    const got = await client.getEvent(`${HOME}e1.ics`);
+    expect(calls).toEqual(["fetchCalendars", "fetchCalendarObjects"]);
+    expect(got.etag).toBe('"etag-1"');
+    expect(got.calendar).toBe("Home");
+    expect(got.event.summary).toBe("Standup");
+    expect(fetched[0]).toEqual({
+      calendar: { url: HOME, displayName: "Home" },
+      objectUrls: [`${HOME}e1.ics`],
+    });
+  });
+
+  for (const href of OUTSIDE) {
+    it(`getEvent refuses ${JSON.stringify(href)} before any object request`, async () => {
+      const { client, calls } = setup();
+      await expect(client.getEvent(href)).rejects.toThrow("href is not in one of your calendars");
+      expect(calls).not.toContain("fetchCalendarObjects");
+    });
+
+    it(`deleteEvent refuses ${JSON.stringify(href)} before any delete request`, async () => {
+      const { client, calls } = setup();
+      await expect(client.deleteEvent(href)).rejects.toThrow(
+        "href is not in one of your calendars",
+      );
+      expect(calls).not.toContain("deleteCalendarObject");
+    });
+  }
+
+  it("getEvent reports an object that comes back with no event as not found", async () => {
+    const dav: DavClientLike = {
+      login: async () => undefined,
+      fetchCalendars: async () => [{ url: HOME, displayName: "Home" }],
+      fetchCalendarObjects: async () => [{ url: `${HOME}x.ics`, data: "" }],
+      createCalendarObject: async () => undefined,
+      deleteCalendarObject: async () => undefined,
+    };
+    const client = createAppleCalDavClient("me@icloud.test", "pw", () => dav);
+    await expect(client.getEvent(`${HOME}x.ics`)).rejects.toThrow("event not found");
+  });
+});
+
+describe("createAppleCalDavClient confinement with a calendar url that has no trailing slash", () => {
+  it("owns its own objects but not a sibling that shares its prefix", async () => {
+    const deleted: string[] = [];
+    const dav: DavClientLike = {
+      login: async () => undefined,
+      fetchCalendars: async () => [
+        { url: "https://p01.icloud.test/cal/home", displayName: "Home" },
+      ],
+      fetchCalendarObjects: async () => [],
+      createCalendarObject: async () => undefined,
+      deleteCalendarObject: async (p) => {
+        deleted.push(p.calendarObject.url);
+        return undefined;
+      },
+    };
+    const client = createAppleCalDavClient("me@icloud.test", "pw", () => dav);
+    await client.deleteEvent("https://p01.icloud.test/cal/home/e1.ics");
+    await expect(
+      client.deleteEvent("https://p01.icloud.test/cal/home-evil/e1.ics"),
+    ).rejects.toThrow("href is not in one of your calendars");
+    expect(deleted).toEqual(["https://p01.icloud.test/cal/home/e1.ics"]);
+  });
+});

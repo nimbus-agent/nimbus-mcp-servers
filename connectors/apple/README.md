@@ -127,6 +127,17 @@ All tools enforce a **metadata-only / ≤2000-char preview** contract:
 mail bodies, attachment bytes, and full calendar descriptions are never
 returned, stored, or transmitted beyond the capped preview.
 
+## Behaviour notes
+
+- `apple_calendar_event_get {href}` returns one event in the shape `apple_calendar_list` uses, plus the
+  object's `etag` (RFC 4791 5.3.4: a GET on a calendar object MUST return an ETag), the before-state of
+  `apple_calendar_event_delete`.
+- `apple_calendar_event_get` and `apple_calendar_event_delete` refuse an `href` that is not under one of
+  the account's own discovered calendars (compared as normalised URLs, so `..`, a sibling prefix, another
+  host, another port or embedded credentials all fail) BEFORE any request. Until now the delete took any
+  `href` and sent the iCloud credential to whatever host it named. The delete is still unconditional
+  (no `If-Match`).
+
 ## See also
 
 - [Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)
