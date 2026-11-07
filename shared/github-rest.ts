@@ -173,6 +173,18 @@ function refCandidates(ref: string): { readonly name: string; readonly kind: "br
 }
 
 /**
+ * The names to ask `GET /commits/<name>` for, in order, for a user-supplied `ref`. A full sha is one
+ * name; a 7 to 39 hex string is tried as an abbreviated sha first and then as a branch and a tag;
+ * anything else is the `heads/` / `tags/` forms of {@link refCandidates}. `ref` must already
+ * satisfy {@link isSafeGitRef}.
+ */
+export function commitRefCandidates(ref: string): string[] {
+  if (FULL_SHA.test(ref)) return [ref];
+  const named = refCandidates(ref).map((c) => c.name);
+  return /^[0-9a-f]{7,39}$/i.test(ref) ? [ref, ...named] : named;
+}
+
+/**
  * Resolve a branch, tag or commit to a COMMIT sha. `ref` must already satisfy {@link isSafeGitRef}.
  *
  * A 40-hex string is returned as is. `heads/*` or `tags/*` is one GET. A bare name tries

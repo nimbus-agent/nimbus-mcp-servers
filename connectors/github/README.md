@@ -56,6 +56,14 @@ create and Pull requests: write for PR create and update.
   request.
 - `github_files_get` caps the content of all its files together at 192 KiB: the first file that does
   not fit, and every file after it, is reported with `withheld: "budget"` and no content.
+- `github_pr_merge` takes an optional `sha` (40 lowercase hex): the head SHA the pull request must match.
+  It is sent as the merge endpoint's documented `sha` parameter only when given, and GitHub's 409
+  ("Conflict if sha was provided and pull request head did not match") is reported as a clear error saying
+  nothing was merged. The page documents the field and the 409; it gives no example message text.
+- `github_commit_get {repoFull: "owner/repo", ref}` returns `{sha, message (first line, at most 200
+  characters), authorName, authorDate, parents}`, the before-state of `github_tag_create`. `ref` is a sha
+  (full or abbreviated), `heads/<branch>`, `tags/<tag>`, or a bare name tried as a branch and then a tag. A
+  404, or a 422 "No commit found", is "commit not found".
 
 ## See also
 

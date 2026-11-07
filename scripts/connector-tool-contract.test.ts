@@ -157,6 +157,7 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   [
     "github",
     {
+      repoFull: "acme/api",
       files: [{ path: "a.txt", content: "x" }],
       paths: ["a.txt"],
       expectedHeadSha: "a".repeat(40),

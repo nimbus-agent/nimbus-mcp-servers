@@ -17,6 +17,7 @@ import {
 } from "../../../shared/consent-kit.ts";
 import { type GithubFileRead, readGithubFilesAt } from "../../../shared/github-files.ts";
 import {
+  commitRefCandidates,
   ghFetch,
   ghQueryPath,
   ghRepoPath,
@@ -29,6 +30,7 @@ import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
+  mcpJsonResultIfOk,
   requireProcessEnv,
   type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
@@ -56,6 +58,7 @@ export const GITHUB_TOOL_NAMES = [
   "github_ci_run_get",
   "github_branch_delete",
   "github_ref_get",
+  "github_commit_get",
   "github_branch_create",
   "github_pr_create",
   "github_pr_update",
@@ -199,15 +202,20 @@ export function registerGithubTools(
     pullNumber: z.number().int().min(1),
     mergeMethod: z.enum(["merge", "squash", "rebase"]).optional(),
     commitTitle: z.string().max(500).optional(),
+    // Lowercase hex only: the sha is sent as given and compared by GitHub, and the preview shows it.
+    sha: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/, "a full 40-character lowercase hex commit sha")
+      .optional(),
   });
 
-  registerGithubWriteTool(
+  registerWriteTool(
     "github_pr_merge",
-    { mutates: "github.pr.merge", recoverable: true },
-    "Merge a pull request.",
+    { mutates: "github.pr.merge", recoverable: true, scopeTargetOf: repoScope },
+    "Merge a pull request. If sha (40 lowercase hex) is given it is sent as the API's sha parameter, the head SHA the pull request must match, and GitHub refuses the merge with a 409 when the head has moved (https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).",
     githubPrMergeSchema,
-    (parsed) => `${ghRepoPath(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}/merge`,
-    (parsed) => {
+    async (parsed) => {
+      const token = requireProcessEnv("GITHUB_PAT");
       const body: Record<string, string> = {};
       if (parsed.mergeMethod !== undefined) {
         body["merge_method"] = parsed.mergeMethod;
@@ -215,7 +223,22 @@ export function registerGithubTools(
       if (parsed.commitTitle !== undefined && parsed.commitTitle !== "") {
         body["commit_title"] = parsed.commitTitle;
       }
-      return jsonInit("PUT", body);
+      if (parsed.sha !== undefined) {
+        body["sha"] = parsed.sha;
+      }
+      const res = await ghFetch(
+        token,
+        `${ghRepoPath(parsed.owner, parsed.repo)}/pulls/${String(parsed.pullNumber)}/merge`,
+        jsonInit("PUT", body),
+      );
+      // The merge endpoint documents 409 as "Conflict if sha was provided and pull request head did
+      // not match". Without a sha a 409 is not that, so it keeps the generic error.
+      if (res.status === 409 && parsed.sha !== undefined) {
+        throw new Error(
+          `GitHub 409: the pull request head is no longer the approved ${parsed.sha}; nothing was merged. GitHub said: ${res.text.slice(0, 200)}`,
+        );
+      }
+      return mcpJsonResultIfOk("GitHub", res);
     },
   );
 
@@ -382,6 +405,67 @@ export function registerGithubTools(
       const token = requireProcessEnv("GITHUB_PAT");
       const { sha, kind } = await resolveCommitSha(token, parsed.owner, parsed.repo, parsed.ref);
       return jsonResult({ ref: parsed.ref, kind, sha });
+    },
+  );
+
+  /** `owner/repo` as one string: exactly two safe slugs. */
+  const repoFullSchema = z.string().refine((v) => {
+    const parts = v.split("/");
+    return parts.length === 2 && parts.every(isSafeGhSlug);
+  }, "not an owner/repo name");
+
+  const COMMIT_MESSAGE_LINE_MAX = 200;
+
+  /** The first line of a commit message, clipped to 200 characters (code points, not UTF-16 halves). */
+  function firstLine(message: unknown): string {
+    const line = typeof message === "string" ? (message.split("\n")[0] ?? "").trimEnd() : "";
+    return [...line].slice(0, COMMIT_MESSAGE_LINE_MAX).join("");
+  }
+
+  /**
+   * Only what a tag's preview needs of `GET /commits/{ref}`
+   * (https://docs.github.com/en/rest/commits/commits#get-a-commit): the sha, the first line of the
+   * message, the author's name and date, and the parents' shas. The file list and diff are dropped.
+   */
+  function projectCommit(raw: unknown): Record<string, unknown> {
+    const c = raw as {
+      sha?: unknown;
+      commit?: { message?: unknown; author?: { name?: unknown; date?: unknown } };
+      parents?: unknown;
+    } | null;
+    if (c === null || typeof c.sha !== "string") throw new Error("GitHub returned no commit");
+    const parents = Array.isArray(c.parents)
+      ? c.parents
+          .map((p) => (p as { sha?: unknown } | null)?.sha)
+          .filter((s): s is string => typeof s === "string")
+      : [];
+    return {
+      sha: c.sha,
+      message: firstLine(c.commit?.message),
+      authorName: c.commit?.author?.name,
+      authorDate: c.commit?.author?.date,
+      parents,
+    };
+  }
+
+  reg(
+    "github_commit_get",
+    "Get one commit by sha, branch or tag: {sha, message (first line, at most 200 characters), authorName, authorDate, parents:[sha]}. The before-state of github_tag_create. A bare name is tried as a branch, then a tag; an unknown ref is 'commit not found'.",
+    z.object({ repoFull: repoFullSchema, ref: gitRefSchema }),
+    async (parsed) => {
+      const token = requireProcessEnv("GITHUB_PAT");
+      const [owner = "", repo = ""] = parsed.repoFull.split("/");
+      for (const name of commitRefCandidates(parsed.ref)) {
+        const segments = name.split("/").map(encodeURIComponent).join("/");
+        const res = await ghFetch(token, `${ghRepoPath(owner, repo)}/commits/${segments}`); // NOSONAR S9382: candidates are tried in order and the first hit wins.
+        // A missing ref is a 404, or a 422 "No commit found for SHA" (the commits endpoint's reply
+        // for a name it cannot resolve); a 422 with any other message is a real error.
+        if (res.status === 404 || (res.status === 422 && /no commit found/i.test(res.text)))
+          continue;
+        if (!res.ok) throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
+        return jsonResult(projectCommit(res.json));
+      }
+      throw new Error("commit not found");
     },
   );
 
