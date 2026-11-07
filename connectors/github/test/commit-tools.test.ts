@@ -41,6 +41,10 @@ function freshRepo(): Repo {
       { path: "vendor", mode: "160000", type: "commit", sha: "r4" },
       { path: "logo.png", mode: "100644", type: "blob", sha: "r5", size: 4 },
       { path: "big.txt", mode: "100644", type: "blob", sha: "r6", size: 300_000 },
+      { path: "p1.txt", mode: "100644", type: "blob", sha: "p1", size: 100 * 1024 },
+      { path: "p2.txt", mode: "100644", type: "blob", sha: "p2", size: 92 * 1024 },
+      { path: "p3.txt", mode: "100644", type: "blob", sha: "p3", size: 1 },
+      { path: "p4.txt", mode: "100644", type: "blob", sha: "p4", size: 92 * 1024 + 1 },
       { path: "src", mode: "040000", type: "tree", sha: SRC_TREE },
     ],
     blobs: {
@@ -48,6 +52,10 @@ function freshRepo(): Repo {
       r2: b64("#!sh"),
       r5: Buffer.from([0x89, 0x50, 0x00, 0xff]).toString("base64"),
       a1: b64("export {}"),
+      p1: b64("x".repeat(100 * 1024)),
+      p2: b64("y".repeat(92 * 1024)),
+      p3: b64("z"),
+      p4: b64("w".repeat(92 * 1024 + 1)),
     },
     patch: "{}",
     blobStatus: 200,
@@ -161,6 +169,78 @@ describe("github_files_get", () => {
     });
     expect(stub.calls).toEqual([]);
   });
+});
+
+describe("github_files_get: the combined content cap", () => {
+  async function read(paths: string[]): Promise<Record<string, Record<string, unknown>>> {
+    const out = (await call("github_files_get", {
+      owner: "acme",
+      repo: "api",
+      ref: "main",
+      paths,
+    })) as { files: Record<string, unknown>[] };
+    return Object.fromEntries(out.files.map((f) => [String(f["path"]), f]));
+  }
+
+  it("files that add up to exactly 192 KiB are all returned", async () => {
+    const stub = server();
+    const by = await read(["p1.txt", "p2.txt"]);
+    expect(by["p1.txt"]).toHaveProperty("content");
+    expect(by["p2.txt"]).toHaveProperty("content");
+    expect(stub.calls.filter((c) => c.url.includes("/git/blobs/"))).toHaveLength(2);
+  });
+
+  it("one byte more withholds that file and every later one, without fetching their blobs", async () => {
+    const stub = server();
+    const by = await read(["p1.txt", "p4.txt", "p3.txt"]);
+    expect(by["p1.txt"]).toHaveProperty("content");
+    expect(by["p4.txt"]).toMatchObject({ exists: true, sha: "p4", withheld: "budget" });
+    expect(by["p4.txt"]).not.toHaveProperty("content");
+    // p3 is one byte and would fit, but the budget is spent once a file did not fit.
+    expect(by["p3.txt"]).toMatchObject({ withheld: "budget" });
+    expect(by["p3.txt"]).not.toHaveProperty("content");
+    expect(stub.calls.filter((c) => c.url.includes("/git/blobs/")).map(line)).toEqual([
+      "GET /git/blobs/p1",
+    ]);
+  });
+
+  it("the read is not refused: absent files and the files before the cap are still reported", async () => {
+    server();
+    const by = await read(["README.md", "p1.txt", "p2.txt", "p3.txt", "nope.txt"]);
+    expect(by["README.md"]).toHaveProperty("content");
+    expect(by["p1.txt"]).toHaveProperty("content");
+    expect(by["p2.txt"]).toMatchObject({ withheld: "budget" });
+    expect(by["nope.txt"]).toEqual({ path: "nope.txt", exists: false });
+  });
+});
+
+describe("colliding paths in one request are refused before any request", () => {
+  const COLLIDING = [
+    [
+      { path: "src", content: "1" },
+      { path: "src/a.ts", content: "2" },
+    ],
+    [
+      { path: "src/a.ts", content: "2" },
+      { path: "src", content: "1" },
+    ],
+    [
+      { path: "x.txt", content: "1" },
+      { path: "x.txt", content: "2" },
+    ],
+  ];
+
+  for (const tool of ["github_commit_prepare", "github_file_commit"]) {
+    it(`${tool} refuses a path that is also a directory of another, and a path named twice`, async () => {
+      const stub = server();
+      for (const files of COLLIDING) {
+        await expect(
+          call(tool, { ...BASE, message: "m", expectedHeadSha: HEAD, files }),
+        ).rejects.toThrow(/path collision|duplicate file path/);
+      }
+      expect(stub.calls).toEqual([]);
+    });
+  }
 });
 
 describe("github_commit_prepare", () => {

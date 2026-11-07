@@ -538,7 +538,7 @@ export function registerGithubTools(
 
   reg(
     "github_files_get",
-    "Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, mode, sha, size, content}]}. A binary, symlink, submodule or over-192-KiB file is reported with its sha and `withheld` instead of content.",
+    'Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, mode, sha, size, content}]}. A binary, symlink, submodule or over-192-KiB file is reported with its sha and `withheld` instead of content, and the content of all the files together is capped at 192 KiB: the first file that does not fit, and every file after it, is reported with `withheld: "budget"` and no content.',
     repoSlugArgs.extend({
       ref: gitRefSchema,
       paths: z.array(commitFilePathSchema).min(1).max(50),
@@ -552,10 +552,7 @@ export function registerGithubTools(
         parsed.repo,
         sha,
         parsed.paths,
-        {
-          withContent: true,
-          maxReadBytes: READ_LIMIT,
-        },
+        { withContent: true, maxReadBytes: READ_LIMIT, totalBudget: READ_LIMIT },
       );
       return jsonResult({ ref: parsed.ref, headSha: sha, files: files.map(fileView) });
     },

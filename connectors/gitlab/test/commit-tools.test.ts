@@ -42,6 +42,10 @@ function freshRepo(): Repo {
       },
       "big.txt": { content: b64("x"), lastCommitId: "c4", size: 300_000 },
       "lib/class.rb": { content: b64("class A; end"), lastCommitId: "c5" },
+      "p1.txt": { content: b64("x".repeat(100 * 1024)), lastCommitId: "d1" },
+      "p2.txt": { content: b64("y".repeat(92 * 1024)), lastCommitId: "d2" },
+      "p3.txt": { content: b64("z"), lastCommitId: "d3" },
+      "p4.txt": { content: b64("w".repeat(92 * 1024 + 1)), lastCommitId: "d4" },
     },
     commit: {
       status: 201,
@@ -143,6 +147,71 @@ describe("gitlab_files_get", () => {
     ).rejects.toThrow("GITLAB_PAT is not set");
     expect(stub.calls).toEqual([]);
   });
+});
+
+describe("gitlab_files_get: the combined content cap", () => {
+  async function read(paths: string[]): Promise<Record<string, Record<string, unknown>>> {
+    const out = (await tools.callJson("gitlab_files_get", {
+      projectPath: "group/repo",
+      ref: "main",
+      paths,
+    })) as { files: Record<string, unknown>[] };
+    return Object.fromEntries(out.files.map((f) => [String(f["path"]), f]));
+  }
+
+  it("files that add up to exactly 192 KiB are all returned", async () => {
+    serve();
+    const by = await read(["p1.txt", "p2.txt"]);
+    expect(by["p1.txt"]).toHaveProperty("content");
+    expect(by["p2.txt"]).toHaveProperty("content");
+  });
+
+  it("one byte more withholds that file and every later one, keeping their metadata", async () => {
+    serve();
+    const by = await read(["p1.txt", "p4.txt", "p3.txt"]);
+    expect(by["p1.txt"]).toHaveProperty("content");
+    expect(by["p4.txt"]).toMatchObject({ lastCommitId: "d4", withheld: "budget" });
+    expect(by["p4.txt"]).not.toHaveProperty("content");
+    expect(by["p3.txt"]).toMatchObject({ lastCommitId: "d3", withheld: "budget" });
+    expect(by["p3.txt"]).not.toHaveProperty("content");
+  });
+
+  it("the read is not refused: absent files and the files before the cap are still reported", async () => {
+    serve();
+    const by = await read(["README.md", "p1.txt", "p2.txt", "nope.txt"]);
+    expect(by["README.md"]).toHaveProperty("content");
+    expect(by["p2.txt"]).toMatchObject({ withheld: "budget" });
+    expect(by["nope.txt"]).toEqual({ path: "nope.txt", exists: false });
+  });
+});
+
+describe("colliding paths in one request are refused before any request", () => {
+  const COLLIDING = [
+    [
+      { path: "src", content: "1" },
+      { path: "src/a.ts", content: "2" },
+    ],
+    [
+      { path: "src/a.ts", content: "2" },
+      { path: "src", content: "1" },
+    ],
+    [
+      { path: "x.txt", content: "1" },
+      { path: "x.txt", content: "2" },
+    ],
+  ];
+
+  for (const tool of ["gitlab_commit_prepare", "gitlab_commit_create"]) {
+    it(`${tool} refuses a path that is also a directory of another, and a path named twice`, async () => {
+      const stub = serve();
+      for (const files of COLLIDING) {
+        await expect(
+          tools.call(tool, { ...BASE, message: "m", expectedHeadSha: HEAD, files }),
+        ).rejects.toThrow(/path collision|duplicate file path/);
+      }
+      expect(stub.calls).toEqual([]);
+    });
+  }
 });
 
 describe("gitlab_commit_prepare", () => {

@@ -33,7 +33,7 @@ export type GithubFileRead =
   | {
       readonly path: string;
       readonly exists: true;
-      readonly kind: "binary" | "not-regular" | "too-large";
+      readonly kind: "binary" | "not-regular" | "too-large" | "budget";
       readonly mode: string;
       readonly sha: string;
       readonly size?: number;
@@ -126,6 +126,10 @@ async function findEntry(
  * Read `paths` at `commitSha`, returning the commit's root tree sha beside the files. With `withContent`, each text file's content is fetched (a file over
  * `maxReadBytes` is reported `too-large` without fetching it); without, only the tree entry is read,
  * which is enough for a mode, a blob sha and a size.
+ *
+ * `totalBudget` caps the content of ALL the files together. The first file that does not fit in what
+ * is left, and every file after it, is reported `budget` with its metadata and no content, and its
+ * blob is not fetched; the read as a whole is not refused.
  */
 export async function readGithubFilesAt(
   token: string,
@@ -133,11 +137,17 @@ export async function readGithubFilesAt(
   repo: string,
   commitSha: string,
   paths: readonly string[],
-  opts: { readonly withContent: boolean; readonly maxReadBytes: number },
+  opts: {
+    readonly withContent: boolean;
+    readonly maxReadBytes: number;
+    readonly totalBudget?: number;
+  },
 ): Promise<{ readonly treeSha: string; readonly files: GithubFileRead[] }> {
   const rootTree = await commitTreeSha(token, owner, repo, commitSha);
   const cache = new Map<string, TreeEntry[]>();
   const out: GithubFileRead[] = [];
+  let used = 0;
+  let exhausted = false;
   for (const path of paths) {
     const entry = await findEntry(token, owner, repo, rootTree, path, cache); // NOSONAR S9382: sequential on purpose; the tree cache makes later paths cheap.
     if (entry === undefined) {
@@ -157,6 +167,12 @@ export async function readGithubFilesAt(
       out.push({ path, exists: true, kind: "text", mode: entry.mode, sha: entry.sha, size });
       continue;
     }
+    if (opts.totalBudget !== undefined && (exhausted || used + size > opts.totalBudget)) {
+      exhausted = true;
+      out.push({ path, exists: true, kind: "budget", mode: entry.mode, sha: entry.sha, size });
+      continue;
+    }
+    used += size;
     const blob = await getJson(token, `${ghRepoPath(owner, repo)}/git/blobs/${entry.sha}`); // NOSONAR S9382
     const b64 = isRecord(blob) && blob["encoding"] === "base64" ? blob["content"] : undefined;
     if (typeof b64 !== "string") throw new Error(`GitHub returned no base64 content for ${path}`);

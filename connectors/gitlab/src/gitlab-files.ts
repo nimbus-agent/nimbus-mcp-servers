@@ -34,7 +34,7 @@ export type GitlabFileRead =
   | {
       readonly path: string;
       readonly exists: true;
-      readonly kind: "binary" | "too-large";
+      readonly kind: "binary" | "too-large" | "budget";
       readonly lastCommitId: string;
       readonly executable: boolean;
       readonly size: number;
@@ -75,15 +75,22 @@ export async function refCommit(get: GitlabGet, project: string, ref: string): P
   return id.toLowerCase();
 }
 
-/** Read `paths` at the commit `sha`; a 404 for a path is `exists: false`. */
+/**
+ * Read `paths` at the commit `sha`; a 404 for a path is `exists: false`. With `totalBudget`, the
+ * content of all the files together is capped (the files API returns a file whole, so a withheld file
+ * has still been transferred; only its content is dropped from the result).
+ */
 export async function readGitlabFilesAt(
   get: GitlabGet,
   project: string,
   sha: string,
   paths: readonly string[],
   maxReadBytes: number,
+  totalBudget?: number,
 ): Promise<GitlabFileRead[]> {
   const out: GitlabFileRead[] = [];
+  let used = 0;
+  let exhausted = false;
   for (const path of paths) {
     const query = new URLSearchParams({ ref: sha }).toString();
     const res = await get(`/projects/${project}/repository/files/${encodeFilePath(path)}?${query}`); // NOSONAR S9382: sequential on purpose; paths are few and an error stops the read.
@@ -104,6 +111,14 @@ export async function readGitlabFilesAt(
       out.push({ path, exists: true, kind: "too-large", lastCommitId, executable, size });
       continue;
     }
+    // The combined content of all the files is capped. The first file that does not fit, and every
+    // one after it, is reported `budget` with its metadata and no content.
+    if (totalBudget !== undefined && (exhausted || used + size > totalBudget)) {
+      exhausted = true;
+      out.push({ path, exists: true, kind: "budget", lastCommitId, executable, size });
+      continue;
+    }
+    used += size;
     const decoded = decodeBase64Text(content);
     out.push(
       "binary" in decoded

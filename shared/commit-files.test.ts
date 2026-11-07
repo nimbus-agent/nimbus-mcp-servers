@@ -38,7 +38,93 @@ describe("isSafeCommitPath", () => {
   });
 });
 
+describe("isSafeCommitPath: characters the preview cannot show faithfully", () => {
+  // Written as escapes so this file holds no invisible character itself.
+  const CASES: [string, string][] = [
+    ["a right-to-left override", "src/\u202Egpj.exe"],
+    ["a zero-width space", "src/a\u200Bb.ts"],
+    ["a NEL control (C1)", "src/a\u0085b.ts"],
+    ["a line separator", "src/a\u2028b.ts"],
+    ["a paragraph separator", "src/a\u2029b.ts"],
+    ["a byte-order mark", "src/\uFEFFa.ts"],
+    ["a bidi isolate", "src/a\u2066b.ts"],
+    ["a lone high surrogate", "src/a\uD800b.ts"],
+    ["a lone low surrogate", "src/a\uDC00b.ts"],
+    ["the last C1 control", "src/a\u009Fb.ts"],
+  ];
+  for (const [what, path] of CASES) {
+    test(`refuses ${what}`, () => {
+      expect(isSafeCommitPath(path)).toBe(false);
+    });
+  }
+
+  test("still accepts ordinary non-ASCII text and a valid surrogate pair", () => {
+    expect(isSafeCommitPath("docs/caf\u00e9.md")).toBe(true);
+    expect(isSafeCommitPath("docs/\u{1F600}.md")).toBe(true);
+    expect(isSafeCommitPath("docs/\u00a0x")).toBe(true);
+  });
+});
+
+describe("isSafeCommitPath: NTFS and HFS spellings of .git", () => {
+  for (const seg of [
+    ".git",
+    ".GIT",
+    ".git.",
+    ".git ",
+    ".git. .",
+    ".Git...",
+    "git~1",
+    "GIT~1",
+    "git~1.",
+    "...",
+    ". ",
+  ]) {
+    test(`refuses the segment ${JSON.stringify(seg)} at any depth`, () => {
+      expect(isSafeCommitPath(`${seg}/config`)).toBe(false);
+      expect(isSafeCommitPath(`a/${seg}/config`)).toBe(false);
+      expect(isSafeCommitPath(`a/${seg}`)).toBe(false);
+    });
+  }
+
+  test("accepts names that merely resemble them", () => {
+    for (const p of [
+      ".gitignore",
+      ".github/ci.yml",
+      "git~2",
+      "git~10",
+      "x.git",
+      ".gitx/y",
+      "a. b",
+    ]) {
+      expect(isSafeCommitPath(p)).toBe(true);
+    }
+  });
+});
+
 describe("assertCommitFiles and assertCombinedSize", () => {
+  test("a path and a path beneath it cannot both be files", () => {
+    expect(() =>
+      assertCommitFiles([
+        { path: "a", content: "1" },
+        { path: "a/b", content: "2" },
+      ]),
+    ).toThrow("path collision");
+    // Order does not matter, and depth does not hide it.
+    expect(() =>
+      assertCommitFiles([
+        { path: "x/y/z.txt", content: "2" },
+        { path: "x/y", content: "1" },
+      ]),
+    ).toThrow("path collision");
+    expect(() =>
+      assertCommitFiles([
+        { path: "a", content: "1" },
+        { path: "ab/c", content: "2" },
+        { path: "a.b", content: "3" },
+      ]),
+    ).not.toThrow();
+  });
+
   test("duplicate paths and too many files are refused", () => {
     expect(() =>
       assertCommitFiles([

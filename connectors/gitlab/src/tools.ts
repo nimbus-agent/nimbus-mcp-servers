@@ -766,7 +766,7 @@ export function registerGitlabTools(
 
   reg(
     "gitlab_files_get",
-    "Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, lastCommitId, executable, size, content}]}. A binary or over-192-KiB file is reported with `withheld` instead of content.",
+    'Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, lastCommitId, executable, size, content}]}. A binary or over-192-KiB file is reported with `withheld` instead of content, and the content of all the files together is capped at 192 KiB: the first file that does not fit, and every file after it, is reported with `withheld: "budget"` and no content.',
     projectPathArg.extend({
       ref: gitlabRefSchema,
       paths: z.array(commitFilePathSchema).min(1).max(50),
@@ -775,7 +775,14 @@ export function registerGitlabTools(
       const get = gitlabGet();
       const project = encodeURIComponent(parsed.projectPath);
       const sha = await refCommit(get, project, parsed.ref);
-      const files = await readGitlabFilesAt(get, project, sha, parsed.paths, READ_LIMIT);
+      const files = await readGitlabFilesAt(
+        get,
+        project,
+        sha,
+        parsed.paths,
+        READ_LIMIT,
+        READ_LIMIT,
+      );
       return jsonResult({ ref: parsed.ref, headSha: sha, files: files.map(fileView) });
     },
   );

@@ -21,22 +21,35 @@ const FULL_SHA = /^[0-9a-f]{40}$/i;
 export const fullShaSchema = z.string().regex(FULL_SHA, "a full 40-hex commit sha");
 
 /**
+ * A character the approval preview cannot be trusted to show as it is: any Unicode control (Cc, which
+ * includes DEL and the C1 range U+0080..U+009F), format character (Cf: bidi overrides, zero-width
+ * spaces, the byte-order mark), line or paragraph separator (Zl, Zp), or lone surrogate (Cs).
+ */
+const UNSHOWABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+
+/**
+ * Whether a path segment spells `.git` on a filesystem that folds it: NTFS and HFS+ ignore trailing
+ * dots and spaces and compare case-insensitively, and NTFS also knows the short name `GIT~1`. A
+ * segment that is nothing but dots and spaces is refused too, since it folds to the empty name.
+ */
+function isGitSpelling(segment: string): boolean {
+  const folded = segment.replace(/[. ]+$/u, "").toLowerCase();
+  return folded === "" || folded === ".git" || folded === "git~1";
+}
+
+/**
  * Whether `path` is a repository-relative file path the commit tools accept: 1..1024 characters, no
- * leading or trailing `/`, no `//`, no backslash, no control character, and no `.`, `..` or `.git`
- * (any case) segment. The path reaches a URL path or a JSON body, never a shell.
+ * leading or trailing `/`, no `//`, no backslash, no unshowable character (see {@link UNSHOWABLE}),
+ * and no `.` or `..` segment or spelling of `.git` (see {@link isGitSpelling}). The path reaches a
+ * URL path or a JSON body, never a shell.
  */
 export function isSafeCommitPath(path: string): boolean {
   if (path.length < 1 || path.length > 1024) return false;
   if (path.startsWith("/") || path.endsWith("/") || path.includes("//") || path.includes("\\")) {
     return false;
   }
-  for (let i = 0; i < path.length; i++) {
-    const c = path.charCodeAt(i);
-    if (c <= 0x1f || c === 0x7f) return false;
-  }
-  return path
-    .split("/")
-    .every((seg) => seg !== "." && seg !== ".." && seg.toLowerCase() !== ".git");
+  if (UNSHOWABLE.test(path)) return false;
+  return path.split("/").every((seg) => seg !== "." && seg !== ".." && !isGitSpelling(seg));
 }
 
 export const commitFilePathSchema = z
@@ -71,6 +84,18 @@ export function assertCommitFiles(files: readonly CommitFile[]): void {
   for (const f of files) {
     if (seen.has(f.path)) throw new Error(`duplicate file path in commit: ${f.path}`);
     seen.add(f.path);
+  }
+  // A path and one beneath it (`a` and `a/b`) cannot both be files of one tree.
+  for (const path of seen) {
+    const segments = path.split("/");
+    for (let i = 1; i < segments.length; i++) {
+      const parent = segments.slice(0, i).join("/");
+      if (seen.has(parent)) {
+        throw new Error(
+          `path collision in commit: ${parent} is a file and also a directory of ${path}`,
+        );
+      }
+    }
   }
   const bytes = files.reduce((n, f) => n + utf8Length(f.content), 0);
   if (bytes > COMMIT_MAX_COMBINED_BYTES) {
