@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type CapturedTools,
   captureTools,
@@ -51,7 +54,7 @@ const GET_CREDENTIALS = [
   "get-credentials",
   "gke-1",
   "--project=p1",
-  "--zone=us-east1-b",
+  "--location=us-east1-b",
 ];
 const ROLLOUT_RESTART = ["kubectl", "rollout", "restart", "deployment", "api", "-n", "prod"];
 
@@ -160,5 +163,124 @@ describe("gcp_cloud_run_service_list", () => {
     await expect(
       tools.call("gcp_cloud_run_service_list", { projectId: "p1", region: "r1" }),
     ).rejects.toThrow("gcloud exited 2: invalid region");
+  });
+});
+
+describe("gke tools use a private kubeconfig, never the owner's", () => {
+  it("get-credentials and kubectl share one fresh file that is removed afterwards", async () => {
+    const stub = cli({ stdout: "" });
+    await tools.callJson("gcp_gke_workload_restart", RESTART);
+    const [creds, rollout] = stub.calls;
+    const path = creds?.env["KUBECONFIG"] ?? "";
+    expect(path).not.toBe("");
+    expect(rollout?.env["KUBECONFIG"]).toBe(path);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it("never names the owner's ~/.kube/config: HOME is a temp dir and stays untouched", async () => {
+    const home = mkdtempSync(join(tmpdir(), "gcp-home-"));
+    const saved = new Map(["HOME", "USERPROFILE"].map((k) => [k, process.env[k]]));
+    process.env["HOME"] = home;
+    process.env["USERPROFILE"] = home;
+    try {
+      const stub = cli({ stdout: "" });
+      await tools.callJson("gcp_gke_workload_restart", RESTART);
+      for (const c of stub.calls) {
+        expect(c.env["KUBECONFIG"]?.startsWith(home)).toBe(false);
+        expect(c.command.join(" ")).not.toContain(".kube");
+      }
+      expect(existsSync(join(home, ".kube"))).toBe(false);
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("two concurrent restarts use different files", async () => {
+    const stub = cli({ stdout: "" });
+    await Promise.all([
+      tools.call("gcp_gke_workload_restart", RESTART),
+      tools.call("gcp_gke_workload_restart", RESTART),
+    ]);
+    const paths = new Set(stub.calls.map((c) => c.env["KUBECONFIG"]));
+    expect(paths.size).toBe(2);
+  });
+
+  it("the file starts empty for get-credentials to fill", async () => {
+    let seen = "unset";
+    spawn?.restore();
+    spawn = stubSpawn({ stdout: "" });
+    const original = (Bun as { spawn: unknown }).spawn as (
+      c: string[],
+      o: { env: Record<string, string> },
+    ) => unknown;
+    (Bun as { spawn: unknown }).spawn = (c: string[], o: { env: Record<string, string> }) => {
+      if (seen === "unset") seen = readFileSync(o.env["KUBECONFIG"] ?? "", "utf8");
+      writeFileSync(o.env["KUBECONFIG"] ?? "", "filled");
+      return original(c, o);
+    };
+    await tools.call("gcp_gke_workload_restart", RESTART);
+    expect(seen).toBe("");
+  });
+});
+
+describe("gcp_gke_workload_get", () => {
+  const DEPLOYMENT = JSON.stringify({
+    metadata: { name: "api", namespace: "prod", generation: 2 },
+    spec: { replicas: 3, template: { spec: { containers: [{ image: "gcr.io/p1/api:2" }] } } },
+    status: { readyReplicas: 3, observedGeneration: 2 },
+  });
+
+  it("fetches credentials with --location, then gets the deployment and projects it", async () => {
+    const stub = cli({ stdout: DEPLOYMENT });
+    expect(await tools.callJson("gcp_gke_workload_get", RESTART)).toEqual({
+      name: "api",
+      namespace: "prod",
+      replicas: 3,
+      readyReplicas: 3,
+      generation: 2,
+      observedGeneration: 2,
+      images: ["gcr.io/p1/api:2"],
+    });
+    expect(commands(stub.calls)).toEqual([
+      GET_CREDENTIALS,
+      ["kubectl", "get", "deployment", "api", "-n", "prod", "-o", "json"],
+    ]);
+  });
+
+  it("reports a missing deployment as not found", async () => {
+    let n = 0;
+    spawn?.restore();
+    const real = stubSpawn({});
+    spawn = real;
+    const stubbed = (Bun as { spawn: unknown }).spawn as (c: string[], o: unknown) => unknown;
+    (Bun as { spawn: unknown }).spawn = (c: string[], o: unknown) => {
+      n += 1;
+      if (n === 1) return stubbed(c, o);
+      return {
+        exited: Promise.resolve(1),
+        stdout: new Blob([""]),
+        stderr: new Blob(['Error from server (NotFound): deployments.apps "api" not found']),
+      };
+    };
+    await expect(tools.call("gcp_gke_workload_get", RESTART)).rejects.toThrow(
+      "deployment not found",
+    );
+  });
+
+  it("stops at a credentials failure and refuses flag-like values before any spawn", async () => {
+    const stub = cli({ exitCode: 1, stderr: "cluster not found" });
+    await expect(tools.call("gcp_gke_workload_get", RESTART)).rejects.toThrow(
+      "gcloud exited 1: cluster not found",
+    );
+    expect(stub.calls).toHaveLength(1);
+    const none = cli({ stdout: "" });
+    await expect(
+      tools.call("gcp_gke_workload_get", { ...RESTART, deployment: "--kubeconfig=/x" }),
+    ).rejects.toThrow(refusalSaying('must not start with "-"'));
+    expect(none.calls).toEqual([]);
   });
 });
