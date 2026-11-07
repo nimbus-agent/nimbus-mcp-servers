@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -30,7 +31,9 @@ async function circleciFetch(
   init?: RequestInit,
 ): Promise<RestFetchResult> {
   const url = path.startsWith("http") ? path : `${CCI_API}${path}`;
-  const res = await fetch(url, {
+  // guardedFetch: the Circle-Token header must never follow a redirect to another origin, and a
+  // redirect on a write is refused rather than replayed.
+  const res = await guardedFetch("CircleCI", url, {
     ...init,
     headers: {
       Accept: "application/json",
@@ -41,6 +44,47 @@ async function circleciFetch(
   return toRestFetchResult(res);
 }
 
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/**
+ * The job fields a cancel preview needs, read defensively: `GET /project/{slug}/job/{n}` is not on
+ * the CircleCI v2 reference page (only `GET /jobs/{job_id}`, whose fields are `name, job_number,
+ * status, pipeline_id, started_at, stopped_at`), so each field is taken under both spellings when
+ * one is plausible and an absent one is left out. Live check item.
+ */
+export function projectJob(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("CircleCI returned no job");
+  }
+  const r = raw as Record<string, unknown>;
+  const pipeline =
+    typeof r["pipeline"] === "object" && r["pipeline"] !== null
+      ? (r["pipeline"] as Record<string, unknown>)
+      : {};
+  const out: Record<string, unknown> = {};
+  const set = (k: string, v: unknown): void => {
+    if (v !== undefined) out[k] = v;
+  };
+  set("name", str(r["name"]));
+  set(
+    "number",
+    typeof r["number"] === "number"
+      ? r["number"]
+      : typeof r["job_number"] === "number"
+        ? r["job_number"]
+        : undefined,
+  );
+  set("status", str(r["status"]));
+  set("startedAt", str(r["started_at"]));
+  set("stoppedAt", str(r["stopped_at"]));
+  set("webUrl", str(r["web_url"]));
+  set("pipelineId", str(r["pipeline_id"]) ?? str(pipeline["id"]));
+  if (Object.keys(out).length === 0) throw new Error("CircleCI returned no job");
+  return out;
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const CIRCLECI_TOOL_NAMES = [
   "circleci_pipeline_list",
@@ -48,6 +92,7 @@ export const CIRCLECI_TOOL_NAMES = [
   "circleci_workflow_list",
   "circleci_job_list",
   "circleci_job_artifacts",
+  "circleci_job_get",
   "circleci_pipeline_trigger",
   "circleci_job_cancel",
 ] as const;
@@ -130,6 +175,23 @@ export function registerCircleciTools(
     }),
     (parsed) =>
       `/project/${projectPathSegments(parsed.projectSlug)}/job/${String(parsed.jobNumber)}/artifacts`,
+  );
+
+  reg(
+    "circleci_job_get",
+    "Get one job under a project by job number: {name, number, status, startedAt, stoppedAt, webUrl, pipelineId}. The before-state of circleci_job_cancel; same arguments.",
+    projectSlugSchema.extend({ jobNumber: z.number().int().min(1) }),
+    async (parsed) => {
+      const token = requireProcessEnv("CIRCLECI_API_TOKEN");
+      const res = await circleciFetch(
+        token,
+        `/project/${projectPathSegments(parsed.projectSlug)}/job/${String(parsed.jobNumber)}`,
+      );
+      if (!res.ok) {
+        throw new Error(`CircleCI ${String(res.status)}: ${res.text.slice(0, 400)}`);
+      }
+      return jsonResult(projectJob(res.json));
+    },
   );
 
   registerWriteTool(

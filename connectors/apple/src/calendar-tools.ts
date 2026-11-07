@@ -230,6 +230,40 @@ export function registerAppleCalendarTools(
   );
 
   // -------------------------------------------------------------------------
+  // apple_calendar_event_get
+  // -------------------------------------------------------------------------
+
+  registerSimpleTool(
+    "apple_calendar_event_get",
+    "Get one iCloud Calendar event by its object href (as apple_calendar_list returns it), with its ETag. The href must be under one of your calendars. The before-state of apple_calendar_event_delete; same href.",
+    deleteArgs.shape,
+    async (args: unknown) => {
+      const parsed = deleteArgs.safeParse(args);
+      if (!parsed.success) {
+        throw new Error(parsed.error.message);
+      }
+      const { calendar: calendarName, etag, event } = await calendar.getEvent(parsed.data.href);
+      const view: ViewEvent & { etag: string | null } = {
+        href: parsed.data.href,
+        uid: event.uid,
+        summary: event.summary,
+        start: event.start,
+        end: event.end,
+        allDay: event.allDay,
+        location: event.location,
+        organizer: event.organizer,
+        status: event.status,
+        attendees: event.attendees,
+        rrule: event.rrule,
+        notes: capPreview(event.description ?? ""),
+        calendar: calendarName,
+        etag,
+      };
+      return mcpJsonResult(view);
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // apple_calendar_event_create
   // -------------------------------------------------------------------------
 

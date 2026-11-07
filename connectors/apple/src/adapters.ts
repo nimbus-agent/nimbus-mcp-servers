@@ -190,7 +190,8 @@ export interface DavClientLike {
     calendar: DAVCalendar;
     timeRange?: { start: string; end: string };
     expand?: boolean;
-  }): Promise<{ url: string; data?: unknown }[]>;
+    objectUrls?: string[];
+  }): Promise<{ url: string; etag?: string | undefined; data?: unknown }[]>;
   createCalendarObject(params: {
     calendar: DAVCalendar;
     iCalString: string;
@@ -203,6 +204,8 @@ export interface DavClientLike {
 export interface LoggingInCalDavClient extends CalDavClient {
   login(): Promise<void>;
 }
+
+const NOT_IN_YOUR_CALENDARS = "href is not in one of your calendars";
 
 class TsdavCalDavClient implements LoggingInCalDavClient {
   /**
@@ -282,7 +285,59 @@ class TsdavCalDavClient implements LoggingInCalDavClient {
     return { href };
   }
 
+  /**
+   * The discovered calendar whose URL contains `href`, or undefined. Both are compared as normalised
+   * absolute URLs (dot segments resolved), the calendar's with a trailing slash, so `.../home/` does
+   * not own `.../home-evil/x.ics` or `.../home/../other/x.ics`, and another host owns nothing. The
+   * calendars are discovered first when none has been.
+   */
+  private async calendarOwning(href: string): Promise<DAVCalendar | undefined> {
+    if (this.discovered.size === 0) await this.listCalendars();
+    let target: string;
+    try {
+      target = new URL(href).toString();
+    } catch {
+      return undefined;
+    }
+    for (const [url, cal] of this.discovered) {
+      let base: string;
+      try {
+        base = new URL(url).toString();
+      } catch {
+        continue;
+      }
+      if (!base.endsWith("/")) base = `${base}/`;
+      if (target.startsWith(base) && target.length > base.length) return cal;
+    }
+    return undefined;
+  }
+
+  async getEvent(
+    href: string,
+  ): Promise<{ calendar: string; etag: string | null; event: ParsedEvent }> {
+    const cal = await this.calendarOwning(href);
+    if (cal === undefined) throw new Error(NOT_IN_YOUR_CALENDARS);
+    const objects = await this.davClient.fetchCalendarObjects({
+      calendar: cal,
+      objectUrls: [href],
+    });
+    for (const obj of objects) {
+      if (typeof obj.data !== "string" || obj.data === "") continue;
+      const event = parseICalendar(obj.data)[0];
+      if (event === undefined) continue;
+      const name =
+        typeof cal.displayName === "string" && cal.displayName !== "" ? cal.displayName : cal.url;
+      return { calendar: name, etag: typeof obj.etag === "string" ? obj.etag : null, event };
+    }
+    throw new Error("event not found");
+  }
+
   async deleteEvent(href: string): Promise<void> {
+    // The credential goes to whatever host the href names, and the href is the model's: refuse one
+    // that is not under a calendar this account discovered, before any request.
+    if ((await this.calendarOwning(href)) === undefined) {
+      throw new Error(NOT_IN_YOUR_CALENDARS);
+    }
     // etag: "" means "unconditional delete" — acceptable because we don't track
     // etags in the CalendarRef/EventWindow flow.
     await this.davClient.deleteCalendarObject({

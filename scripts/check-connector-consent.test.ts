@@ -155,6 +155,25 @@ describe("checkConnectorConsent — rules over a whole tree", () => {
     });
     expect(checkConnectorConsent(root)).toEqual([]);
   });
+
+  test("a prepare tool id is registered only through registerPrepareTool", () => {
+    const root = tree({
+      "connectors/acme/src/server.ts": READ_ONLY_SERVER,
+      "connectors/acme/nimbus.extension.json": READ_ONLY_MANIFEST,
+      // The names array is not a call, and the sanctioned callee (also across a line break) is fine.
+      "connectors/acme/src/ok.ts":
+        'export const NAMES = ["github_commit_prepare"];\nregisterPrepareTool(\n  "github_commit_prepare",\n  cfg,\n);\n',
+      "connectors/acme/src/via-reg.ts": 'reg("github_commit_prepare", "d", schema, handler);\n',
+      "connectors/acme/src/via-write.ts":
+        'registerWriteTool(\n  "gitlab_commit_prepare",\n  cfg,\n);\n',
+    });
+    const found = checkConnectorConsent(root).filter((v) => v.rule === "prepare-tool-registrar");
+    expect(found.map((v) => v.file).sort((a, b) => a.localeCompare(b))).toEqual([
+      "connectors/acme/src/via-reg.ts",
+      "connectors/acme/src/via-write.ts",
+    ]);
+    expect(found[0]?.reason).toContain("registerPrepareTool");
+  });
 });
 
 describe("report", () => {

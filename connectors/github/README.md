@@ -36,6 +36,35 @@ are sent verbatim, no draft unless asked); `github_pr_update` edits a pull reque
 base only, and records the old values first. A fine-grained token needs Contents: write for branch
 create and Pull requests: write for PR create and update.
 
+## Behaviour notes
+
+- Multi-file commits: `github_files_get` reads up to 50 files at a ref; `github_commit_prepare` (a prepare
+  tool, see the architecture doc) returns the branch head and each file's current state for the owner to
+  approve; `github_file_commit` commits whole text files as ONE commit through the Git Data API
+  (blobs, a tree on the head's tree, a commit whose only parent is the head, then a ref update with
+  `force: false`) and only when the branch head is still `expectedHeadSha`. At most 20 files, and the old
+  plus new content at most 192 KiB (the prepare refuses rather than truncates). Text files only: no
+  deletes, no mode changes, and a symlink, submodule or binary file is refused. Existing files keep their
+  mode. Bounds, each a live-check item: the status and message of a non-fast-forward ref update (the
+  page lists only 409 and 422, and any of them is surfaced as "head moved or ref update refused"),
+  whether API commits made with a token are signed, and the status of a ref update refused by branch
+  protection (surfaced verbatim).
+- Paths: a file path with a control, format (bidi, zero-width, byte-order mark), line or paragraph
+  separator or lone-surrogate character is refused, so the approval preview shows what is sent; so is any
+  `.`, `..` or `.git` segment including the spellings NTFS and HFS fold to it (`.git.`, `.GIT `, `git~1`).
+  A request naming a path and a path beneath it (`a` and `a/b`), or one path twice, is refused before any
+  request.
+- `github_files_get` caps the content of all its files together at 192 KiB: the first file that does
+  not fit, and every file after it, is reported with `withheld: "budget"` and no content.
+- `github_pr_merge` takes an optional `sha` (40 lowercase hex): the head SHA the pull request must match.
+  It is sent as the merge endpoint's documented `sha` parameter only when given, and GitHub's 409
+  ("Conflict if sha was provided and pull request head did not match") is reported as a clear error saying
+  nothing was merged. The page documents the field and the 409; it gives no example message text.
+- `github_commit_get {repoFull: "owner/repo", ref}` returns `{sha, message (first line, at most 200
+  characters), authorName, authorDate, parents}`, the before-state of `github_tag_create`. `ref` is a sha
+  (full or abbreviated), `heads/<branch>`, `tags/<tag>`, or a bare name tried as a branch and then a tag. A
+  404, or a 422 "No commit found", is "commit not found".
+
 ## See also
 
 - [Github Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)

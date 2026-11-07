@@ -38,10 +38,79 @@ async function awsJson(args: string[]): Promise<unknown> {
   return (await runCliJsonThrowing(cmd, awsEnv())) ?? {};
 }
 
+/** One EC2 instance id: `i-` and 8 to 17 lowercase hex digits (the long and the legacy short form). */
+const ec2InstanceId = awsCliArg.regex(/^i-[0-9a-f]{8,17}$/, "not an EC2 instance id (i-...)");
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The projection of `aws ec2 describe-instances --instance-ids <id>`. Field names are those on
+ * https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-instances.html:
+ * `Reservations[].Instances[]` with `InstanceId`, `InstanceType`, `LaunchTime`, `State{Code,Name}`,
+ * `IamInstanceProfile{Arn,Id}` and `Tags[]{Key,Value}`. No instance in the reply (AWS omits one you
+ * do not own) throws "instance not found".
+ */
+function projectInstance(raw: unknown): Record<string, unknown> {
+  const reservations =
+    isRecord(raw) && Array.isArray(raw["Reservations"]) ? raw["Reservations"] : [];
+  for (const r of reservations) {
+    const instances = isRecord(r) && Array.isArray(r["Instances"]) ? r["Instances"] : [];
+    for (const i of instances) {
+      if (!isRecord(i) || typeof i["InstanceId"] !== "string") continue;
+      const state = isRecord(i["State"]) ? i["State"]["Name"] : undefined;
+      const profile = isRecord(i["IamInstanceProfile"])
+        ? i["IamInstanceProfile"]["Arn"]
+        : undefined;
+      const tags = (Array.isArray(i["Tags"]) ? i["Tags"] : [])
+        .filter(isRecord)
+        .map((t) => ({ key: t["Key"], value: t["Value"] }));
+      return {
+        instanceId: i["InstanceId"],
+        state: typeof state === "string" ? state : undefined,
+        instanceType: i["InstanceType"],
+        launchTime: i["LaunchTime"],
+        tags,
+        iamProfileArn: typeof profile === "string" ? profile : undefined,
+      };
+    }
+  }
+  throw new Error("instance not found");
+}
+
+/**
+ * The projection of `aws ecs describe-services --cluster X --services Y`
+ * (https://docs.aws.amazon.com/cli/latest/reference/ecs/describe-services.html): `services[]` with
+ * `serviceName, status, desiredCount, runningCount, taskDefinition, launchType`, and `failures[]`
+ * for a service it could not describe (a missing one comes back there, with exit code 0). A service
+ * in `failures` with none in `services`, or no entry in `services` at all, is "service not found".
+ * An INACTIVE service is still listed by the API and is reported with its status.
+ */
+function projectEcsService(raw: unknown): Record<string, unknown> {
+  const services = isRecord(raw) && Array.isArray(raw["services"]) ? raw["services"] : [];
+  const service = services.find((s) => isRecord(s) && typeof s["serviceName"] === "string");
+  if (!isRecord(service)) throw new Error("service not found");
+  const out: Record<string, unknown> = {};
+  for (const k of [
+    "serviceName",
+    "status",
+    "desiredCount",
+    "runningCount",
+    "taskDefinition",
+    "launchType",
+  ] as const) {
+    if (service[k] !== undefined && service[k] !== null) out[k] = service[k];
+  }
+  return out;
+}
+
 /** Tool names exposed by this connector — for contract/introspection tests. */
 export const AWS_TOOL_NAMES = [
   "aws_ecs_service_list",
+  "aws_ecs_service_get",
   "aws_lambda_list",
+  "aws_ec2_instance_get",
   "aws_ecs_service_update",
   "aws_lambda_invoke",
   "aws_ec2_instance_stop",
@@ -71,8 +140,49 @@ export function registerAwsTools(
     async (p) => jsonResult(await awsJson(["ecs", "list-services", "--cluster", p.cluster])),
   );
 
+  reg(
+    "aws_ecs_service_get",
+    "Get one ECS service's state: {serviceName, status, desiredCount, runningCount, taskDefinition, launchType}. The before-state of aws_ecs_service_update; same cluster and service. A service the API reports as a failure, or does not return, is 'service not found'.",
+    z.object({ cluster: awsCliArg, service: awsCliArg }),
+    async (p) =>
+      jsonResult(
+        projectEcsService(
+          await awsJson([
+            "ecs",
+            "describe-services",
+            "--cluster",
+            p.cluster,
+            "--services",
+            p.service,
+          ]),
+        ),
+      ),
+  );
+
   reg("aws_lambda_list", "List Lambda functions (first page).", z.object({}), async () =>
     jsonResult(await awsJson(["lambda", "list-functions"])),
+  );
+
+  reg(
+    "aws_ec2_instance_get",
+    "Get one EC2 instance's state: {instanceId, state, instanceType, launchTime, tags, iamProfileArn}. The before-state of a start or a stop.",
+    z.object({ instanceId: ec2InstanceId }),
+    async (p) => {
+      try {
+        return jsonResult(
+          projectInstance(
+            await awsJson(["ec2", "describe-instances", "--instance-ids", p.instanceId]),
+          ),
+        );
+      } catch (e) {
+        // The error code for a well-formed id that does not exist is InvalidInstanceID.NotFound
+        // (EC2 error codes); the describe-instances page names none, so the code is matched here.
+        if (e instanceof Error && /InvalidInstanceID.NotFound/.test(e.message)) {
+          throw new Error("instance not found", { cause: e });
+        }
+        throw e;
+      }
+    },
   );
 
   registerWriteTool(

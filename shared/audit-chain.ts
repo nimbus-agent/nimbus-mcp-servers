@@ -23,7 +23,9 @@ import { setTimeout as sleep } from "node:timers/promises";
  * `out of scope` and `budget exhausted` are decided before any prompt. `budget exhausted after
  * approval` follows an `accepted` entry: writes in flight together spent the last of the budget
  * while this one's prompt was open, so a human approved a write that then did not run. A client
- * that cannot prompt is never offered a write tool at all, so it leaves no entry.
+ * that cannot prompt is never offered a write tool at all, so it leaves no entry. `prepared` is a
+ * prepare-class tool (consent-kit.ts) that ran in scope: it changes nothing and spends no budget,
+ * but the operator can see what was read on a write's behalf.
  */
 export type AuditOutcome =
   | "requested"
@@ -31,7 +33,8 @@ export type AuditOutcome =
   | "declined"
   | "refused"
   | "executed"
-  | "failed";
+  | "failed"
+  | "prepared";
 
 export type AuditEntry = {
   readonly ts: string;

@@ -38,6 +38,13 @@ export interface CalDavClient {
     window: EventWindow,
   ): Promise<{ href: string; event: ParsedEvent }[]>;
   putEvent(cal: CalendarRef, uid: string, ics: string): Promise<{ href: string }>;
+  /**
+   * One event by its object URL, with the entity tag the server holds for it (RFC 4791 5.3.4: a GET on
+   * a calendar object resource MUST return an ETag). `href` must lie under one of the account's own
+   * calendars; any other is refused BEFORE a request is made.
+   */
+  getEvent(href: string): Promise<{ calendar: string; etag: string | null; event: ParsedEvent }>;
+  /** Delete by object URL; `href` must lie under one of the account's own calendars. */
   deleteEvent(href: string): Promise<void>;
 }
 

@@ -83,6 +83,75 @@ describe("github write requests (gateway mode)", () => {
     });
     expect(JSON.parse(req.body ?? "null")).toEqual({ merge_method: "rebase" });
   });
+
+  const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+  it("pr_merge sends sha as the API's sha parameter, with the other options, only when given", async () => {
+    const withSha = await request("github_pr_merge", {
+      owner: "acme",
+      repo: "api",
+      pullNumber: 7,
+      mergeMethod: "squash",
+      sha: HEAD_SHA,
+    });
+    expect(`${withSha.method} ${withSha.url}`).toBe(`PUT ${API}/repos/acme/api/pulls/7/merge`);
+    expect(JSON.parse(withSha.body ?? "null")).toEqual({ merge_method: "squash", sha: HEAD_SHA });
+    const without = await request("github_pr_merge", { owner: "acme", repo: "api", pullNumber: 7 });
+    expect(JSON.parse(without.body ?? "null")).toEqual({});
+    expect(without.body).not.toContain("sha");
+  });
+
+  it("pr_merge maps GitHub's 409 head mismatch to a clear error naming the approved sha", async () => {
+    serve({
+      status: 409,
+      body: '{"message":"Head branch was modified. Review and try the merge again."}',
+    });
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_pr_merge", { owner: "acme", repo: "api", pullNumber: 7, sha: HEAD_SHA }),
+      ).rejects.toThrow(
+        new RegExp(
+          `GitHub 409: the pull request head is no longer the approved ${HEAD_SHA}; nothing was merged`,
+        ),
+      );
+    });
+  });
+
+  it("a 409 without a sha keeps the generic error, and other failures are unchanged", async () => {
+    serve({ status: 409, body: "conflict" });
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_pr_merge", { owner: "acme", repo: "api", pullNumber: 7 }),
+      ).rejects.toThrow("GitHub 409: conflict");
+    });
+    serve({ status: 405, body: "not mergeable" });
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_pr_merge", { owner: "acme", repo: "api", pullNumber: 7, sha: HEAD_SHA }),
+      ).rejects.toThrow("GitHub 405: not mergeable");
+    });
+  });
+
+  it("pr_merge refuses a sha that is not 40 lowercase hex, before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      for (const sha of [
+        "abc",
+        HEAD_SHA.toUpperCase(),
+        `${HEAD_SHA}0`,
+        HEAD_SHA.slice(1),
+        `${HEAD_SHA.slice(0, 39)}g`,
+        "main",
+        "",
+        ` ${HEAD_SHA}`,
+      ]) {
+        await expect(
+          tools.call("github_pr_merge", { owner: "acme", repo: "api", pullNumber: 7, sha }),
+        ).rejects.toThrow();
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
 });
 
 describe("github issue writes (gateway mode)", () => {

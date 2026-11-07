@@ -175,3 +175,106 @@ describe("circleci writes", () => {
     });
   });
 });
+
+describe("circleci_job_get", () => {
+  const ARGS = { projectSlug: "gh/acme/api", jobNumber: 42 };
+
+  it("GETs the project's job by number and projects the fields it has", async () => {
+    const req = await request(
+      "circleci_job_get",
+      ARGS,
+      JSON.stringify({
+        name: "build",
+        number: 42,
+        status: "running",
+        started_at: "2026-11-01T10:00:00Z",
+        web_url: "https://app.circleci.com/jobs/gh/acme/api/42",
+        pipeline: { id: UUID },
+        secret_thing: "dropped",
+      }),
+    );
+    expect(`${req.method} ${req.url}`).toBe(`GET ${API}/project/gh/acme/api/job/42`);
+    expect(req.headers["circle-token"]).toBe("cci-token");
+    serve(JSON.stringify({ name: "build", job_number: 42, pipeline_id: UUID, stopped_at: "t" }));
+    await withEnv({ CIRCLECI_API_TOKEN: "t" }, async () => {
+      expect(await tools.callJson("circleci_job_get", ARGS)).toEqual({
+        name: "build",
+        number: 42,
+        stoppedAt: "t",
+        pipelineId: UUID,
+      });
+    });
+  });
+
+  it("projects status, startedAt, webUrl and the nested pipeline id", async () => {
+    serve(
+      JSON.stringify({
+        status: "success",
+        started_at: "a",
+        web_url: "u",
+        pipeline: { id: UUID },
+      }),
+    );
+    await withEnv({ CIRCLECI_API_TOKEN: "t" }, async () => {
+      expect(await tools.callJson("circleci_job_get", ARGS)).toEqual({
+        status: "success",
+        startedAt: "a",
+        webUrl: "u",
+        pipelineId: UUID,
+      });
+    });
+  });
+
+  it("quotes CircleCI's status on failure, and a reply with no job fields is an error", async () => {
+    serve({ status: 404, body: "Job not found" });
+    await withEnv({ CIRCLECI_API_TOKEN: "t" }, async () => {
+      await expect(tools.call("circleci_job_get", ARGS)).rejects.toThrow(
+        "CircleCI 404: Job not found",
+      );
+    });
+    serve("{}");
+    await withEnv({ CIRCLECI_API_TOKEN: "t" }, async () => {
+      await expect(tools.call("circleci_job_get", ARGS)).rejects.toThrow(
+        "CircleCI returned no job",
+      );
+    });
+  });
+
+  it("refuses without the token, and a job number below 1, before any request", async () => {
+    const stub = serve();
+    await withEnv({ CIRCLECI_API_TOKEN: undefined }, async () => {
+      await expect(tools.call("circleci_job_get", ARGS)).rejects.toThrow(
+        "CIRCLECI_API_TOKEN is not set",
+      );
+    });
+    await withEnv({ CIRCLECI_API_TOKEN: "t" }, async () => {
+      await expect(tools.call("circleci_job_get", { ...ARGS, jobNumber: 0 })).rejects.toThrow();
+    });
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("circleci credentialed requests go through guardedFetch", () => {
+  const EVIL = "https://evil.example/steal";
+
+  it("a cross-origin 302 on a read is refused and no request reaches the other origin", async () => {
+    const stub = serve({ status: 302, headers: { Location: EVIL } });
+    await withEnv({ CIRCLECI_API_TOKEN: "cci-token" }, async () => {
+      await expect(
+        tools.call("circleci_job_get", { projectSlug: "gh/acme/api", jobNumber: 1 }),
+      ).rejects.toThrow("CircleCI redirected to another origin; refused");
+    });
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+  });
+
+  it("a redirect on a write is refused, not replayed", async () => {
+    const stub = serve({ status: 307, headers: { Location: `${API}/elsewhere` } });
+    await withEnv({ CIRCLECI_API_TOKEN: "cci-token" }, async () => {
+      await expect(
+        tools.call("circleci_job_cancel", { projectSlug: "gh/acme/api", jobNumber: 1 }),
+      ).rejects.toThrow("answered a POST with a redirect");
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+});

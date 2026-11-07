@@ -95,6 +95,16 @@ enforces consent, the write-scope allow-list and the mutation budget, and it is 
 hold regardless of how a connector is written. `shared/write-scope.ts`, `shared/write-budget.ts` and
 `shared/audit-chain.ts` back it.
 
+**The prepare class.** A write bound to state the owner approves (a commit bound to the branch head
+it was prepared against) is preceded by a `*_prepare` tool the gateway calls before the approval
+prompt. Those tools register through `createPrepareToolRegistrar`, never `reg` and never the write
+registrar, and only under a name listed in `shared/prepare-tool-ids.ts` (`PREPARE_TOOL_IDS`, one
+literal list the gateway reads as text; the registrar throws for any other name). Standalone, a
+prepare tool is registered for every client, needs the same write scope as the writes it serves,
+audits an in-scope run as `prepared`, prompts no one and spends no write budget; in the gateway the
+executor's prepare step is the gate. `audit:connector-consent` fails a listed id registered through
+anything else, and `shared/prepare-tool-ids.test.ts` requires each to be registered exactly once.
+
 The audit chain links each entry to the line before it, so it is only as good as its appends are
 ordered, and appends do arrive together: the SDK runs tool calls concurrently, and every connector a
 client starts may share one `NIMBUS_MCP_AUDIT_LOG`. `audit-chain.ts` therefore serialises them

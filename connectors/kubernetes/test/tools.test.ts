@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   approvedStandaloneWrite,
   type CapturedTools,
@@ -13,6 +16,9 @@ import { registerKubernetesTools } from "../src/tools.ts";
 let tools: CapturedTools;
 let spawn: SpawnStub | undefined;
 const saved = new Map<string, string | undefined>();
+const KUBECONFIG_BODY = "apiVersion: v1\nkind: Config\n";
+let kubeDir = "";
+let kubeSource = "";
 
 /** Answer every kubectl call with this reply, replacing any stub already installed. */
 function cli(reply: { stdout?: string; stderr?: string; exitCode?: number }): SpawnStub {
@@ -25,7 +31,10 @@ beforeEach(() => {
   resetConnectorModeForTests();
   setConnectorMode("gateway");
   for (const key of ["KUBECONFIG", "KUBE_CONTEXT"]) saved.set(key, process.env[key]);
-  process.env["KUBECONFIG"] = "/nonexistent/kubeconfig";
+  kubeDir = mkdtempSync(join(tmpdir(), "k8s-test-"));
+  kubeSource = join(kubeDir, "kubeconfig");
+  writeFileSync(kubeSource, KUBECONFIG_BODY);
+  process.env["KUBECONFIG"] = kubeSource;
   delete process.env["KUBE_CONTEXT"];
   tools = captureTools(registerKubernetesTools);
 });
@@ -40,6 +49,7 @@ afterEach(() => {
       process.env[key] = value;
     }
   }
+  rmSync(kubeDir, { recursive: true, force: true });
   resetConnectorModeForTests();
 });
 
@@ -71,7 +81,8 @@ describe("kubernetes write tools", () => {
       const stub = cli({ stdout: "" });
       expect(await tools.callJson(tool, args)).toEqual({ ok: true });
       expect(stub.calls.map((c) => c.command)).toEqual([[...argv]]);
-      expect(stub.calls[0]?.env["KUBECONFIG"]).toBe("/nonexistent/kubeconfig");
+      // A private copy, never the owner's own file.
+      expect(stub.calls[0]?.env["KUBECONFIG"]).not.toBe(kubeSource);
     });
 
     it(`${tool} throws kubectl's exit code and stderr`, async () => {
@@ -205,5 +216,99 @@ describe("kubernetes list tools", () => {
     await expect(tools.call("k8s_deployment_list", {})).rejects.toThrow(
       "kubectl exited 1: no route",
     );
+  });
+});
+
+describe("kubernetes runs every kubectl call on a private kubeconfig", () => {
+  it("the child sees a copy with the source's content, removed afterwards; the source is untouched", async () => {
+    let seenPath = "";
+    let seenContent = "";
+    spawn?.restore();
+    spawn = stubSpawn({
+      stdout: "{}",
+      onSpawn: () => undefined,
+    });
+    const original = (Bun as { spawn: unknown }).spawn as (
+      c: string[],
+      o: { env: Record<string, string> },
+    ) => unknown;
+    (Bun as { spawn: unknown }).spawn = (c: string[], o: { env: Record<string, string> }) => {
+      seenPath = o.env["KUBECONFIG"] ?? "";
+      seenContent = readFileSync(seenPath, "utf8");
+      writeFileSync(seenPath, "changed by the child");
+      return original(c, o);
+    };
+    await tools.call("k8s_pod_list", {});
+    expect(seenPath).not.toBe(kubeSource);
+    expect(seenContent).toBe(KUBECONFIG_BODY);
+    expect(existsSync(seenPath)).toBe(false);
+    expect(readFileSync(kubeSource, "utf8")).toBe(KUBECONFIG_BODY);
+  });
+
+  it("removes the copy when kubectl fails", async () => {
+    const stub = cli({ exitCode: 1, stderr: "boom" });
+    await expect(tools.call("k8s_pod_list", {})).rejects.toThrow("boom");
+    expect(existsSync(stub.calls[0]?.env["KUBECONFIG"] ?? kubeSource)).toBe(false);
+  });
+
+  it("refuses a KUBECONFIG that names a list, before anything runs", async () => {
+    const stub = cli({ stdout: "" });
+    process.env["KUBECONFIG"] = [kubeSource, kubeSource].join(
+      process.platform === "win32" ? ";" : ":",
+    );
+    await expect(tools.call("k8s_pod_list", {})).rejects.toThrow(/more than one file/);
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("k8s_deployment_get", () => {
+  const DEPLOYMENT = JSON.stringify({
+    metadata: { name: "api", namespace: "prod", generation: 4 },
+    spec: { replicas: 2, template: { spec: { containers: [{ image: "acme/api:1" }] } } },
+    status: { readyReplicas: 2, observedGeneration: 4 },
+  });
+
+  it("runs kubectl get deployment through kubectlBase() and projects the reply", async () => {
+    process.env["KUBE_CONTEXT"] = "staging";
+    const stub = cli({ stdout: DEPLOYMENT });
+    expect(await tools.callJson("k8s_deployment_get", { namespace: "prod", name: "api" })).toEqual({
+      name: "api",
+      namespace: "prod",
+      replicas: 2,
+      readyReplicas: 2,
+      generation: 4,
+      observedGeneration: 4,
+      images: ["acme/api:1"],
+    });
+    expect(stub.calls.map((c) => c.command)).toEqual([
+      ["kubectl", "--context", "staging", "get", "deployment", "api", "-n", "prod", "-o", "json"],
+    ]);
+  });
+
+  it("defaults the namespace to default", async () => {
+    const stub = cli({ stdout: DEPLOYMENT });
+    await tools.call("k8s_deployment_get", { name: "api" });
+    expect(stub.calls[0]?.command).toContain("default");
+  });
+
+  it("reports a missing deployment as not found, and any other failure as itself", async () => {
+    cli({ exitCode: 1, stderr: 'Error from server (NotFound): deployments.apps "x" not found' });
+    await expect(tools.call("k8s_deployment_get", { name: "x" })).rejects.toThrow(
+      "deployment not found",
+    );
+    cli({ exitCode: 1, stderr: "forbidden" });
+    await expect(tools.call("k8s_deployment_get", { name: "x" })).rejects.toThrow("forbidden");
+  });
+
+  it("refuses a name that kubectl would read as a flag, and a missing KUBECONFIG, before running", async () => {
+    const stub = cli({ stdout: DEPLOYMENT });
+    await expect(tools.call("k8s_deployment_get", { name: "--kubeconfig=/tmp/x" })).rejects.toThrow(
+      refusalSaying('must not start with "-"'),
+    );
+    delete process.env["KUBECONFIG"];
+    await expect(tools.call("k8s_deployment_get", { name: "api" })).rejects.toThrow(
+      "KUBECONFIG env must be set",
+    );
+    expect(stub.calls).toEqual([]);
   });
 });

@@ -763,3 +763,67 @@ describe("apple calendar write tools in STANDALONE mode", () => {
     expect(JSON.stringify(res)).not.toMatch(/not approved/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// apple_calendar_event_get
+// ---------------------------------------------------------------------------
+
+describe("apple_calendar_event_get", () => {
+  const PARSED = {
+    uid: "event-1",
+    summary: "Standup",
+    start: "20260601T090000Z",
+    end: "20260601T091500Z",
+    allDay: false,
+    location: "Room 1",
+    organizer: "boss@icloud.com",
+    status: "CONFIRMED",
+    attendees: ["a@icloud.com"],
+    rrule: null,
+    description: "N".repeat(5000),
+    dtstamp: "20260601T000000Z",
+  };
+
+  it("returns the ViewEvent shape of apple_calendar_list plus the etag, notes capped", async () => {
+    const asked: string[] = [];
+    const { client } = makeFakeCalDavClient({
+      getEvent: async (href) => {
+        asked.push(href);
+        return { calendar: "Work", etag: '"abc"', event: PARSED };
+      },
+    });
+    const { server, tools } = stubServer();
+    registerAppleCalendarTools(server as never, {
+      calendar: client,
+      now: () => "20260601T000000Z",
+    });
+    const out = parseResult(
+      await tools.apple_calendar_event_get({
+        href: "https://caldav.icloud.com/calendars/work/e1.ics",
+      }),
+    ) as Record<string, unknown>;
+    expect(asked).toEqual(["https://caldav.icloud.com/calendars/work/e1.ics"]);
+    expect(out["etag"]).toBe('"abc"');
+    expect(out["calendar"]).toBe("Work");
+    expect(out["summary"]).toBe("Standup");
+    expect(out["href"]).toBe("https://caldav.icloud.com/calendars/work/e1.ics");
+    expect((out["notes"] as string).length).toBe(CAPPED_NOTES_LEN);
+  });
+
+  it("refuses an empty href and propagates the client's refusal", async () => {
+    const { client } = makeFakeCalDavClient({
+      getEvent: async () => {
+        throw new Error("href is not in one of your calendars");
+      },
+    });
+    const { server, tools } = stubServer();
+    registerAppleCalendarTools(server as never, {
+      calendar: client,
+      now: () => "20260601T000000Z",
+    });
+    await expect(tools.apple_calendar_event_get({ href: "" })).rejects.toThrow();
+    await expect(
+      tools.apple_calendar_event_get({ href: "https://evil.example/x.ics" }),
+    ).rejects.toThrow("href is not in one of your calendars");
+  });
+});

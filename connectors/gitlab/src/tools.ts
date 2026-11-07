@@ -1,6 +1,17 @@
 import { z } from "zod";
 import {
+  assertCombinedSize,
+  assertCommitFiles,
+  COMMIT_MAX_COMBINED_BYTES,
+  COMMIT_MAX_FILES,
+  commitFilePathSchema,
+  commitFilesSchema,
+  fullShaSchema,
+  notOverwritable,
+} from "../../../shared/commit-files.ts";
+import {
   type ConsentServer,
+  createPrepareToolRegistrar,
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
@@ -21,6 +32,14 @@ import {
   type RestFetchResult,
   toRestFetchResult,
 } from "../../../shared/rest-tool-kit.ts";
+import {
+  assertRegularTargets,
+  branchHead,
+  type GitlabFileRead,
+  type GitlabGet,
+  readGitlabFilesAt,
+  refCommit,
+} from "./gitlab-files.ts";
 
 /**
  * A project reference that reaches a URL path: a numeric id, or `/`-separated segments of
@@ -163,6 +182,9 @@ export const GITLAB_TOOL_NAMES = [
   "gitlab_job_log_tail",
   "gitlab_pipeline_retry",
   "gitlab_pipeline_cancel",
+  "gitlab_files_get",
+  "gitlab_commit_prepare",
+  "gitlab_commit_create",
 ] as const;
 
 export function registerGitlabTools(
@@ -177,6 +199,16 @@ export function registerGitlabTools(
    * the gateway it is a pass-through, because executor.ts (I2) is the gate there.
    */
   const registerWriteTool = createWriteToolRegistrar(server, {
+    connector: "gitlab",
+    scopeEnv: "NIMBUS_MCP_GITLAB_WRITE_SCOPE",
+    scopeKinds: ["repo"],
+  });
+
+  /**
+   * Prepare tools (shared/prepare-tool-ids.ts) read the state a write is bound to, for the gateway to
+   * call BEFORE the write's approval prompt; they are neither reads nor writes to the kit.
+   */
+  const registerPrepareTool = createPrepareToolRegistrar(server, {
     connector: "gitlab",
     scopeEnv: "NIMBUS_MCP_GITLAB_WRITE_SCOPE",
     scopeKinds: ["repo"],
@@ -706,5 +738,199 @@ export function registerGitlabTools(
     "gitlab.pipeline.cancel",
     "Cancel a pipeline.",
     "cancel",
+  );
+
+  // -------------------------------------------------------------------------------------------
+  // Multi-file commit: gitlab_files_get (read), gitlab_commit_prepare (prepare), gitlab_commit_create
+  // -------------------------------------------------------------------------------------------
+
+  /** Bound GETs: the token is read at call time, before the first request. */
+  const gitlabGet = (): GitlabGet => {
+    const token = requireProcessEnv("GITLAB_PAT");
+    return (path) => glFetch(token, path);
+  };
+
+  const READ_LIMIT = COMMIT_MAX_COMBINED_BYTES;
+
+  /** What a read tool reports for one file; `content` only for text. */
+  function fileView(f: GitlabFileRead): Record<string, unknown> {
+    if (!f.exists) return { path: f.path, exists: false };
+    const base = {
+      path: f.path,
+      exists: true,
+      lastCommitId: f.lastCommitId,
+      executable: f.executable,
+      size: f.size,
+    };
+    return f.kind === "text" ? { ...base, content: f.content } : { ...base, withheld: f.kind };
+  }
+
+  reg(
+    "gitlab_files_get",
+    'Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, lastCommitId, executable, size, content}]}. A binary or over-192-KiB file is reported with `withheld` instead of content, and the content of all the files together is capped at 192 KiB: the first file that does not fit, and every file after it, is reported with `withheld: "budget"` and no content.',
+    projectPathArg.extend({
+      ref: gitlabRefSchema,
+      paths: z.array(commitFilePathSchema).min(1).max(50),
+    }),
+    async (parsed) => {
+      const get = gitlabGet();
+      const project = encodeURIComponent(parsed.projectPath);
+      const sha = await refCommit(get, project, parsed.ref);
+      const files = await readGitlabFilesAt(
+        get,
+        project,
+        sha,
+        parsed.paths,
+        READ_LIMIT,
+        READ_LIMIT,
+      );
+      return jsonResult({ ref: parsed.ref, headSha: sha, files: files.map(fileView) });
+    },
+  );
+
+  const gitlabCommitInputSchema = projectPathArg.extend({
+    branch: gitlabRefSchema,
+    files: commitFilesSchema,
+  });
+
+  const repoScopeOf = (p: { projectPath: string }): { kind: string; value: string } => ({
+    kind: "repo",
+    value: p.projectPath,
+  });
+
+  registerPrepareTool(
+    "gitlab_commit_prepare",
+    { scopeTargetOf: repoScopeOf },
+    `Read the state a gitlab_commit_create is bound to: the branch head and, for each file, whether it exists, its last_commit_id, whether it is executable and its current content. Refuses (no truncation) a commit that touches more than ${String(COMMIT_MAX_FILES)} files or whose old and new content together exceed 192 KiB, and any existing file that is not a text file. Takes the commit's own projectPath, branch and files.`,
+    gitlabCommitInputSchema,
+    async (parsed) => {
+      assertCommitFiles(parsed.files);
+      const get = gitlabGet();
+      const project = encodeURIComponent(parsed.projectPath);
+      const head = await branchHead(get, project, parsed.branch);
+      const read = await readGitlabFilesAt(
+        get,
+        project,
+        head,
+        parsed.files.map((f) => f.path),
+        READ_LIMIT,
+      );
+      // The files API reports no mode, so a symlink looks like a text file: read the tree entries and
+      // refuse a symlink, a submodule or a directory before anything is written.
+      await assertRegularTargets(get, project, head, read);
+      let oldBytes = 0;
+      const files = read.map((f) => {
+        if (!f.exists) return { path: f.path, exists: false };
+        if (f.kind !== "text") throw notOverwritable(f.path);
+        oldBytes += f.size;
+        return {
+          path: f.path,
+          exists: true,
+          lastCommitId: f.lastCommitId,
+          executable: f.executable,
+          oldContent: f.content,
+        };
+      });
+      assertCombinedSize(oldBytes, parsed.files);
+      return jsonResult({ headSha: head, files });
+    },
+  );
+
+  registerWriteTool(
+    "gitlab_commit_create",
+    {
+      mutates: "gitlab.commit.create",
+      // A commit moves a branch; the inverse needs the head and each file's last commit, captured first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const get = gitlabGet();
+        const project = encodeURIComponent(parsed.projectPath);
+        const head = await branchHead(get, project, parsed.branch);
+        const read = await readGitlabFilesAt(
+          get,
+          project,
+          head,
+          parsed.files.map((f) => f.path),
+          READ_LIMIT,
+        );
+        return {
+          branch: parsed.branch,
+          headSha: head,
+          files: read.map((f) => ({
+            path: f.path,
+            lastCommitId: f.exists ? f.lastCommitId : null,
+          })),
+        };
+      },
+      scopeTargetOf: repoScopeOf,
+    },
+    "Commit one or more whole text files to a branch as ONE commit. The branch head is checked against expectedHeadSha (the head the owner approved) before the write, but GitLab has no head-conditional commit, so that check is NOT atomic with the write. What protects the files is last_commit_id: each update carries the file's last_commit_id read at the approved head, and GitLab refuses it if that file changed since. A commit to OTHER files that lands between the check and the write is not detected before the write; movedHead: true in the result reports it afterwards (the new commit's parent is not the approved head). Never forced.",
+    gitlabCommitInputSchema.extend({
+      message: z.string().min(1).max(5000),
+      expectedHeadSha: fullShaSchema,
+    }),
+    async (parsed) => {
+      assertCommitFiles(parsed.files);
+      const get = gitlabGet();
+      const token = requireProcessEnv("GITLAB_PAT");
+      const project = encodeURIComponent(parsed.projectPath);
+      const expected = parsed.expectedHeadSha.toLowerCase();
+      // 1. The head AGAIN: the approval was for this commit, not for whatever the branch became.
+      const head = await branchHead(get, project, parsed.branch);
+      if (head !== expected) {
+        throw new Error(`branch head is ${head}, not the approved ${expected}`);
+      }
+      // 2. Each existing file AT that head: its last_commit_id goes on the update action.
+      const read = await readGitlabFilesAt(
+        get,
+        project,
+        head,
+        parsed.files.map((f) => f.path),
+        READ_LIMIT,
+      );
+      // The files API reports no mode, so a symlink looks like a text file: read the tree entries and
+      // refuse a symlink, a submodule or a directory before anything is written.
+      await assertRegularTargets(get, project, head, read);
+      let oldBytes = 0;
+      const actions = parsed.files.map((f, i) => {
+        const existing = read[i];
+        if (existing === undefined || !existing.exists) {
+          return { action: "create", file_path: f.path, content: f.content, encoding: "text" };
+        }
+        if (existing.kind !== "text") throw notOverwritable(f.path);
+        oldBytes += existing.size;
+        return {
+          action: "update",
+          file_path: f.path,
+          content: f.content,
+          encoding: "text",
+          last_commit_id: existing.lastCommitId,
+        };
+      });
+      assertCombinedSize(oldBytes, parsed.files);
+      // 3. One commit, no force, no start_branch.
+      const res = await glFetch(
+        token,
+        `/projects/${project}/repository/commits`,
+        jsonBody("POST", { branch: parsed.branch, commit_message: parsed.message, actions }),
+      );
+      if (!res.ok) {
+        throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);
+      }
+      const made = (res.json ?? {}) as { id?: unknown; parent_ids?: unknown; web_url?: unknown };
+      // The head can move between step 1 and this POST (the API has no head-conditional commit):
+      // say so when the new commit's parent is not the head that was approved.
+      const movedHead = !(
+        Array.isArray(made.parent_ids) && made.parent_ids.map(String).includes(expected)
+      );
+      return jsonResult({
+        ok: true,
+        commitId: made.id,
+        branch: parsed.branch,
+        parent: expected,
+        webUrl: made.web_url,
+        movedHead,
+      });
+    },
   );
 }

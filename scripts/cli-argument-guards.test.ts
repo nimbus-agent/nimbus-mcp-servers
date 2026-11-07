@@ -20,7 +20,7 @@
  * gcloud positionals in gcp, every azure argument, and every aws and iac one.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -58,9 +58,20 @@ const EXPECTED_SPAWNING = [
   "vertex-ai",
 ];
 
+/**
+ * The kubernetes connector copies the kubeconfig it is pointed at, so the file has to exist; its
+ * content is never read by the stubbed kubectl.
+ */
+const SWEEP_KUBE_DIR = mkdtempSync(join(tmpdir(), "nimbus-sweep-kube-"));
+const SWEEP_KUBECONFIG = join(SWEEP_KUBE_DIR, "kubeconfig");
+writeFileSync(SWEEP_KUBECONFIG, "apiVersion: v1\nkind: Config\n");
+afterAll(() => {
+  rmSync(SWEEP_KUBE_DIR, { recursive: true, force: true });
+});
+
 /** What a connector reads at call time, held fixed so its argv is the same on every machine. */
 const CALL_ENV: Record<string, string | undefined> = {
-  KUBECONFIG: "/nonexistent/kubeconfig",
+  KUBECONFIG: SWEEP_KUBECONFIG,
   KUBE_CONTEXT: undefined,
   BIGQUERY_PROJECT: "nimbus-sweep-project",
   GOOGLE_CLOUD_PROJECT: undefined,
@@ -181,11 +192,29 @@ async function registrarOf(id: string): Promise<ConnectorRegistrar> {
 }
 
 /**
+ * Values a schema accepts that no generic string is: an EC2 instance id is `i-` and hex digits.
+ * A plain `z.object` strips a key it does not declare, so seeding every tool with this is harmless.
+ */
+const SWEEP_SEED: Record<string, unknown> = { instanceId: "i-0123456789abcdef0" };
+
+/**
+ * The reply every stubbed CLI gives. The read tools that PROJECT a reply (a deployment, a node pool,
+ * an EC2 instance) refuse one that holds none of their fields, as they should, so the generic
+ * `{}` is replaced by one object that carries a field of each.
+ */
+const SWEEP_REPLY = JSON.stringify({
+  metadata: { name: "x" },
+  count: 1,
+  Reservations: [{ Instances: [{ InstanceId: "i-0123456789abcdef0" }] }],
+  services: [{ serviceName: "x" }],
+});
+
+/**
  * Arguments the tool's schema accepts, every optional string included, each string set to a value
  * that names its field — so a value found in argv says which argument put it there.
  */
 function sweepArgs(name: string, schema: ParsableSchema): Record<string, unknown> {
-  const base = fixtureFor(schema);
+  const base = fixtureFor(schema, SWEEP_SEED);
   if (base === undefined) {
     throw new Error(`${name}: no generic arguments satisfy its schema`);
   }
@@ -213,7 +242,7 @@ async function run(
   name: string,
   args: Record<string, unknown>,
 ): Promise<Run> {
-  const spawn = stubSpawn({ stdout: "{}" });
+  const spawn = stubSpawn({ stdout: SWEEP_REPLY });
   const http = stubFetch({ body: "{}" });
   try {
     let refused = false;

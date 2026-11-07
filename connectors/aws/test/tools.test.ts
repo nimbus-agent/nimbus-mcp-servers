@@ -301,3 +301,158 @@ describe("the EC2 actions are gated writes (standalone mode)", () => {
     });
   }
 });
+
+describe("aws_ec2_instance_get", () => {
+  const ID = "i-0123456789abcdef0";
+  const REPLY = JSON.stringify({
+    Reservations: [
+      {
+        Instances: [
+          {
+            InstanceId: ID,
+            InstanceType: "t3.nano",
+            LaunchTime: "2022-11-15T10:48:59+00:00",
+            State: { Code: 16, Name: "running" },
+            IamInstanceProfile: { Arn: "arn:aws:iam::1:instance-profile/web", Id: "AIPA" },
+            Tags: [{ Key: "Name", Value: "web-1" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  it("describes exactly that instance and projects the documented fields", async () => {
+    const stub = cli({ stdout: REPLY });
+    expect(await tools.callJson("aws_ec2_instance_get", { instanceId: ID })).toEqual({
+      instanceId: ID,
+      state: "running",
+      instanceType: "t3.nano",
+      launchTime: "2022-11-15T10:48:59+00:00",
+      tags: [{ key: "Name", value: "web-1" }],
+      iamProfileArn: "arn:aws:iam::1:instance-profile/web",
+    });
+    expect(stub.calls.map((c) => c.command)).toEqual([
+      ["aws", "ec2", "describe-instances", "--instance-ids", ID, "--output", "json"],
+    ]);
+  });
+
+  it("an empty reservation list is 'instance not found'", async () => {
+    cli({ stdout: '{"Reservations":[]}' });
+    await expect(tools.call("aws_ec2_instance_get", { instanceId: ID })).rejects.toThrow(
+      "instance not found",
+    );
+  });
+
+  it("InvalidInstanceID.NotFound is 'instance not found'; other failures pass through", async () => {
+    cli({ exitCode: 254, stderr: "An error occurred (InvalidInstanceID.NotFound)" });
+    await expect(tools.call("aws_ec2_instance_get", { instanceId: ID })).rejects.toThrow(
+      "instance not found",
+    );
+    cli({ exitCode: 254, stderr: "UnauthorizedOperation" });
+    await expect(tools.call("aws_ec2_instance_get", { instanceId: ID })).rejects.toThrow(
+      "UnauthorizedOperation",
+    );
+  });
+
+  it("refuses anything but one instance id before spawning", async () => {
+    const stub = cli({ stdout: REPLY });
+    for (const bad of [
+      "i-123",
+      `${ID},${ID}`,
+      "--profile=x",
+      "file:///etc/passwd",
+      ID.toUpperCase(),
+    ]) {
+      await expect(tools.call("aws_ec2_instance_get", { instanceId: bad })).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("aws_ecs_service_get", () => {
+  const ARGS = { cluster: "prod", service: "web" };
+  const FOUND = JSON.stringify({
+    services: [
+      {
+        serviceName: "web",
+        status: "ACTIVE",
+        desiredCount: 3,
+        runningCount: 2,
+        taskDefinition: "arn:aws:ecs:us-east-1:1:task-definition/web:7",
+        launchType: "FARGATE",
+        deployments: [{ id: "dropped" }],
+      },
+    ],
+    failures: [],
+  });
+
+  it("describes exactly that service and projects only the documented fields", async () => {
+    const stub = cli({ stdout: FOUND });
+    expect(await tools.callJson("aws_ecs_service_get", ARGS)).toEqual({
+      serviceName: "web",
+      status: "ACTIVE",
+      desiredCount: 3,
+      runningCount: 2,
+      taskDefinition: "arn:aws:ecs:us-east-1:1:task-definition/web:7",
+      launchType: "FARGATE",
+    });
+    expect(stub.calls.map((c) => c.command)).toEqual([
+      [
+        "aws",
+        "ecs",
+        "describe-services",
+        "--cluster",
+        "prod",
+        "--services",
+        "web",
+        "--output",
+        "json",
+      ],
+    ]);
+  });
+
+  it("keeps only the fields present (a service without launchType stays without it)", async () => {
+    cli({ stdout: JSON.stringify({ services: [{ serviceName: "web", status: "INACTIVE" }] }) });
+    expect(await tools.callJson("aws_ecs_service_get", ARGS)).toEqual({
+      serviceName: "web",
+      status: "INACTIVE",
+    });
+  });
+
+  it("a service in failures with an empty services array is 'service not found'", async () => {
+    cli({
+      stdout: JSON.stringify({
+        services: [],
+        failures: [{ arn: "arn:aws:ecs:us-east-1:1:service/prod/web", reason: "MISSING" }],
+      }),
+    });
+    await expect(tools.call("aws_ecs_service_get", ARGS)).rejects.toThrow("service not found");
+  });
+
+  it("an empty services array with no failures is 'service not found' too", async () => {
+    cli({ stdout: JSON.stringify({ services: [] }) });
+    await expect(tools.call("aws_ecs_service_get", ARGS)).rejects.toThrow("service not found");
+    cli({ stdout: "{}" });
+    await expect(tools.call("aws_ecs_service_get", ARGS)).rejects.toThrow("service not found");
+  });
+
+  it("other CLI failures pass through", async () => {
+    cli({ exitCode: 254, stderr: "ClusterNotFoundException" });
+    await expect(tools.call("aws_ecs_service_get", ARGS)).rejects.toThrow(
+      "ClusterNotFoundException",
+    );
+  });
+
+  it("refuses flag-like, file:// and control values before spawning", async () => {
+    const stub = cli({ stdout: FOUND });
+    for (const bad of [
+      { cluster: "--profile=x", service: "web" },
+      { cluster: "prod", service: "--region=x" },
+      { cluster: "file:///etc/passwd", service: "web" },
+      { cluster: "prod", service: "web\nx" },
+    ]) {
+      await expect(tools.call("aws_ecs_service_get", bad)).rejects.toThrow();
+    }
+    expect(stub.calls).toEqual([]);
+  });
+});

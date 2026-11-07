@@ -378,7 +378,12 @@ describe("runStandalone's own importer, in this process", () => {
   }
 
   test("starts the real entry point, and offers its writes only to a client that can prompt", async () => {
-    const reads = ["snowflake_get", "snowflake_list", "snowflake_search"];
+    const reads = [
+      "snowflake_get",
+      "snowflake_list",
+      "snowflake_object_metadata_get",
+      "snowflake_search",
+    ];
     expect(await launched(false)).toEqual(reads);
     expect(await launched(true)).toEqual(["snowflake_comment_set", ...reads, "snowflake_tag_set"]);
   });
