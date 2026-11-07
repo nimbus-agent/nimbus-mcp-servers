@@ -2,8 +2,9 @@ import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { cursorListInputSchema } from "../../../shared/cursor-list-tool.ts";
 import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
-import { fetchWithTimeout, mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
+import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   runReadOnlyMcpConnector,
   type ZodToolRegistrar,
@@ -26,7 +27,9 @@ function authHeader(): Record<string, string> {
  */
 async function executeStatement(statement: string): Promise<unknown> {
   const url = `https://${requiredEnv("SNOWFLAKE_ACCOUNT")}.snowflakecomputing.com/api/v2/statements`;
-  const res = await fetchWithTimeout(url, {
+  // guardedFetch: the Bearer token must never follow a redirect to another origin, and a redirect
+  // on this POST (which may be a write) is refused rather than replayed.
+  const res = await guardedFetch("Snowflake", url, {
     method: "POST",
     headers: authHeader(),
     body: JSON.stringify({ statement, timeout: 60 }),
@@ -53,6 +56,23 @@ function assertSfIdentifier(name: string, label: string): string {
 // String literals are escaped by doubling single quotes (the only Snowflake literal-injection vector).
 function sfLiteral(v: string): string {
   return `'${v.replaceAll("'", "''")}'`;
+}
+
+/** The parts of `db.schema.name`, each already vetted by {@link assertSfIdentifier}. */
+function splitObjectName(object: string): { db: string; schema: string; name: string } {
+  // The name is placed in string literals, where Snowflake reads a backslash as an escape.
+  if (object.includes("\\")) throw new Error("object must not contain a backslash");
+  const parts = assertSfIdentifier(object, "object").split(".");
+  const [db, schema, name] = parts;
+  if (parts.length !== 3 || db === undefined || schema === undefined || name === undefined) {
+    throw new Error("object must be a fully qualified name: database.schema.name");
+  }
+  return { db, schema, name };
+}
+
+/** An identifier part's name as Snowflake stores it: a quoted part verbatim, else upper-cased. */
+function storedName(part: string): string {
+  return part.startsWith('"') ? part.slice(1, -1) : part.toUpperCase();
 }
 
 const TABLES_SQL =
@@ -106,6 +126,43 @@ function tableKey(row: Record<string, unknown>): string {
   const schema = typeof row["schema_name"] === "string" ? row["schema_name"].toLowerCase() : "";
   const table = typeof row["table_name"] === "string" ? row["table_name"].toLowerCase() : "";
   return `${db}.${schema}.${table}`;
+}
+
+/**
+ * The metadata a comment or tag change is previewed against: the object's COMMENT and its tags,
+ * direct and inherited. Two statements, both live (never ACCOUNT_USAGE, whose TAG_REFERENCES lags
+ * up to 120 minutes):
+ * - `SHOW TABLES|VIEWS LIKE '<name>' IN SCHEMA db.schema` for the `comment` column. The LIKE pattern
+ *   supports the wildcards % and _ and the page documents no escape for them
+ *   (https://docs.snowflake.com/en/sql-reference/sql/show-tables), so none is relied on: the pattern
+ *   only NARROWS the rows, and the object is picked by exact name in code.
+ * - `INFORMATION_SCHEMA.TAG_REFERENCES('db.schema.name', 'TABLE')`; the domain TABLE covers views
+ *   (https://docs.snowflake.com/en/sql-reference/functions/tag_references).
+ * Metadata only: no row data is ever selected.
+ */
+async function objectMetadata(
+  objectType: "table" | "view",
+  object: string,
+): Promise<Record<string, unknown>> {
+  const { db, schema, name } = splitObjectName(object);
+  const verb = objectType === "view" ? "VIEWS" : "TABLES";
+  const shown = rowsFromStatementsResponse(
+    await executeStatement(
+      `SHOW ${verb} LIKE ${sfLiteral(name.startsWith('"') ? name.slice(1, -1) : name)} IN SCHEMA ${db}.${schema}`,
+    ),
+  );
+  const wanted = storedName(name);
+  const row = shown.find((r) => r["name"] === wanted);
+  if (row === undefined) throw new Error(`Snowflake ${objectType} not found: ${object}`);
+  const tagRows = rowsFromStatementsResponse(
+    await executeStatement(
+      `SELECT tag_name, tag_value FROM TABLE(${db}.INFORMATION_SCHEMA.TAG_REFERENCES(${sfLiteral(object)}, 'TABLE'))`,
+    ),
+  );
+  const tags = tagRows
+    .map((t) => ({ name: String(t["tag_name"] ?? ""), value: t["tag_value"] ?? null }))
+    .sort((a, b) => a.name.localeCompare(b.name) || String(a.value).localeCompare(String(b.value)));
+  return { object, objectType, comment: row["comment"] ?? "", tags };
 }
 
 /**
@@ -164,6 +221,16 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
       const matches = filterSnowflakeTables(tables, { query: p.query, limit: p.limit });
       return jsonResult({ matches });
     },
+  );
+
+  reg(
+    "snowflake_object_metadata_get",
+    "Get a table's or view's COMMENT and tags (direct and inherited) by fully qualified name: {object, objectType, comment, tags:[{name, value}]}. The before-state of snowflake_comment_set and snowflake_tag_set; objectType defaults to table. Metadata only, never row data.",
+    z.object({
+      objectType: z.enum(["table", "view"]).optional(),
+      object: z.string().min(1),
+    }),
+    async (p) => jsonResult(await objectMetadata(p.objectType ?? "table", p.object)),
   );
 
   registerWriteTool(

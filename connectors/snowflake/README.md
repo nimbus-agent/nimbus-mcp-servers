@@ -69,6 +69,17 @@ The three list/get/search tools are read-only; the two governance write tools
 require Gateway HITL approval (`hitlRequired` is `["write"]`). Column
 statistics and query history are deferred.
 
+## Behaviour notes
+
+- Requests go through `guardedFetch`, so the Bearer token never follows a redirect and a redirect on a
+  statement is refused.
+- `snowflake_object_metadata_get {objectType?: "table"|"view", object: "db.schema.name"}` returns
+  `{object, objectType, comment, tags:[{name, value}]}` (metadata only, never row data) from two live
+  statements: `SHOW TABLES|VIEWS LIKE ... IN SCHEMA` and `INFORMATION_SCHEMA.TAG_REFERENCES` (never
+  `ACCOUNT_USAGE`, which lags up to 120 minutes). The SHOW page documents no way to escape the LIKE
+  wildcards `%` and `_`, so the pattern only narrows the rows and the object is picked by exact name
+  in code. Live check: `TAG_REFERENCES` freshness right after a `SET TAG`.
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)
