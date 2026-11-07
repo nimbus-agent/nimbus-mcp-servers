@@ -151,6 +151,17 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   ["firebase", { appId: "1:1234567890:android:abcdef0123456789" }],
   // Slack's modal `view` must be an object whose `type` is "modal"; no generic object satisfies that.
   ["slack", { view: { type: "modal" } }],
+  // An EC2 instance id is `i-` and hex digits.
+  ["aws", { instanceId: "i-0123456789abcdef0" }],
+  // The commit tools take a list of {path, content} objects and a full 40-hex head sha.
+  [
+    "github",
+    {
+      files: [{ path: "a.txt", content: "x" }],
+      paths: ["a.txt"],
+      expectedHeadSha: "a".repeat(40),
+    },
+  ],
   // CircleCI's pipeline and workflow ids are `z.uuid()`; no generic string
   // satisfies that.
   [

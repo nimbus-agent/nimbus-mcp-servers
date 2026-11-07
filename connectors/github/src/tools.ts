@@ -1,9 +1,21 @@
 import { z } from "zod";
 import {
+  assertCombinedSize,
+  assertCommitFiles,
+  COMMIT_MAX_COMBINED_BYTES,
+  COMMIT_MAX_FILES,
+  commitFilePathSchema,
+  commitFilesSchema,
+  fullShaSchema,
+  notOverwritable,
+} from "../../../shared/commit-files.ts";
+import {
   type ConsentServer,
+  createPrepareToolRegistrar,
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
+import { type GithubFileRead, readGithubFilesAt } from "../../../shared/github-files.ts";
 import {
   ghFetch,
   ghQueryPath,
@@ -49,6 +61,9 @@ export const GITHUB_TOOL_NAMES = [
   "github_pr_update",
   "github_tag_create",
   "github_commit_push",
+  "github_files_get",
+  "github_commit_prepare",
+  "github_file_commit",
 ] as const;
 
 export function registerGithubTools(
@@ -63,6 +78,16 @@ export function registerGithubTools(
    * pass-through, because executor.ts (I2) is the gate there.
    */
   const registerWriteTool = createWriteToolRegistrar(server, {
+    connector: "github",
+    scopeEnv: "NIMBUS_MCP_GITHUB_WRITE_SCOPE",
+    scopeKinds: ["repo"],
+  });
+
+  /**
+   * Prepare tools (shared/prepare-tool-ids.ts) read the state a write is bound to, for the gateway to
+   * call BEFORE the write's approval prompt; they are neither reads nor writes to the kit.
+   */
+  const registerPrepareTool = createPrepareToolRegistrar(server, {
     connector: "github",
     scopeEnv: "NIMBUS_MCP_GITHUB_WRITE_SCOPE",
     scopeKinds: ["repo"],
@@ -487,5 +512,191 @@ export function registerGithubTools(
             "Pushing commits requires local git and is not executed by this MCP server. Clone the repo and push with git.",
         }),
       ),
+  );
+
+  // -------------------------------------------------------------------------------------------
+  // Multi-file commit: github_files_get (read), github_commit_prepare (prepare), github_file_commit
+  // -------------------------------------------------------------------------------------------
+
+  /** The commit a branch points at now. A bare name is NOT tried as a tag: the commit lands on a branch. */
+  async function branchHead(
+    token: string,
+    p: { owner: string; repo: string; branch: string },
+  ): Promise<string> {
+    return (await resolveCommitSha(token, p.owner, p.repo, `heads/${p.branch}`)).sha;
+  }
+
+  /** What a read tool reports for one file; `content` only for text. */
+  function fileView(f: GithubFileRead): Record<string, unknown> {
+    if (!f.exists) return { path: f.path, exists: false };
+    const base = { path: f.path, exists: true, mode: f.mode, sha: f.sha, size: f.size };
+    if (f.kind === "text") return { ...base, content: f.content };
+    return { ...base, withheld: f.kind };
+  }
+
+  const READ_LIMIT = COMMIT_MAX_COMBINED_BYTES;
+
+  reg(
+    "github_files_get",
+    "Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, mode, sha, size, content}]}. A binary, symlink, submodule or over-192-KiB file is reported with its sha and `withheld` instead of content.",
+    repoSlugArgs.extend({
+      ref: gitRefSchema,
+      paths: z.array(commitFilePathSchema).min(1).max(50),
+    }),
+    async (parsed) => {
+      const token = requireProcessEnv("GITHUB_PAT");
+      const { sha } = await resolveCommitSha(token, parsed.owner, parsed.repo, parsed.ref);
+      const { files } = await readGithubFilesAt(
+        token,
+        parsed.owner,
+        parsed.repo,
+        sha,
+        parsed.paths,
+        {
+          withContent: true,
+          maxReadBytes: READ_LIMIT,
+        },
+      );
+      return jsonResult({ ref: parsed.ref, headSha: sha, files: files.map(fileView) });
+    },
+  );
+
+  const githubCommitInputSchema = repoSlugArgs.extend({
+    branch: gitRefSchema,
+    files: commitFilesSchema,
+  });
+
+  registerPrepareTool(
+    "github_commit_prepare",
+    { scopeTargetOf: repoScope },
+    `Read the state a github_file_commit is bound to: the branch head and, for each file, whether it exists, its mode, blob sha and current content. Refuses (no truncation) a commit that touches more than ${String(COMMIT_MAX_FILES)} files or whose old and new content together exceed 192 KiB, and any existing file that is not a text file. Takes the commit's own owner, repo, branch and files.`,
+    githubCommitInputSchema,
+    async (parsed) => {
+      assertCommitFiles(parsed.files);
+      const token = requireProcessEnv("GITHUB_PAT");
+      const head = await branchHead(token, parsed);
+      const { files: read } = await readGithubFilesAt(
+        token,
+        parsed.owner,
+        parsed.repo,
+        head,
+        parsed.files.map((f) => f.path),
+        { withContent: true, maxReadBytes: READ_LIMIT },
+      );
+      let oldBytes = 0;
+      const files = read.map((f) => {
+        if (!f.exists) return { path: f.path, exists: false, mode: "100644" };
+        if (f.kind !== "text") throw notOverwritable(f.path);
+        oldBytes += f.size;
+        return { path: f.path, exists: true, mode: f.mode, oldSha: f.sha, oldContent: f.content };
+      });
+      assertCombinedSize(oldBytes, parsed.files);
+      return jsonResult({ headSha: head, files });
+    },
+  );
+
+  registerWriteTool(
+    "github_file_commit",
+    {
+      mutates: "github.file.commit",
+      // A commit moves a branch; the inverse needs the head and the old blob shas, captured first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITHUB_PAT");
+        const head = await branchHead(token, parsed);
+        const { files: read } = await readGithubFilesAt(
+          token,
+          parsed.owner,
+          parsed.repo,
+          head,
+          parsed.files.map((f) => f.path),
+          { withContent: false, maxReadBytes: READ_LIMIT },
+        );
+        return {
+          branch: parsed.branch,
+          headSha: head,
+          files: read.map((f) => ({ path: f.path, oldSha: f.exists ? f.sha : null })),
+        };
+      },
+      scopeTargetOf: repoScope,
+    },
+    "Commit one or more whole text files to a branch as ONE commit, but only if the branch head is still expectedHeadSha (the head the owner approved); never forced. Existing files keep their mode, new files are 100644. No deletes, no mode changes.",
+    githubCommitInputSchema.extend({
+      message: z.string().min(1).max(5000),
+      expectedHeadSha: fullShaSchema,
+    }),
+    async (parsed) => {
+      assertCommitFiles(parsed.files);
+      const token = requireProcessEnv("GITHUB_PAT");
+      const expected = parsed.expectedHeadSha.toLowerCase();
+      // 1. The head AGAIN: the approval was for this commit, not for whatever the branch became.
+      const head = await branchHead(token, parsed);
+      if (head !== expected) {
+        throw new Error(`branch head is ${head}, not the approved ${expected}`);
+      }
+      // 2. Existing modes and sizes from the tree at that head; the blob is read too, only to refuse a
+      // binary file (its content is not otherwise needed).
+      const { treeSha: baseTree, files: existing } = await readGithubFilesAt(
+        token,
+        parsed.owner,
+        parsed.repo,
+        head,
+        parsed.files.map((f) => f.path),
+        { withContent: true, maxReadBytes: READ_LIMIT },
+      );
+      let oldBytes = 0;
+      const modes = new Map<string, string>();
+      for (const f of existing) {
+        if (!f.exists) continue;
+        if (f.kind !== "text") throw notOverwritable(f.path);
+        oldBytes += f.size;
+        modes.set(f.path, f.mode);
+      }
+      assertCombinedSize(oldBytes, parsed.files);
+      const base = ghRepoPath(parsed.owner, parsed.repo);
+      const post = async (path: string, body: unknown): Promise<Record<string, unknown>> => {
+        const res = await ghFetch(token, `${base}${path}`, jsonInit("POST", body));
+        const json = res.json as Record<string, unknown> | null;
+        if (!res.ok || json === null || typeof json["sha"] !== "string") {
+          throw new Error(`GitHub ${String(res.status)}: ${res.text.slice(0, 300)}`);
+        }
+        return json;
+      };
+      // 3. One blob per file, then one tree on top of the head's tree, then one commit.
+      const treeEntries: { path: string; mode: string; type: "blob"; sha: string }[] = [];
+      for (const f of parsed.files) {
+        const blob = await post("/git/blobs", { content: f.content, encoding: "utf-8" }); // NOSONAR S9382: sequential on purpose; a failed blob stops the commit before any tree exists.
+        treeEntries.push({
+          path: f.path,
+          mode: modes.get(f.path) ?? "100644",
+          type: "blob",
+          sha: String(blob["sha"]),
+        });
+      }
+      const tree = await post("/git/trees", { base_tree: baseTree, tree: treeEntries });
+      const commit = await post("/git/commits", {
+        message: parsed.message,
+        tree: String(tree["sha"]),
+        parents: [head],
+      });
+      // 4. Move the branch, fast-forward only. A moved head or a refusal is a 409 or a 422.
+      const refPath = parsed.branch.split("/").map(encodeURIComponent).join("/");
+      const moved = await ghFetch(
+        token,
+        `${base}/git/refs/heads/${refPath}`,
+        jsonInit("PATCH", { sha: String(commit["sha"]), force: false }),
+      );
+      if (!moved.ok) {
+        const why =
+          moved.status === 409 || moved.status === 422 ? "head moved or ref update refused: " : "";
+        throw new Error(`GitHub ${String(moved.status)}: ${why}${moved.text.slice(0, 300)}`);
+      }
+      return jsonResult({
+        ok: true,
+        commitSha: String(commit["sha"]),
+        branch: parsed.branch,
+        parent: head,
+      });
+    },
   );
 }

@@ -327,6 +327,16 @@ const WRITES: Readonly<
       ["github_branch_create", "github.branch.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
       ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
       ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
+        "github_file_commit",
+        "github.file.commit",
+        {
+          ...GITHUB_REPO,
+          files: [{ path: "a.txt", content: "x" }],
+          expectedHeadSha: "a".repeat(40),
+        },
+        "repo:zeta-labs/quokka",
+      ],
     ],
   },
   "github-actions": {

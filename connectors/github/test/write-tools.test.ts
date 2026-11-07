@@ -33,6 +33,7 @@ const WRITE_TOOLS = [
   "github_branch_create",
   "github_pr_create",
   "github_pr_update",
+  "github_file_commit",
 ] as const;
 
 /**
