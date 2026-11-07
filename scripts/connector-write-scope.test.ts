@@ -385,6 +385,16 @@ const WRITES: Readonly<
         { projectPath: "zeta-group/quokka" },
         "repo:zeta-group/quokka",
       ],
+      [
+        "gitlab_commit_create",
+        "gitlab.commit.create",
+        {
+          projectPath: "zeta-group/quokka",
+          files: [{ path: "a.txt", content: "x" }],
+          expectedHeadSha: "a".repeat(40),
+        },
+        "repo:zeta-group/quokka",
+      ],
       ...(
         [
           ["gitlab_issue_create", "gitlab.issue.create"],

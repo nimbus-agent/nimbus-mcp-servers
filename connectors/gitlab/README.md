@@ -28,6 +28,19 @@ follows at most 3 redirects, only to the same origin or the same host's http -> 
 (never https -> http). A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the
 token is then sent in clear.
 
+## Behaviour notes
+
+- Multi-file commits: `gitlab_files_get` reads up to 50 files at a ref (file paths are encoded with
+  `encodeURIComponent` and every `.` as `%2E`, as the API page's examples do); `gitlab_commit_prepare`
+  (a prepare tool) returns the branch head and each file's `last_commit_id`, mode and current content;
+  `gitlab_commit_create` checks the branch head is still `expectedHeadSha`, reads each existing file at
+  that head, and posts ONE commit whose update actions carry that `last_commit_id` (creates carry none),
+  never forced. At most 20 files, old plus new content at most 192 KiB, text files only.
+- Stated race bound: the Commits API has no parameter that makes a commit conditional on the branch
+  head (`last_commit_id` is per file, and only for update, move and delete). A change to OTHER files
+  between the head check and the POST is not detected; the result reports `movedHead: true` when the new
+  commit's parent is not the approved head. Live check: the message of a `last_commit_id` mismatch.
+
 ## See also
 
 - [Gitlab Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)

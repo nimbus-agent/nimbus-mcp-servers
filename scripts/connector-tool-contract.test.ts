@@ -162,6 +162,15 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
       expectedHeadSha: "a".repeat(40),
     },
   ],
+  // The commit tools take a list of {path, content} objects and a full 40-hex head sha.
+  [
+    "gitlab",
+    {
+      files: [{ path: "a.txt", content: "x" }],
+      paths: ["a.txt"],
+      expectedHeadSha: "a".repeat(40),
+    },
+  ],
   // CircleCI's pipeline and workflow ids are `z.uuid()`; no generic string
   // satisfies that.
   [
