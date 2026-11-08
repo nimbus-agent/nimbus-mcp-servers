@@ -37,7 +37,7 @@
 export interface ScannedObject {
   readonly apiVersion: string;
   readonly kind: string;
-  readonly name?: string;
+  readonly name: string;
   readonly namespace?: string;
 }
 
@@ -81,13 +81,22 @@ const BLOCK_HEADER = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ ]+(?:#.*)?)?$/;
 const DOC_SEPARATOR = /^---(?:[ ]+(?:#.*)?)?$/;
 /** A value may not START with these: anchor, alias, tag, flow collection, reserved, directive. */
 const FORBIDDEN_START = "&*!{[]},?@`%";
-const SNIPPET_LENGTH = 40;
+/** A `metadata.name`: a DNS subdomain (lower-case alphanumerics, `-` and `.`, at most 253). */
+const DNS_SUBDOMAIN = /^[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?$/;
+const KEY_ECHO_LENGTH = 40;
 
-/** A fixed-message refusal. The caller sees which rule failed and where, never the manifest. */
-function refuse(why: string, where: Where, text?: string): never {
+/**
+ * A fixed-message refusal: the rule, the document and the line, never manifest text (a Secret value
+ * that starts with `@` was once echoed). The only text that may follow is a KEY NAME, passed by the
+ * two callers that have just checked it is a plain key at column 0 or directly under metadata.
+ */
+function refuse(why: string, where: Where, key?: string): never {
   const at = `document ${String(where.doc)}, line ${String(where.line)}`;
-  const echo = text === undefined ? "" : `: ${JSON.stringify(text.slice(0, SNIPPET_LENGTH))}`;
-  throw new Error(`manifest refused (${at}): ${why}${echo}`);
+  const named =
+    key !== undefined && key.length <= KEY_ECHO_LENGTH && PLAIN_KEY.test(key)
+      ? ` (key ${key})`
+      : "";
+  throw new Error(`manifest refused (${at}): ${why}${named}`);
 }
 
 interface Where {
@@ -148,13 +157,13 @@ function splitDocuments(text: string): DocLine[][] {
     const where = { doc: docs.length, line: i + 1 };
     if (line.startsWith("---")) {
       if (!DOC_SEPARATOR.test(line)) {
-        refuse("a line starting with --- must be exactly ---", where, line);
+        refuse("a line starting with --- must be exactly ---", where);
       }
       docs.push([]);
       continue;
     }
     if (line.startsWith("...")) refuse("a document end marker (...) is not accepted", where);
-    if (line.startsWith("%")) refuse("a directive (%) is not accepted", where, line);
+    if (line.startsWith("%")) refuse("a directive (%) is not accepted", where);
     docs.at(-1)?.push({ no: i + 1, text: line });
   }
   return docs;
@@ -197,7 +206,7 @@ function readQuoted(s: string, where: Where): { text: string; end: number } {
       return { text: s.slice(1, i), end: i + 1 };
     }
   }
-  return refuse("a quoted string must close on the line it opens on", where, s);
+  return refuse("a quoted string must close on the line it opens on", where);
 }
 
 function skipSpaces(s: string, from: number): number {
@@ -223,12 +232,11 @@ function lexValue(raw: string, where: Where): Value {
     refuse(
       "anchors, aliases, tags, flow collections ({ } [ ]), JSON and reserved indicators are not accepted",
       where,
-      v,
     );
   }
-  if (v.startsWith("<<")) refuse("a merge key (<<) is not accepted", where, v);
+  if (v.startsWith("<<")) refuse("a merge key (<<) is not accepted", where);
   if (first === "|" || first === ">") {
-    if (!BLOCK_HEADER.test(v)) refuse("unreadable block scalar header", where, v);
+    if (!BLOCK_HEADER.test(v)) refuse("unreadable block scalar header", where);
     return { t: "block" };
   }
   if (first === '"' || first === "'") {
@@ -237,17 +245,17 @@ function lexValue(raw: string, where: Where): Value {
     const trimmed = after.slice(skipSpaces(after, 0));
     // After the closing quote only spaces and a comment (separated by a space) may follow.
     if (trimmed !== "" && !(after.startsWith(" ") && trimmed.startsWith("#"))) {
-      refuse("unexpected text after a quoted string", where, after);
+      refuse("unexpected text after a quoted string", where);
     }
     return { t: "quoted", text };
   }
   if ((first === "-" || first === ":") && (v.length === 1 || v[1] === " ")) {
-    refuse("a nested sequence or empty-key indicator on one line is not accepted", where, v);
+    refuse("a nested sequence or empty-key indicator on one line is not accepted", where);
   }
   const hash = v.indexOf(" #");
   const text = (hash === -1 ? v : v.slice(0, hash)).replace(/ +$/, "");
   if (text.endsWith(":") || text.includes(": ")) {
-    refuse("a mapping indicator inside a value is not accepted", where, text);
+    refuse("a mapping indicator inside a value is not accepted", where);
   }
   return { t: "plain", text };
 }
@@ -280,13 +288,12 @@ function lexLine(rest: string, indent: number, where: Where): Lexed {
     refuse(
       "anchors, aliases, tags, flow collections ({ } [ ]), JSON and reserved indicators are not accepted",
       where,
-      body,
     );
   }
-  if (body.startsWith("<<")) refuse("a merge key (<<) is not accepted", where, body);
-  if (isIndicatorAt(body, 0)) refuse("an empty key is not accepted", where, body);
+  if (body.startsWith("<<")) refuse("a merge key (<<) is not accepted", where);
+  if (isIndicatorAt(body, 0)) refuse("an empty key is not accepted", where);
   if (first === "|" || first === ">") {
-    if (dashes === 0) refuse("a block scalar needs a key or a list entry", where, body);
+    if (dashes === 0) refuse("a block scalar needs a key or a list entry", where);
     // A bare `- |` is opened by the last dash: its content must be indented past that dash.
     return { dashes, column: dashColumn, keyQuoted: false, value: lexValue(body, where) };
   }
@@ -322,7 +329,7 @@ function interpreted(value: Value, field: string, shape: RegExp, where: Where): 
   }
   const { text } = value;
   if (!shape.test(text)) {
-    refuse(`${field} has a value this scanner cannot read with certainty`, where, text);
+    refuse(`${field} has a value this scanner cannot read with certainty`, where);
   }
   if (value.t === "plain" && field.startsWith("metadata.")) {
     // YAML 1.1 reads these plain scalars as booleans, null or numbers; a quoted one is a string.
@@ -330,7 +337,6 @@ function interpreted(value: Value, field: string, shape: RegExp, where: Where): 
       refuse(
         `${field}: a plain value YAML may read as a boolean or a number must be quoted`,
         where,
-        text,
       );
     }
   }
@@ -371,7 +377,7 @@ function scanDocument(
     if (rest === "" || rest.startsWith("#")) continue;
 
     if (!hasContent && indent !== 0)
-      refuse("the first line of a document must start at column 0", where, text);
+      refuse("the first line of a document must start at column 0", where);
     hasContent = true;
 
     // A plain multi-line value continues on more-indented lines. For the four interpreted values
@@ -381,7 +387,6 @@ function scanDocument(
         refuse(
           "kind, apiVersion, metadata.name and metadata.namespace must fit on one line",
           where,
-          text,
         );
       }
       pendingColumn = undefined;
@@ -394,13 +399,20 @@ function scanDocument(
       inMetadata = false;
       childIndent = undefined;
       if (lexed.dashes > 0) {
-        refuse("a list at column 0 is not accepted; indent a list under its key", where, text);
+        refuse("a list at column 0 is not accepted; indent a list under its key", where);
       }
       if (lexed.key === undefined)
-        refuse("a line at column 0 must be `key:` or `key: value`", where, text);
+        refuse("a line at column 0 must be `key:` or `key: value`", where);
       if (lexed.keyQuoted || !PLAIN_KEY.test(lexed.key)) {
+        refuse("a key at column 0 must be a plain key (letters, digits, _ . / -)", where);
+      }
+      if (lexed.key === "items") {
+        // kubectl's builder flattens ANY object whose top-level `items` is an array (it asks
+        // Unstructured.IsList()), applies the items and drops the wrapper: a ConfigMap with an
+        // `items:` list of ClusterRoles would apply the ClusterRoles. Nested `items` (volume
+        // projections) is not top-level and stays allowed.
         refuse(
-          "a key at column 0 must be a plain key (letters, digits, _ . / -)",
+          "a top-level items key is not accepted (kubectl would read the document as a List)",
           where,
           lexed.key,
         );
@@ -412,7 +424,7 @@ function scanDocument(
       } else if (lexed.key === "metadata") {
         if (st.sawMetadata) refuse("duplicate top-level metadata", where);
         st.sawMetadata = true;
-        if (lexed.value.t !== "empty") refuse("metadata must be a block mapping", where, text);
+        if (lexed.value.t !== "empty") refuse("metadata must be a block mapping", where);
         inMetadata = true;
       }
       continue;
@@ -423,19 +435,27 @@ function scanDocument(
     if (childIndent === undefined) {
       childIndent = indent;
       if (lexed.dashes > 0 || lexed.key === undefined)
-        refuse("metadata must be a block mapping", where, text);
+        refuse("metadata must be a block mapping", where);
     } else if (indent < childIndent) {
-      refuse("inconsistent indentation under metadata", where, text);
+      refuse("inconsistent indentation under metadata", where);
     }
     if (indent !== childIndent || lexed.dashes > 0) continue;
     if (lexed.key === undefined)
-      refuse("a line under metadata must be `key:` or `key: value`", where, text);
+      refuse("a line under metadata must be `key:` or `key: value`", where);
     if (lexed.keyQuoted || !PLAIN_KEY.test(lexed.key)) {
-      refuse("a key directly under metadata must be a plain key", where, lexed.key);
+      refuse("a key directly under metadata must be a plain key", where);
+    }
+    if (lexed.key === "generateName") {
+      refuse("metadata.generateName is not accepted; give metadata.name", where, lexed.key);
     }
     if (lexed.key === "name" || lexed.key === "namespace") {
       if (st[lexed.key] !== undefined) refuse(`duplicate metadata.${lexed.key}`, where);
-      st[lexed.key] = interpreted(lexed.value, `metadata.${lexed.key}`, NAME_TEXT, where);
+      st[lexed.key] = interpreted(
+        lexed.value,
+        `metadata.${lexed.key}`,
+        lexed.key === "name" ? DNS_SUBDOMAIN : NAME_TEXT,
+        where,
+      );
       pendingColumn = childIndent;
     }
   }
@@ -446,24 +466,24 @@ function scanDocument(
     refuse("every document needs a top-level apiVersion and kind", where);
   }
   if (!st.sawMetadata) refuse("every document needs a top-level metadata block", where);
+  if (st.name === undefined) refuse("every document needs metadata.name", where);
   const versions = Object.hasOwn(ALLOWED, st.kind) ? ALLOWED[st.kind] : undefined;
   if (versions === undefined) {
-    refuse("this kind is not on the namespaced allowlist", where, st.kind);
+    refuse("this kind is not on the namespaced allowlist", where);
   }
   if (!versions.includes(st.apiVersion)) {
     refuse(
-      `apiVersion does not match kind ${st.kind} (expected ${versions.join(" or ")})`,
+      `apiVersion is not the one paired with this kind (expected ${versions.join(" or ")})`,
       where,
-      st.apiVersion,
     );
   }
   if (st.namespace !== undefined && st.namespace !== ns) {
-    refuse("metadata.namespace differs from the namespace argument", where, st.namespace);
+    refuse("metadata.namespace differs from the namespace argument", where);
   }
   return {
     apiVersion: st.apiVersion,
     kind: st.kind,
-    ...(st.name === undefined ? {} : { name: st.name }),
+    name: st.name,
     ...(st.namespace === undefined ? {} : { namespace: st.namespace }),
   };
 }

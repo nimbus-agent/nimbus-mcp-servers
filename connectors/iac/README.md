@@ -93,3 +93,28 @@ nimbus ask "Plan the terraform in infra/prod"
 ## License
 
 AGPL-3.0
+
+## Further bounds (security review)
+
+- **Plan confinement.** `iac_terraform_apply`, `iac_terraform_destroy` and `iac_terraform_show_json`
+  all need `NIMBUS_IAC_PLAN_DIR`. The plan file's real path (symlinks resolved) must lie strictly
+  inside the real plan directory, and that real path is what is hashed and given to terraform.
+  Device and network forms (`\?\`, `\.\`, UNC) are refused. The gateway must place the plan inside
+  the plan directory it grants that spawn.
+- **Plan kind is its file name.** `iac_terraform_plan` writes `plan.tfplan`,
+  `iac_terraform_destroy_plan` writes `destroy.tfplan`; apply takes only the first, destroy only the
+  second, `show_json` either. `show_json` also returns the SHA-256 of the bytes it read just before
+  rendering them.
+- A successfully applied plan file is deleted, best effort (a directory the gateway made read-only
+  keeps it).
+- **Discard.** When the change set is not found, nothing else is done. The empty stack shell is
+  deleted only after this call itself deleted a change set of the named stack. There remains a race
+  between `list-change-sets` and `delete-stack`: a change set added in between is lost with the
+  empty stack.
+- **`workingDirectory` is not bound to the plan in standalone mode.** Terraform takes the backend
+  from the saved plan; the human sees both values in the prompt. Under the gateway both come from
+  one prepare.
+- **Template content is bound only by the change-set name** (the SHA-256 of the template in
+  `nimbus-<sha>-<12 hex>`). A `get-template` comparison was dropped because CloudFormation
+  re-serialises templates.
+- No spawn timeout (repo-wide, pre-existing). Stderr echoed in errors is capped at 500 characters.

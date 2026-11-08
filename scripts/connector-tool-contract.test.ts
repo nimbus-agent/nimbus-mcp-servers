@@ -154,7 +154,7 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   // An EC2 instance id is `i-` and hex digits.
   ["aws", { instanceId: "i-0123456789abcdef0" }],
   // kubernetes: the manifest hash is 64 lower-case hex digits.
-  ["kubernetes", { manifestSha256: "a".repeat(64) }],
+  ["kubernetes", { planSha256: "a".repeat(64) }],
   // iac: a saved plan's hash is 64 lower-case hex digits and a change set is named by its ARN.
   [
     "iac",

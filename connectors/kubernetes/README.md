@@ -26,9 +26,9 @@ nimbus ask "Summarize my recent activity in Kubernetes"
   A missing deployment is detected from kubectl's message (`NotFound`), since the exit code for it is
   not documented. Live check: the exit code and message against a real cluster.
 - `k8s_manifest_plan {namespace, manifest}` and `k8s_manifest_apply {namespace, manifest,
-  manifestSha256}` are a pair. The plan is a PREPARE tool (it changes nothing): it scans the manifest,
+  planSha256}` are a pair. The plan is a PREPARE tool (it changes nothing): it scans the manifest,
   asks the API server for `kubectl apply --server-side --dry-run=server --field-manager=nimbus -o name`
-  and `kubectl diff --server-side --field-manager=nimbus`, and returns `{manifestSha256, namespace,
+  and `kubectl diff --server-side --field-manager=nimbus`, and returns `{planSha256, namespace,
   objects, scanned, diff, hasDifferences}` (one JSON item, under 256 KiB; a diff over 64 KiB is
   refused, so the owner never approves what the preview cannot show). The apply takes the same
   manifest and the hash the plan returned, re-runs every check, refuses on a different hash before any
@@ -56,6 +56,26 @@ nimbus ask "Summarize my recent activity in Kubernetes"
   Ingress, NetworkPolicy (`networking.k8s.io/v1`); Role, RoleBinding
   (`rbac.authorization.k8s.io/v1`); HorizontalPodAutoscaler (`autoscaling/v2`, `autoscaling/v1`);
   PodDisruptionBudget (`policy/v1`). Anything else (List, ClusterRole, Namespace, any CRD) is refused.
+- **Round-1 review rules.** (1) A top-level `items` key is refused in every document: kubectl's
+  builder flattens any object whose top-level `items` is an array (`Unstructured.IsList()`), applies
+  the items and drops the wrapper, so a ConfigMap carrying a ClusterRole in `items` would apply the
+  ClusterRole. A NESTED `items` (configMap and secret volume projections) is allowed. (2) Every
+  document needs `metadata.name` (a DNS subdomain, plain or simply quoted); `generateName` is refused.
+  (3) Cross-check against kubectl itself: the server dry run's `-o name` lines must equal, as a
+  multiset, the `<resource>/<name>` set the scan read (`deployment.apps/api`, `configmap/cfg`, ...).
+  The plan throws before the diff on a difference; the apply runs the dry run and the same check
+  BEFORE the real apply, and checks the real apply's output the same way (after the fact it can only
+  report, naming both sets). (4) Refusals never echo manifest text: only the rule, the document and
+  line number and, for a plain key at column 0 or directly under metadata, the key name. When a
+  scanned object is a `Secret`, kubectl's stderr snippet is replaced by `(stderr withheld: the
+  manifest holds a Secret)`. (5) The hash is `planSha256` = sha256 of UTF-8
+  `"nimbus-k8s-manifest-v1\n" + namespace + "\n" + manifest`, so a plan approved for one namespace
+  cannot be replayed in another; the plan reply carries only this hash. The kube context
+  (`KUBE_CONTEXT`) is the owner's environment, not caller input, and is not part of the hash.
+- **What the scanner does NOT do.** It enforces scope only (namespaced allowlisted kinds, in the
+  given namespace). An allowlisted kind can still be privileged: a pod with `hostPath` volumes,
+  `privileged: true` containers, `hostPID`/`hostNetwork`, or a RoleBinding to a powerful ClusterRole.
+  The approval preview (the plan's `diff`) is what shows those; the gateway's preview should too.
 - Stated bounds. (U) The text kubectl prints for a namespace mismatch is not on the pages read; the
   scanner refuses a mismatch itself and the gateway parses the manifest again as a second layer.
   `kubectl diff` runs the program `KUBECTL_EXTERNAL_DIFF` names, which the connector REMOVES from the

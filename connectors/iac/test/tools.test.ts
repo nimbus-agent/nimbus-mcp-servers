@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -93,10 +95,10 @@ function terraform(planExit: number, planBytes = "PLAN-BYTES"): SpawnStub {
 }
 
 /** A plan file of known bytes, as a prepare would have left it. */
-function savedPlan(bytes = "APPROVED-PLAN"): { file: string; hash: string } {
+function savedPlan(bytes = "APPROVED-PLAN", name = "plan.tfplan"): { file: string; hash: string } {
   const dir = join(planDir, "p1");
   mkdirSync(dir, { recursive: true });
-  const file = join(dir, "plan.tfplan");
+  const file = join(dir, name);
   writeFileSync(file, bytes);
   return { file, hash: sha(bytes) };
 }
@@ -210,14 +212,14 @@ describe("iac terraform (gateway mode)", () => {
     const stub = terraform(0);
     expect(
       await tools.callJson("iac_terraform_show_json", { workingDirectory: "w", planFile: file }),
-    ).toEqual({ planJson: '{"format_version":"1.2"}' });
+    ).toEqual({ planJson: '{"format_version":"1.2"}', planSha256: sha("APPROVED-PLAN") });
     expect(stub.calls[0]?.command).toEqual([
       "terraform",
       "-chdir=w",
       "show",
       "-json",
       "-no-color",
-      file,
+      realpathSync(file),
     ]);
     expect(stub.calls[0]?.env["TF_INPUT"]).toBe("0");
   });
@@ -249,11 +251,12 @@ describe("iac terraform (gateway mode)", () => {
       await expect(tools.call(tool, args("plan.tfplan"))).rejects.toThrow(
         "must be an absolute path",
       );
-      await expect(tools.call(tool, args(join(planDir, "missing")))).rejects.toThrow(
+      await expect(tools.call(tool, args(join(planDir, "missing", "plan.tfplan")))).rejects.toThrow(
         "planFile does not exist",
       );
       const real = savedPlan().file;
-      const link = join(planDir, "link.tfplan");
+      mkdirSync(join(planDir, "l"));
+      const link = join(planDir, "l", "plan.tfplan");
       let linked = true;
       try {
         symlinkSync(real, link);
@@ -263,10 +266,124 @@ describe("iac terraform (gateway mode)", () => {
       if (linked) {
         await expect(tools.call(tool, args(link))).rejects.toThrow("not a link");
       }
-      await expect(tools.call(tool, args(planDir))).rejects.toThrow("regular file");
+      mkdirSync(join(planDir, "d", "plan.tfplan"), { recursive: true });
+      await expect(tools.call(tool, args(join(planDir, "d", "plan.tfplan")))).rejects.toThrow(
+        "regular file",
+      );
       expect(stub.calls).toEqual([]);
     });
   }
+
+  for (const tool of ["iac_terraform_show_json", "iac_terraform_apply"] as const) {
+    it(`${tool} refuses a plan outside NIMBUS_IAC_PLAN_DIR: elsewhere, a sibling-prefix dir, a symlinked parent`, async () => {
+      const stub = terraform(0);
+      const args = (planFile: string): Record<string, unknown> => ({
+        workingDirectory: "w",
+        planFile,
+        planSha256: sha("X"),
+      });
+      const outside = join(workDir, "plan.tfplan");
+      writeFileSync(outside, "X");
+      await expect(tools.call(tool, args(outside))).rejects.toThrow("must be inside");
+      // A sibling whose name merely starts with the plan dir's.
+      const evil = `${planDir}-evil`;
+      mkdirSync(evil);
+      try {
+        writeFileSync(join(evil, "plan.tfplan"), "X");
+        await expect(tools.call(tool, args(join(evil, "plan.tfplan")))).rejects.toThrow(
+          "must be inside",
+        );
+      } finally {
+        rmSync(evil, { recursive: true, force: true });
+      }
+      // A symlinked PARENT directory inside the plan dir that points outside.
+      const target = mkdtempSync(join(tmpdir(), "nimbus-iac-target-"));
+      try {
+        writeFileSync(join(target, "plan.tfplan"), "X");
+        let linked = true;
+        try {
+          symlinkSync(target, join(planDir, "parent"), "junction");
+        } catch {
+          linked = false;
+        }
+        if (linked) {
+          await expect(
+            tools.call(tool, args(join(planDir, "parent", "plan.tfplan"))),
+          ).rejects.toThrow("must be inside");
+        }
+      } finally {
+        rmSync(target, { recursive: true, force: true });
+      }
+      expect(stub.calls).toEqual([]);
+    });
+
+    it(`${tool} needs NIMBUS_IAC_PLAN_DIR and refuses device and network paths`, async () => {
+      const { file, hash } = savedPlan();
+      const stub = terraform(0);
+      const args = (planFile: string): Record<string, unknown> => ({
+        workingDirectory: "w",
+        planFile,
+        planSha256: hash,
+      });
+      await withEnv({ NIMBUS_IAC_PLAN_DIR: undefined }, async () => {
+        await expect(tools.call(tool, args(file))).rejects.toThrow(/NIMBUS_IAC_PLAN_DIR/);
+      });
+      const bads = [
+        String.raw`\?\C:\x\plan.tfplan`,
+        String.raw`\.\C:\plan.tfplan`,
+        String.raw`\host\share\plan.tfplan`,
+      ];
+      for (const bad of bads) {
+        await expect(tools.call(tool, args(bad))).rejects.toThrow("device or network path");
+      }
+      expect(stub.calls).toEqual([]);
+    });
+  }
+
+  it("apply takes only plan.tfplan and destroy only destroy.tfplan, in the handler", async () => {
+    const stub = terraform(0);
+    const plan = savedPlan("P", "plan.tfplan");
+    const destroy = savedPlan("D", "destroy.tfplan");
+    await expect(
+      tools.call("iac_terraform_apply", {
+        workingDirectory: "w",
+        planFile: destroy.file,
+        planSha256: destroy.hash,
+      }),
+    ).rejects.toThrow("must be named plan.tfplan");
+    await expect(
+      tools.call("iac_terraform_destroy", {
+        workingDirectory: "w",
+        planFile: plan.file,
+        planSha256: plan.hash,
+      }),
+    ).rejects.toThrow("must be named destroy.tfplan");
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("show_json accepts either kind of plan", async () => {
+    terraform(0);
+    for (const name of ["plan.tfplan", "destroy.tfplan"]) {
+      const { file } = savedPlan("B", name);
+      expect(
+        await tools.callJson("iac_terraform_show_json", { workingDirectory: "w", planFile: file }),
+      ).toMatchObject({ planSha256: sha("B") });
+    }
+  });
+
+  it("plan saves plan.tfplan and destroy_plan saves destroy.tfplan", async () => {
+    terraform(2);
+    const a = (await tools.callJson("iac_terraform_plan", { workingDirectory: "w" })) as {
+      planFile: string;
+    };
+    const b = (await tools.callJson("iac_terraform_destroy_plan", { workingDirectory: "w" })) as {
+      planFile: string;
+    };
+    expect(a.planFile.endsWith(`${"/"}plan.tfplan`) || a.planFile.endsWith("plan.tfplan")).toBe(
+      true,
+    );
+    expect(b.planFile.endsWith("destroy.tfplan")).toBe(true);
+  });
 
   it("refuses a flag-shaped plan file at the schema", async () => {
     const stub = terraform(0);
@@ -276,22 +393,27 @@ describe("iac terraform (gateway mode)", () => {
     expect(stub.calls).toEqual([]);
   });
 
-  for (const tool of ["iac_terraform_apply", "iac_terraform_destroy"] as const) {
-    it(`${tool} applies the SAME plan file it hashed, with no -auto-approve and no -destroy`, async () => {
-      const { file, hash } = savedPlan();
+  for (const [tool, name] of [
+    ["iac_terraform_apply", "plan.tfplan"],
+    ["iac_terraform_destroy", "destroy.tfplan"],
+  ] as const) {
+    it(`${tool} applies the SAME (real) plan file it hashed, with no -auto-approve and no -destroy, then removes it`, async () => {
+      const { file, hash } = savedPlan("APPROVED-PLAN", name);
+      const real = realpathSync(file);
       const stub = terraform(0);
       expect(
         await tools.callJson(tool, { workingDirectory: "w", planFile: file, planSha256: hash }),
       ).toEqual({ ok: true, status: "applied" });
       expect(stub.calls.map((c) => c.command)).toEqual([
-        ["terraform", "-chdir=w", "apply", "-input=false", "-no-color", file],
+        ["terraform", "-chdir=w", "apply", "-input=false", "-no-color", real],
       ]);
+      expect(existsSync(file)).toBe(false);
       expect(stub.calls[0]?.env["TF_IN_AUTOMATION"]).toBe("1");
       expect(stub.calls[0]?.env["TF_INPUT"]).toBe("0");
     });
 
     it(`${tool} spawns nothing when the plan file is not the approved one`, async () => {
-      const { file } = savedPlan();
+      const { file } = savedPlan("APPROVED-PLAN", name);
       const stub = terraform(0);
       await expect(
         tools.call(tool, { workingDirectory: "w", planFile: file, planSha256: "0".repeat(64) }),
@@ -299,8 +421,8 @@ describe("iac terraform (gateway mode)", () => {
       expect(stub.calls).toEqual([]);
     });
 
-    it(`${tool} throws terraform's exit code and stderr`, async () => {
-      const { file, hash } = savedPlan();
+    it(`${tool} throws terraform's exit code and stderr, keeping the plan`, async () => {
+      const { file, hash } = savedPlan("APPROVED-PLAN", name);
       script(() => ({ exitCode: 1, stderr: "Saved plan is stale" }));
       await expect(
         tools.call(tool, { workingDirectory: "w", planFile: file, planSha256: hash }),
@@ -854,6 +976,14 @@ describe("iac cloudformation (gateway mode)", () => {
         "list-change-sets",
         "delete-stack",
       ]);
+    });
+
+    it("does not touch the stack at all when the change set is not found", async () => {
+      const stub = aws(
+        newWorld({ describeChangeSetMissing: true, stackStatus: "REVIEW_IN_PROGRESS" }),
+      );
+      expect(await discard()).toEqual({ ok: true, changeSetDeleted: false, stackDeleted: false });
+      expect(subs(stub)).toEqual(["describe-change-set"]);
     });
 
     it("skips the delete for a change set that is already gone", async () => {

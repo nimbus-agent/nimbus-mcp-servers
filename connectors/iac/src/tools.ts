@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { chmod, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import { awsCliArg, cliArg } from "../../../shared/cli-json-kit.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
@@ -112,20 +112,40 @@ function sha256Of(data: string | Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
-/** Why a plan file path is refused before the disk is touched (shared with `refuseBefore`). */
-function planFilePathProblem(planFile: string): string | undefined {
-  return isAbsolute(planFile) ? undefined : "planFile must be an absolute path";
+/** The file names a plan is saved under: the KIND of plan is its name (apply vs destroy). */
+const PLAN_NAME = "plan.tfplan";
+const DESTROY_PLAN_NAME = "destroy.tfplan";
+
+/**
+ * Why a plan file path is refused before the disk is touched (shared with refuseBefore): not
+ * absolute, a Windows device or UNC form (a leading backslash, which covers the
+ * long-path, device and host forms; on win32 also two forward slashes), or not one of the file
+ * names allowed (apply takes only plan.tfplan, destroy only destroy.tfplan).
+ */
+function planFilePathProblem(planFile: string, names: readonly string[]): string | undefined {
+  if (planFile.startsWith("\\") || (process.platform === "win32" && planFile.startsWith("//"))) {
+    return "planFile must not be a device or network path";
+  }
+  if (!isAbsolute(planFile)) return "planFile must be an absolute path";
+  if (!names.includes(basename(planFile))) {
+    return `planFile must be named ${names.join(" or ")}`;
+  }
+  return undefined;
 }
 
 /**
- * Refuse a plan file that is not a regular, non-linked file of a sane size. NO copy is made: the
- * hash is taken from, and terraform is handed, the SAME path. Making that file's directory
- * read-only to everyone but the gateway between approval and apply is the gateway's job; this
- * connector can only narrow the window, not close it (README: stated bound).
+ * Check a plan file and return its REAL path, which is what is hashed and handed to terraform.
+ *
+ * It must be a regular, non-linked file of a sane size that lies strictly inside the real
+ * NIMBUS_IAC_PLAN_DIR (a symlinked parent directory, or a sibling whose name merely starts with
+ * the plan dir's, is outside). NO copy is made. Making that directory read-only to everyone but the
+ * gateway between approval and apply is the gateway's job; this connector can only narrow the
+ * window, not close it (README: stated bound).
  */
-async function assertPlanFile(planFile: string): Promise<void> {
-  const problem = planFilePathProblem(planFile);
+async function resolvePlanFile(planFile: string, names: readonly string[]): Promise<string> {
+  const problem = planFilePathProblem(planFile, names);
   if (problem !== undefined) throw new Error(problem);
+  const base = await planDirBase();
   let st: Awaited<ReturnType<typeof lstat>>;
   try {
     st = await lstat(planFile);
@@ -138,6 +158,13 @@ async function assertPlanFile(planFile: string): Promise<void> {
   if (st.size > PLAN_FILE_MAX_BYTES) {
     throw new Error("planFile is too large");
   }
+  const realBase = await realpath(base);
+  const real = await realpath(planFile);
+  const rel = relative(realBase, real);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`planFile must be inside ${IAC_PLAN_DIR_ENV}`);
+  }
+  return real;
 }
 
 /** Environment of every terraform child: automation mode, and never an interactive prompt. */
@@ -178,7 +205,7 @@ async function terraformPlan(
   const planDir = join(base, planId);
   // Non-recursive: an existing directory of that name is an error, never silently reused.
   await mkdir(planDir, { mode: 0o700 });
-  const planFile = join(planDir, "plan.tfplan");
+  const planFile = join(planDir, destroy ? DESTROY_PLAN_NAME : PLAN_NAME);
   try {
     const r = await runCliCode(
       [
@@ -213,14 +240,13 @@ async function terraformPlan(
 }
 
 /** `terraform apply <planFile>` after the file's hash is proven to be the approved one. */
-async function terraformApplyPlan(p: {
-  workingDirectory: string;
-  planFile: string;
-  planSha256: string;
-}): Promise<ReturnType<typeof jsonResult>> {
-  await assertPlanFile(p.planFile);
+async function terraformApplyPlan(
+  p: { workingDirectory: string; planFile: string; planSha256: string },
+  name: string,
+): Promise<ReturnType<typeof jsonResult>> {
+  const planFile = await resolvePlanFile(p.planFile, [name]);
   // Read ONCE; the hash is of exactly these bytes.
-  const actual = Buffer.from(sha256Of(await readFile(p.planFile)), "hex");
+  const actual = Buffer.from(sha256Of(await readFile(planFile)), "hex");
   const approved = Buffer.from(p.planSha256, "hex");
   if (actual.length !== approved.length || !timingSafeEqual(actual, approved)) {
     throw new Error("plan file does not match the approved hash");
@@ -228,11 +254,18 @@ async function terraformApplyPlan(p: {
   // No -auto-approve and no -destroy: a saved plan applies as it was planned, and `apply <file>`
   // runs without a prompt. https://developer.hashicorp.com/terraform/cli/commands/apply
   const r = await runCliCode(
-    ["terraform", `-chdir=${p.workingDirectory}`, "apply", "-input=false", "-no-color", p.planFile],
+    ["terraform", `-chdir=${p.workingDirectory}`, "apply", "-input=false", "-no-color", planFile],
     terraformEnv(),
   );
   if (r.code !== 0) {
     throw new Error(`terraform exited ${String(r.code)}: ${r.stderr.slice(0, 500)}`);
+  }
+  // A plan carries secrets and is stale once applied. Best effort: a directory the gateway made
+  // read-only makes this fail, which is ignored.
+  try {
+    await rm(planFile, { force: true });
+  } catch {
+    // ignored, see above
   }
   return jsonResult({ ok: true, status: "applied" });
 }
@@ -599,7 +632,12 @@ async function changeSetDiscard(p: {
   if (d !== undefined && str(d["StackName"]) !== p.stackName) {
     throw new Error("change set belongs to a different stack");
   }
-  const done = await cleanupChangeSet(p.stackName, p.changeSetId, d === undefined);
+  // Not found: nothing of ours to remove, so the empty-shell deletion is NOT attempted either. It
+  // runs only after THIS call deleted a change set that belongs to the stack. (Bound: between
+  // list-change-sets and delete-stack another change set could be added; README.)
+  if (d === undefined)
+    return jsonResult({ ok: true, changeSetDeleted: false, stackDeleted: false });
+  const done = await cleanupChangeSet(p.stackName, p.changeSetId, false);
   return jsonResult({ ok: true, ...done });
 }
 
@@ -672,9 +710,11 @@ export function registerIacTools(
     "Render a saved terraform plan file as JSON (terraform show -json).",
     z.object({ workingDirectory: cliArg, planFile: planFileArg }),
     async (p) => {
-      await assertPlanFile(p.planFile);
+      const planFile = await resolvePlanFile(p.planFile, [PLAN_NAME, DESTROY_PLAN_NAME]);
+      // Read once, immediately before the show: the hash is of the bytes the owner is shown.
+      const planSha256 = sha256Of(await readFile(planFile));
       const r = await runCliCode(
-        ["terraform", `-chdir=${p.workingDirectory}`, "show", "-json", "-no-color", p.planFile],
+        ["terraform", `-chdir=${p.workingDirectory}`, "show", "-json", "-no-color", planFile],
         terraformEnv(),
       );
       if (r.code !== 0) {
@@ -688,7 +728,7 @@ export function registerIacTools(
       } catch {
         throw new Error("terraform show -json did not print JSON");
       }
-      return jsonResult({ planJson: r.stdout });
+      return jsonResult({ planJson: r.stdout, planSha256 });
     },
   );
 
@@ -717,11 +757,11 @@ export function registerIacTools(
       recoverable: false,
       capturePreState: applyPreState,
       scopeTargetOf: dirScope,
-      refuseBefore: (p) => planFilePathProblem(p.planFile),
+      refuseBefore: (p) => planFilePathProblem(p.planFile, [PLAN_NAME]),
     },
-    "Apply a saved terraform plan file whose SHA-256 matches the approved one.",
+    "Apply a saved terraform plan file (plan.tfplan) whose SHA-256 matches the approved one.",
     z.object(applyShape),
-    terraformApplyPlan,
+    (p) => terraformApplyPlan(p, PLAN_NAME),
   );
 
   registerWriteTool(
@@ -731,11 +771,11 @@ export function registerIacTools(
       recoverable: false,
       capturePreState: applyPreState,
       scopeTargetOf: dirScope,
-      refuseBefore: (p) => planFilePathProblem(p.planFile),
+      refuseBefore: (p) => planFilePathProblem(p.planFile, [DESTROY_PLAN_NAME]),
     },
-    "Apply a saved terraform destroy plan file whose SHA-256 matches the approved one.",
+    "Apply a saved terraform destroy plan file (destroy.tfplan) whose SHA-256 matches the approved one.",
     z.object(applyShape),
-    terraformApplyPlan,
+    (p) => terraformApplyPlan(p, DESTROY_PLAN_NAME),
   );
 
   registerPrepareTool(

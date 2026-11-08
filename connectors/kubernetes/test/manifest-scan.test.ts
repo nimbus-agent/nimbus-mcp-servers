@@ -370,7 +370,7 @@ describe("scanNamespacedManifest: duplicates", () => {
   it("a second document that is a ClusterRole is refused", () => {
     refused(
       `${DEPLOY}---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: x\n`,
-      /ClusterRole/,
+      /not on the namespaced allowlist/,
     );
   });
 
@@ -426,8 +426,10 @@ describe("scanNamespacedManifest: metadata", () => {
       doc(...head, "metadata:", "  name: a", "  namespace: other"),
       /differs from the namespace argument/,
     );
-    refused(doc(...head, "metadata:", "  namespace: Shop"), /differs/);
-    expect(scan(doc(...head, "metadata:", "  namespace: Shop"), "Shop")).toHaveLength(1);
+    refused(doc(...head, "metadata:", "  name: a", "  namespace: Shop"), /differs/);
+    expect(scan(doc(...head, "metadata:", "  name: a", "  namespace: Shop"), "Shop")).toHaveLength(
+      1,
+    );
   });
 
   it("a dash line at the child level belongs to the previous key, not to metadata", () => {
@@ -569,25 +571,19 @@ describe("scanNamespacedManifest: the allowlist", () => {
   });
 
   it("pairs the group with the kind: a CRD named like a core kind is refused", () => {
-    refused(
-      doc("apiVersion: example.com/v1", "kind: Service", ...meta),
-      /does not match kind Service/,
-    );
-    refused(doc("apiVersion: apps/v1", "kind: Service", ...meta), /does not match kind Service/);
-    refused(doc("apiVersion: v1", "kind: Deployment", ...meta), /does not match kind Deployment/);
-    refused(
-      doc("apiVersion: extensions/v1beta1", "kind: Ingress", ...meta),
-      /does not match kind Ingress/,
-    );
+    refused(doc("apiVersion: example.com/v1", "kind: Service", ...meta), /not the one paired/);
+    refused(doc("apiVersion: apps/v1", "kind: Service", ...meta), /not the one paired/);
+    refused(doc("apiVersion: v1", "kind: Deployment", ...meta), /not the one paired/);
+    refused(doc("apiVersion: extensions/v1beta1", "kind: Ingress", ...meta), /not the one paired/);
     refused(
       doc("apiVersion: autoscaling/v3", "kind: HorizontalPodAutoscaler", ...meta),
-      /does not match/,
+      /not the one paired/,
     );
   });
 
   it("is case-sensitive", () => {
     refused(doc("apiVersion: v1", "kind: pod", ...meta), /not on the namespaced allowlist/);
-    refused(doc("apiVersion: V1", "kind: Pod", ...meta), /does not match/);
+    refused(doc("apiVersion: V1", "kind: Pod", ...meta), /not the one paired/);
   });
 });
 
@@ -601,5 +597,129 @@ describe("scanNamespacedManifest: odd names", () => {
       doc("apiVersion: v1", "kind: Pod", "metadata:", "  name: 1_000"),
       /cannot read with certainty/,
     );
+  });
+});
+
+describe("scanNamespacedManifest: round-1 review fixes", () => {
+  const CM = ["apiVersion: v1", "kind: ConfigMap", "metadata:", "  name: x"];
+
+  it("refuses a top-level items list: kubectl would flatten it and apply the items instead", () => {
+    // Proven with kubectl v1.36.1 `label --local`: a ConfigMap wrapper with a ClusterRole item.
+    const exploit = doc(
+      ...CM,
+      "items:",
+      "  - apiVersion: rbac.authorization.k8s.io/v1",
+      "    kind: ClusterRole",
+      "    metadata:",
+      "      name: evil",
+    );
+    refused(exploit, /top-level items key is not accepted.*\(key items\)/);
+    refused(doc(...CM, "items: []"), /anchors, aliases, tags/);
+    refused(doc("items:", "  - a", ...CM), /top-level items key/);
+    refused(doc(...CM, "items: x"), /top-level items key/);
+  });
+
+  it("still allows a nested items key (volume projections)", () => {
+    const text = doc(
+      "apiVersion: v1",
+      "kind: Pod",
+      "metadata:",
+      "  name: p",
+      "spec:",
+      "  volumes:",
+      "    - name: v",
+      "      configMap:",
+      "        name: c",
+      "        items:",
+      "          - key: a",
+      "            path: b",
+    );
+    expect(scan(text)).toHaveLength(1);
+  });
+
+  it("requires metadata.name in every document, and refuses generateName", () => {
+    refused(
+      doc("apiVersion: v1", "kind: Pod", "metadata:", "  labels:", "    a: b"),
+      /needs metadata.name/,
+    );
+    refused(doc("apiVersion: v1", "kind: Pod", "metadata:"), /needs metadata.name/);
+    refused(
+      doc("apiVersion: v1", "kind: Pod", "metadata:", "  generateName: p-"),
+      /generateName is not accepted.*\(key generateName\)/,
+    );
+    refused(
+      doc("apiVersion: v1", "kind: Pod", "metadata:", "  name: p", "  generateName: p-"),
+      /generateName is not accepted/,
+    );
+  });
+
+  it("holds metadata.name to a DNS-subdomain charset", () => {
+    const withName = (n: string) => doc("apiVersion: v1", "kind: Pod", "metadata:", `  name: ${n}`);
+    for (const bad of ["Api", "a_b", "-a", "a-", ".a", "a b", "a/b", '"A"']) {
+      refused(withName(bad), /cannot read with certainty/);
+    }
+    refused(withName("a".repeat(254)), /cannot read with certainty/);
+    expect(scan(withName("a.b-c"))).toHaveLength(1);
+    expect(scan(withName("a".repeat(253)))).toHaveLength(1);
+    expect(scan(withName('"web-1"'))).toHaveLength(1);
+  });
+
+  it("never echoes manifest text; only the rule, the place and a plain key name", () => {
+    const secret = "hunter2-AKIA";
+    const probes = [
+      doc(
+        "apiVersion: v1",
+        "kind: Secret",
+        "metadata:",
+        "  name: s",
+        "stringData:",
+        `  pw: @${secret}`,
+      ),
+      doc(
+        "apiVersion: v1",
+        "kind: Secret",
+        "metadata:",
+        "  name: s",
+        "stringData:",
+        `  pw: "${secret}`,
+      ),
+      doc(
+        "apiVersion: v1",
+        "kind: Secret",
+        "metadata:",
+        "  name: s",
+        "stringData:",
+        `  pw: ${secret}: x`,
+      ),
+      doc(`${secret}`, "apiVersion: v1"),
+      doc("apiVersion: v1", `kind: ${secret}`, "metadata:", "  name: s"),
+      doc("apiVersion: v1", "kind: Secret", "metadata:", `  name: ${secret}`),
+      doc("apiVersion: v1", "kind: Secret", "metadata:", "  name: s", `  namespace: ${secret}`),
+      doc(`"${secret}": x`),
+      doc("apiVersion: v1", "kind: Secret", "metadata:", `  "${secret}": x`),
+      doc("apiVersion: v1", "kind: Secret", "metadata: ", `  ${secret}`),
+      `--- ${secret}\n`,
+      `%${secret}\n`,
+    ];
+    for (const p of probes) {
+      let message = "";
+      try {
+        scan(p);
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      expect(message).toMatch(/^manifest refused/);
+      expect(message).not.toContain(secret);
+    }
+  });
+
+  it("echoes a key name only when it is a plain key", () => {
+    refused(doc("items: 1"), /\(key items\)/);
+    try {
+      scan(doc("apiVersion: v1", "kind: Pod", "metadata:", '  "na me": x'));
+      throw new Error("no throw");
+    } catch (e) {
+      expect(String(e)).not.toContain("na me");
+    }
   });
 });

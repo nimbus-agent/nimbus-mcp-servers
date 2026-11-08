@@ -119,15 +119,18 @@ const GITHUB_REPO = { owner: "zeta-labs", repo: "quokka" };
 const ICLOUD_TIMES = { start: "20260101T000000Z", end: "20260101T010000Z" };
 
 /** iac: an absolute plan path, and a change set made for exactly `IAC_TEMPLATE`. */
-const IAC_PLAN_FILE = join(tmpdir(), "nimbus-write-scope", "plan.tfplan");
+const IAC_PLAN_DIR = join(tmpdir(), "nimbus-write-scope", "plan-id");
 const IAC_TEMPLATE = "{}";
 const IAC_DEPLOY_ARN = `arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-${createHash("sha256").update(IAC_TEMPLATE).digest("hex")}-0123456789ab/11111111-2222-3333-4444-555555555555`;
 
-/** A one-object manifest `k8s_manifest_apply` accepts in namespace `shop`, and its hash helper. */
+/**
+ * A one-object manifest `k8s_manifest_apply` accepts in namespace `shop`, and its plan hash: the
+ * namespace is bound into it (`nimbus-k8s-manifest-v1`, LF, namespace, LF, manifest).
+ */
 const K8S_MANIFEST = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n  namespace: shop\n";
-function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
+const K8S_PLAN_SHA256 = createHash("sha256")
+  .update(`nimbus-k8s-manifest-v1\nshop\n${K8S_MANIFEST}`, "utf8")
+  .digest("hex");
 
 /** Write tools no consent can unlock, and the refusal they answer with in standalone mode. */
 const ALWAYS_REFUSED: Readonly<Record<string, string>> = {
@@ -462,7 +465,14 @@ const WRITES: Readonly<
         (tool): WriteCase => [
           tool,
           tool === "iac_terraform_apply" ? "iac.terraform.apply" : "iac.terraform.destroy",
-          { workingDirectory: "infra/prod", planFile: IAC_PLAN_FILE, planSha256: "a".repeat(64) },
+          {
+            workingDirectory: "infra/prod",
+            planFile: join(
+              IAC_PLAN_DIR,
+              tool === "iac_terraform_apply" ? "plan.tfplan" : "destroy.tfplan",
+            ),
+            planSha256: "a".repeat(64),
+          },
           "dir:infra/prod",
         ],
       ),
@@ -532,7 +542,7 @@ const WRITES: Readonly<
         "kubernetes.manifest.apply",
         // A manifest the namespaced-kind scanner accepts, with its real hash: refuseBefore would
         // otherwise refuse it before the scope check this case is about.
-        { namespace: "shop", manifest: K8S_MANIFEST, manifestSha256: sha256Hex(K8S_MANIFEST) },
+        { namespace: "shop", manifest: K8S_MANIFEST, planSha256: K8S_PLAN_SHA256 },
         "namespace:shop",
       ],
     ],
