@@ -352,6 +352,21 @@ describe("caller-supplied CLI arguments", () => {
     expect(ids).toEqual(EXPECTED_SPAWNING);
   });
 
+  test("every BOUND_TO_STATE tool is still registered by a swept connector", async () => {
+    // An entry for a renamed or removed tool would exempt nothing and say nothing; it is stale.
+    resetConnectorModeForTests();
+    setConnectorMode("gateway");
+    try {
+      const registered = new Set<string>();
+      for (const id of ids) {
+        for (const name of captureTools(await registrarOf(id)).names()) registered.add(name);
+      }
+      expect([...BOUND_TO_STATE.keys()].filter((name) => !registered.has(name))).toEqual([]);
+    } finally {
+      resetConnectorModeForTests();
+    }
+  });
+
   for (const id of ids) {
     test(`${id}: no tool hands its CLI an unchecked value`, async () => {
       resetConnectorModeForTests();
@@ -364,6 +379,10 @@ describe("caller-supplied CLI arguments", () => {
           const args = sweepArgs(name, tools.get(name).schema as ParsableSchema);
           const bound = BOUND_TO_STATE.get(name);
           if (bound !== undefined) {
+            // A mapped field the tool no longer has would quietly stop being swept as bound.
+            for (const field of Object.keys(bound)) {
+              if (!(field in args)) violations.push(`stale BOUND_TO_STATE field: ${name}.${field}`);
+            }
             for (const [field, value] of Object.entries(args)) {
               if (typeof value === "string") {
                 const cli = bound[field];

@@ -161,10 +161,10 @@ describe("scanNamespacedManifest: characters", () => {
     ["DEL", "\u007f"],
     ["NEL", "\u0085"],
     ["a C1 control", "\u0090"],
-    ["LS", " "],
-    ["PS", " "],
-    ["a BOM", "﻿"],
-    ["U+FFFE", "￾"],
+    ["LS", "\u2028"],
+    ["PS", "\u2029"],
+    ["a BOM", "\uFEFF"],
+    ["U+FFFE", "\uFFFE"],
   ];
   for (const [label, ch] of cases) {
     it(`refuses ${label} in a comment`, () => {
@@ -186,7 +186,7 @@ describe("scanNamespacedManifest: characters", () => {
 
   it("a kind that only looks top-level because of a Unicode line break is refused, not read", () => {
     // go-yaml breaks the line at NEL/LS/PS, so `kind: ClusterRole` would be a top-level key to it.
-    for (const ch of ["\u0085", " ", " "]) {
+    for (const ch of ["\u0085", "\u2028", "\u2029"]) {
       refused(doc(`${DEPLOY.trim()}`, `note: x${ch}kind: ClusterRole`), /is not allowed/);
     }
   });

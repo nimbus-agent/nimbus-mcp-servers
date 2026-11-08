@@ -9,7 +9,7 @@ spawns (`terraform`, `aws`, `pulumi`) are bounded by the sandbox the gateway put
 | --- | --- | --- |
 | `iac_terraform_plan` | prepare | `terraform plan -out=<file>` in a directory; saves the plan and returns `{planId, planFile, planSha256, hasChanges}` |
 | `iac_terraform_destroy_plan` | prepare | the same with `-destroy` |
-| `iac_terraform_show_json` | prepare | `terraform show -json <planFile>`; returns `{planJson}` (at most 4 MiB, must parse) |
+| `iac_terraform_show_json` | prepare | `terraform show -json <planFile>`; returns `{planJson, planSha256}` (at most 4 MiB, must parse; the hash of the bytes it rendered) |
 | `iac_terraform_apply` | write | applies a saved plan file whose SHA-256 equals `planSha256` |
 | `iac_terraform_destroy` | write | the same tool body for a plan made by `iac_terraform_destroy_plan` |
 | `iac_cloudformation_changeset_create` | prepare | creates a change set for a template and lists its changes |
@@ -26,9 +26,9 @@ bound to. It spends no write budget and never prompts.
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `NIMBUS_IAC_PLAN_DIR` | terraform plan tools | Absolute path of an existing real directory (not a link). Each plan is saved in a fresh 0700 directory `<dir>/<planId>/plan.tfplan`. Missing or invalid: the tool fails before running anything. |
+| `NIMBUS_IAC_PLAN_DIR` | every terraform tool but `iac_pulumi_*`: the two plan tools, `show_json`, apply and destroy | Absolute path of an existing real directory (not a link). Each plan is saved in a fresh 0700 directory `<dir>/<planId>/plan.tfplan` (`destroy.tfplan` for a destroy plan); apply, destroy and `show_json` take only a plan file inside it. Missing or invalid: the tool fails before running anything. |
 | `NIMBUS_CONNECTOR_SCRATCH_DIR` | `iac_cloudformation_changeset_create` | Absolute directory for the template file (a 0700 directory per call, removed afterwards). Unset: the OS temp directory, except on Windows under the gateway, where the tool refuses. |
-| `NIMBUS_MCP_IAC_WRITE_SCOPE` | standalone mode | `dir:<path>` and `stack:<name>` terms. Since this release the three plan/change-set prepare tools are scope-checked too. |
+| `NIMBUS_MCP_IAC_WRITE_SCOPE` | standalone mode | `dir:<path>` and `stack:<name>` terms. Since this release the four prepare tools (`iac_terraform_plan`, `iac_terraform_destroy_plan`, `iac_terraform_show_json`, `iac_cloudformation_changeset_create`) are scope-checked too. |
 
 Every terraform child runs with `TF_IN_AUTOMATION=1` and `TF_INPUT=0`.
 
@@ -78,28 +78,12 @@ Every terraform child runs with `TF_IN_AUTOMATION=1` and `TF_INPUT=0`.
 - **U: describe-stacks wording.** A missing stack is recognised by "does not exist" in stderr, and a
   missing change set by `ChangeSetNotFound` or "does not exist".
 
-## Quickstart
-
-```bash
-nimbus connector auth iac --enable
-nimbus ask "Plan the terraform in infra/prod"
-```
-
-## See also
-
-- [Iac Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)
-- [HITL and Safety](https://nimbus-agent.dev/user-guide/hitl-and-safety/)
-
-## License
-
-AGPL-3.0
-
 ## Further bounds (security review)
 
 - **Plan confinement.** `iac_terraform_apply`, `iac_terraform_destroy` and `iac_terraform_show_json`
   all need `NIMBUS_IAC_PLAN_DIR`. The plan file's real path (symlinks resolved) must lie strictly
   inside the real plan directory, and that real path is what is hashed and given to terraform.
-  Device and network forms (`\?\`, `\.\`, UNC) are refused. The gateway must place the plan inside
+  Device and network forms (`\\?\`, `\\.\`, UNC) are refused. The gateway must place the plan inside
   the plan directory it grants that spawn.
 - **Plan kind is its file name.** `iac_terraform_plan` writes `plan.tfplan`,
   `iac_terraform_destroy_plan` writes `destroy.tfplan`; apply takes only the first, destroy only the
@@ -127,3 +111,19 @@ AGPL-3.0
   what that hash stands for.
 - Discard deletes only a change set whose name has this connector's exact shape,
   `nimbus-<template sha256>-<12 hex>`; a person's own `nimbus-…` change set is refused.
+
+## Quickstart
+
+```bash
+nimbus connector auth iac --enable
+nimbus ask "Plan the terraform in infra/prod"
+```
+
+## See also
+
+- [Iac Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)
+- [HITL and Safety](https://nimbus-agent.dev/user-guide/hitl-and-safety/)
+
+## License
+
+AGPL-3.0

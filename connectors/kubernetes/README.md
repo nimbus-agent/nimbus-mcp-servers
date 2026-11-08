@@ -85,16 +85,6 @@ nimbus ask "Summarize my recent activity in Kubernetes"
 - `permissions.network` stays empty: the API-server host lives in the kubeconfig and is the gateway's
   grant.
 
-## See also
-
-- [Kubernetes Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)
-- [Nimbus Architecture Overview](https://nimbus-agent.dev/architecture-overview/)
-- [HITL and Safety](https://nimbus-agent.dev/user-guide/hitl-and-safety/)
-
-## License
-
-AGPL-3.0
-
 ## Further bounds (security review, round 2)
 
 - **A Secret withholds the diff body.** When the manifest holds a `Secret`, the plan's `diff` is
@@ -110,3 +100,13 @@ AGPL-3.0
 - **The manifest file is re-read before the real apply** and the apply refused if it changed after
   the dry run (on Windows the 0600 mode is not enforced).
 - The scanner is linear in the manifest size (a trailing-space regex that was quadratic is gone).
+
+## See also
+
+- [Kubernetes Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)
+- [Nimbus Architecture Overview](https://nimbus-agent.dev/architecture-overview/)
+- [HITL and Safety](https://nimbus-agent.dev/user-guide/hitl-and-safety/)
+
+## License
+
+AGPL-3.0

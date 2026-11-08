@@ -13,7 +13,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
-import { withScratchDir } from "../../../shared/private-scratch.ts";
+import { scratchDirBase, withScratchDir } from "../../../shared/private-scratch.ts";
 import { runCliCode, runCliOkThrowing } from "../../../shared/run-cli-json.ts";
 
 /**
@@ -482,6 +482,9 @@ async function changeSetCreate(p: {
   if (bad !== undefined) throw new Error(bad);
   const capabilities = p.capabilities ?? [];
   const templateSha256 = sha256Of(p.templateBody);
+  // Refuse a missing scratch grant (Windows under the gateway) before the first aws call, as the
+  // kubernetes plan does: the template file is written under it below.
+  scratchDirBase();
 
   const stack = await describeStack(p.stackName);
   // REVIEW_IN_PROGRESS: a shell left by an earlier CREATE change set, which only a CREATE change
