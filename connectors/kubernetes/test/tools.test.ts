@@ -630,15 +630,17 @@ ${manifest}`,
       expect(stub.calls).toEqual([]);
     });
 
-    it("on Windows under the gateway, refuses without a scratch directory, before any spawn", async () => {
-      if (process.platform !== "win32") return;
-      delete process.env["NIMBUS_CONNECTOR_SCRATCH_DIR"];
-      const stub = kubectl();
-      await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow(
-        "NIMBUS_CONNECTOR_SCRATCH_DIR is not set",
-      );
-      expect(stub.calls).toEqual([]);
-    });
+    it.skipIf(process.platform !== "win32")(
+      "on Windows under the gateway, refuses without a scratch directory, before any spawn",
+      async () => {
+        delete process.env["NIMBUS_CONNECTOR_SCRATCH_DIR"];
+        const stub = kubectl();
+        await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow(
+          "NIMBUS_CONNECTOR_SCRATCH_DIR is not set",
+        );
+        expect(stub.calls).toEqual([]);
+      },
+    );
   });
 
   describe("apply", () => {

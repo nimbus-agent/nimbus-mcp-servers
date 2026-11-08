@@ -75,10 +75,18 @@ const TYPE_TEXT = /^[A-Za-z][A-Za-z0-9./-]*$/;
 const NAME_TEXT = /^[A-Za-z0-9][A-Za-z0-9.-]*$/;
 /** Words (any case) that YAML 1.1 reads as a boolean or null rather than a string. */
 const YAML11_WORDS = new Set(["y", "n", "yes", "no", "true", "false", "on", "off", "null"]);
-/** A block scalar header: `|`, `>`, with indentation and chomping indicators, then an optional comment. */
-const BLOCK_HEADER = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ ]+(?:#.*)?)?$/;
+/** The start of a block scalar header: `|` or `>` with the indentation and chomping indicators. */
+const BLOCK_INDICATORS = /^[|>](?:[1-9][+-]?|[+-][1-9]?)?/;
+/** What may follow the indicators: nothing, or spaces and then an optional comment. */
+const BLOCK_TRAILER = /^(?: +(?:#.*)?)?$/;
 /** A document separator: `---`, optionally followed by spaces and a comment. */
-const DOC_SEPARATOR = /^---(?:[ ]+(?:#.*)?)?$/;
+const DOC_SEPARATOR = /^---(?: +(?:#.*)?)?$/;
+
+/** Whether `v` is a whole block scalar header (indicators, then an optional comment). */
+function isBlockHeader(v: string): boolean {
+  const indicators = BLOCK_INDICATORS.exec(v);
+  return indicators !== null && BLOCK_TRAILER.test(v.slice(indicators[0].length));
+}
 /** A value may not START with these: anchor, alias, tag, flow collection, reserved, directive. */
 const FORBIDDEN_START = "&*!{[]},?@`%";
 /** A `metadata.name`: a DNS subdomain (lower-case alphanumerics, `-` and `.`, at most 253). */
@@ -104,29 +112,41 @@ interface Where {
   readonly line: number;
 }
 
+/**
+ * The BMP ranges go-yaml reads as plain printable content (inclusive), with the line and paragraph
+ * separators U+2028/U+2029 (line breaks to go-yaml) and the BOM U+FEFF left out, and everything
+ * from U+0080 to U+009F (C1 controls, NEL among them) and U+FFFE/U+FFFF.
+ */
+const PRINTABLE_RANGES: readonly (readonly [number, number])[] = [
+  [0x0a, 0x0a],
+  [0x20, 0x7e],
+  [0xa0, 0x2027],
+  [0x202a, 0xd7ff],
+  [0xe000, 0xfefe],
+  [0xff00, 0xfffd],
+];
+
+/**
+ * How many UTF-16 units the character at `text[i]` takes if it is allowed, or 0 if it is not.
+ * `codePointAt` returns the whole code point at a high surrogate that has its low half (an astral
+ * character: allowed, 2 units) and the bare surrogate value otherwise, which no range holds, so a
+ * lone surrogate of either kind is refused.
+ */
+function allowedUnitsAt(text: string, i: number): number {
+  const cp = text.codePointAt(i) ?? 0;
+  if (cp > 0xffff) return 2;
+  if (PRINTABLE_RANGES.some(([from, to]) => cp >= from && cp <= to)) return 1;
+  // CRLF is a line break; a lone CR is one to go-yaml and not to a reader that splits on LF.
+  return cp === 0x0d && text.codePointAt(i + 1) === 0x0a ? 1 : 0;
+}
+
 /** The first character of `text` that go-yaml would not read as plain printable content. */
 function firstBadCharacter(text: string): { index: number; code: number } | undefined {
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    if (c === 0x0a || (c >= 0x20 && c <= 0x7e)) continue;
-    // 0x2028 and 0x2029 are line breaks to go-yaml and so are refused with the rest of the controls.
-    if (c >= 0xa0 && c <= 0xd7ff && c !== 0x2028 && c !== 0x2029) continue;
-    if (c === 0x0d) {
-      // CRLF is a line break; a lone CR is one to go-yaml and not to a reader that splits on LF.
-      if (text.charCodeAt(i + 1) === 0x0a) continue;
-      return { index: i, code: c };
-    }
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = text.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        i++;
-        continue;
-      }
-      return { index: i, code: c };
-    }
-    // 0xE000-0xFFFD without the BOM (0xFEFF).
-    if (c >= 0xe000 && c <= 0xfffd && c !== 0xfeff) continue;
-    return { index: i, code: c };
+  let i = 0;
+  while (i < text.length) {
+    const units = allowedUnitsAt(text, i);
+    if (units === 0) return { index: i, code: text.charCodeAt(i) };
+    i += units;
   }
   return undefined;
 }
@@ -188,7 +208,7 @@ interface Lexed {
  * Read a quoted scalar that starts at `s[0]`. Returns its text and the index just past the closing
  * quote. Throws if it does not close on this line. Escapes are not interpreted: a double-quoted
  * scalar with a backslash keeps the backslash in `text`, which the four interpreted values then
- * refuse (a `C` could spell a different kind or namespace than the one this reader sees).
+ * refuse (an escape could spell a different kind or namespace than the one this reader sees).
  */
 function readQuoted(s: string, where: Where): { text: string; end: number } {
   const quote = s[0];
@@ -247,7 +267,7 @@ function lexValue(raw: string, where: Where): Value {
   }
   if (v.startsWith("<<")) refuse("a merge key (<<) is not accepted", where);
   if (first === "|" || first === ">") {
-    if (!BLOCK_HEADER.test(v)) refuse("unreadable block scalar header", where);
+    if (!isBlockHeader(v)) refuse("unreadable block scalar header", where);
     return { t: "block" };
   }
   if (first === '"' || first === "'") {
@@ -344,7 +364,7 @@ function interpreted(value: Value, field: string, shape: RegExp, where: Where): 
   }
   if (value.t === "plain" && field.startsWith("metadata.")) {
     // YAML 1.1 reads these plain scalars as booleans, null or numbers; a quoted one is a string.
-    if (YAML11_WORDS.has(text.toLowerCase()) || /^[0-9]/.test(text)) {
+    if (YAML11_WORDS.has(text.toLowerCase()) || /^\d/.test(text)) {
       refuse(
         `${field}: a plain value YAML may read as a boolean or a number must be quoted`,
         where,
@@ -354,125 +374,144 @@ function interpreted(value: Value, field: string, shape: RegExp, where: Where): 
   return text;
 }
 
+/** Everything one document's scan remembers; the phase steps below all read and write this one record. */
 interface DocState {
-  apiVersion?: string;
-  kind?: string;
+  apiVersion: string | undefined;
+  kind: string | undefined;
   sawMetadata: boolean;
-  name?: string;
-  namespace?: string;
+  name: string | undefined;
+  namespace: string | undefined;
+  hasContent: boolean;
+  /** Inside a block scalar opened by a key at this column. */
+  blockColumn: number | undefined;
+  inMetadata: boolean;
+  /** Indentation of metadata's direct children. */
+  childIndent: number | undefined;
+  /** An interpreted value must not continue on a line indented past this column. */
+  pendingColumn: number | undefined;
 }
 
-/** Scan one document; returns its object, or `undefined` when it holds no content at all. */
-function scanDocument(
-  lines: readonly DocLine[],
-  docNo: number,
-  ns: string,
-): ScannedObject | undefined {
-  const st: DocState = { sawMetadata: false };
-  let hasContent = false;
-  let blockColumn: number | undefined; // inside a block scalar opened by a key at this column
-  let inMetadata = false;
-  let childIndent: number | undefined; // indentation of metadata's direct children
-  let pendingColumn: number | undefined; // an interpreted value must not continue past this column
-
-  for (const { no, text } of lines) {
-    const where: Where = { doc: docNo, line: no };
-    const indent = skipSpaces(text, 0);
-    const rest = text.slice(indent);
-
-    // A block scalar's content is never interpreted: every blank or more-indented line is skipped.
-    if (blockColumn !== undefined) {
-      if (rest === "" || indent > blockColumn) continue;
-      blockColumn = undefined;
-    }
-    if (rest === "" || rest.startsWith("#")) continue;
-
-    if (!hasContent && indent !== 0)
-      refuse("the first line of a document must start at column 0", where);
-    hasContent = true;
-
-    // A plain multi-line value continues on more-indented lines. For the four interpreted values
-    // that would make this reader and kubectl read different text, so it is refused.
-    if (pendingColumn !== undefined) {
-      if (indent > pendingColumn) {
-        refuse(
-          "kind, apiVersion, metadata.name and metadata.namespace must fit on one line",
-          where,
-        );
-      }
-      pendingColumn = undefined;
-    }
-
-    const lexed = lexLine(rest, indent, where);
-    if (lexed.value.t === "block") blockColumn = lexed.column;
-
-    if (indent === 0) {
-      inMetadata = false;
-      childIndent = undefined;
-      if (lexed.dashes > 0) {
-        refuse("a list at column 0 is not accepted; indent a list under its key", where);
-      }
-      if (lexed.key === undefined)
-        refuse("a line at column 0 must be `key:` or `key: value`", where);
-      if (lexed.keyQuoted || !PLAIN_KEY.test(lexed.key)) {
-        refuse("a key at column 0 must be a plain key (letters, digits, _ . / -)", where);
-      }
-      if (lexed.key === "items") {
-        // kubectl's builder flattens ANY object whose top-level `items` is an array (it asks
-        // Unstructured.IsList()), applies the items and drops the wrapper: a ConfigMap with an
-        // `items:` list of ClusterRoles would apply the ClusterRoles. Nested `items` (volume
-        // projections) is not top-level and stays allowed.
-        refuse(
-          "a top-level items key is not accepted (kubectl would read the document as a List)",
-          where,
-          lexed.key,
-        );
-      }
-      if (lexed.key === "apiVersion" || lexed.key === "kind") {
-        if (st[lexed.key] !== undefined) refuse(`duplicate top-level ${lexed.key}`, where);
-        st[lexed.key] = interpreted(lexed.value, lexed.key, TYPE_TEXT, where);
-        pendingColumn = 0;
-      } else if (lexed.key === "metadata") {
-        if (st.sawMetadata) refuse("duplicate top-level metadata", where);
-        st.sawMetadata = true;
-        if (lexed.value.t !== "empty") refuse("metadata must be a block mapping", where);
-        inMetadata = true;
-      }
-      continue;
-    }
-
-    if (!inMetadata) continue;
-    // Inside metadata: its direct children are the lines at the first child's indentation.
-    if (childIndent === undefined) {
-      childIndent = indent;
-      if (lexed.dashes > 0 || lexed.key === undefined)
-        refuse("metadata must be a block mapping", where);
-    } else if (indent < childIndent) {
-      refuse("inconsistent indentation under metadata", where);
-    }
-    if (indent !== childIndent || lexed.dashes > 0) continue;
-    if (lexed.key === undefined)
-      refuse("a line under metadata must be `key:` or `key: value`", where);
-    if (lexed.keyQuoted || !PLAIN_KEY.test(lexed.key)) {
-      refuse("a key directly under metadata must be a plain key", where);
-    }
-    if (lexed.key === "generateName") {
-      refuse("metadata.generateName is not accepted; give metadata.name", where, lexed.key);
-    }
-    if (lexed.key === "name" || lexed.key === "namespace") {
-      if (st[lexed.key] !== undefined) refuse(`duplicate metadata.${lexed.key}`, where);
-      st[lexed.key] = interpreted(
-        lexed.value,
-        `metadata.${lexed.key}`,
-        lexed.key === "name" ? DNS_SUBDOMAIN : NAME_TEXT,
-        where,
-      );
-      pendingColumn = childIndent;
-    }
+/**
+ * Phase 1: is this line skipped outright? A block scalar's content is never interpreted (every
+ * blank or more-indented line is skipped, and the first line that is not ends it); blank lines and
+ * comment lines are skipped.
+ */
+function isSkipped(st: DocState, indent: number, rest: string): boolean {
+  if (st.blockColumn !== undefined) {
+    if (rest === "" || indent > st.blockColumn) return true;
+    st.blockColumn = undefined;
   }
+  return rest === "" || rest.startsWith("#");
+}
 
-  if (!hasContent) return undefined;
-  const where: Where = { doc: docNo, line: lines.at(-1)?.no ?? 1 };
+/** Phase 2: the first content line must be at column 0. */
+function noteContent(st: DocState, indent: number, where: Where): void {
+  if (!st.hasContent && indent !== 0) {
+    refuse("the first line of a document must start at column 0", where);
+  }
+  st.hasContent = true;
+}
+
+/**
+ * Phase 3: a plain multi-line value continues on more-indented lines. For the four interpreted
+ * values that would make this reader and kubectl read different text, so it is refused.
+ */
+function checkNoContinuation(st: DocState, indent: number, where: Where): void {
+  if (st.pendingColumn === undefined) return;
+  if (indent > st.pendingColumn) {
+    refuse("kind, apiVersion, metadata.name and metadata.namespace must fit on one line", where);
+  }
+  st.pendingColumn = undefined;
+}
+
+/** Phase 4a: a column-0 line must be `plainKey:` or `plainKey: value`; returns the key. */
+function requireTopLevelKey(lexed: Lexed, where: Where): string {
+  if (lexed.dashes > 0) {
+    refuse("a list at column 0 is not accepted; indent a list under its key", where);
+  }
+  if (lexed.key === undefined) {
+    refuse("a line at column 0 must be `key:` or `key: value`", where);
+  }
+  if (lexed.keyQuoted || !PLAIN_KEY.test(lexed.key)) {
+    refuse("a key at column 0 must be a plain key (letters, digits, _ . / -)", where);
+  }
+  if (lexed.key === "items") {
+    // kubectl's builder flattens ANY object whose top-level `items` is an array (it asks
+    // Unstructured.IsList()), applies the items and drops the wrapper: a ConfigMap with an
+    // `items:` list of ClusterRoles would apply the ClusterRoles. Nested `items` (volume
+    // projections) is not top-level and stays allowed.
+    refuse(
+      "a top-level items key is not accepted (kubectl would read the document as a List)",
+      where,
+      lexed.key,
+    );
+  }
+  return lexed.key;
+}
+
+/** Phase 4b: record the three top-level keys the scan interprets, each at most once. */
+function readTopLevelKey(st: DocState, key: string, lexed: Lexed, where: Where): void {
+  if (key === "apiVersion" || key === "kind") {
+    if (st[key] !== undefined) refuse(`duplicate top-level ${key}`, where);
+    st[key] = interpreted(lexed.value, key, TYPE_TEXT, where);
+    st.pendingColumn = 0;
+  } else if (key === "metadata") {
+    if (st.sawMetadata) refuse("duplicate top-level metadata", where);
+    st.sawMetadata = true;
+    if (lexed.value.t !== "empty") refuse("metadata must be a block mapping", where);
+    st.inMetadata = true;
+  }
+}
+
+/** Phase 5a: a line directly under metadata must be `plainKey:` or `plainKey: value`; returns the key. */
+function requireMetadataKey(lexed: Lexed, where: Where): string {
+  if (lexed.key === undefined) {
+    refuse("a line under metadata must be `key:` or `key: value`", where);
+  }
+  if (lexed.keyQuoted || !PLAIN_KEY.test(lexed.key)) {
+    refuse("a key directly under metadata must be a plain key", where);
+  }
+  if (lexed.key === "generateName") {
+    refuse("metadata.generateName is not accepted; give metadata.name", where, lexed.key);
+  }
+  return lexed.key;
+}
+
+/** Phase 5b: record metadata.name and metadata.namespace, each at most once. */
+function readMetadataValue(
+  st: DocState,
+  key: "name" | "namespace",
+  lexed: Lexed,
+  where: Where,
+): void {
+  if (st[key] !== undefined) refuse(`duplicate metadata.${key}`, where);
+  st[key] = interpreted(
+    lexed.value,
+    `metadata.${key}`,
+    key === "name" ? DNS_SUBDOMAIN : NAME_TEXT,
+    where,
+  );
+  st.pendingColumn = st.childIndent;
+}
+
+/** Phase 5: inside metadata, the direct children are the lines at the first child's indentation. */
+function readMetadataLine(st: DocState, lexed: Lexed, indent: number, where: Where): void {
+  if (st.childIndent === undefined) {
+    st.childIndent = indent;
+    if (lexed.dashes > 0 || lexed.key === undefined) {
+      refuse("metadata must be a block mapping", where);
+    }
+  } else if (indent < st.childIndent) {
+    refuse("inconsistent indentation under metadata", where);
+  }
+  // Deeper lines, and list entries of the previous child, are not children.
+  if (indent !== st.childIndent || lexed.dashes > 0) return;
+  const key = requireMetadataKey(lexed, where);
+  if (key === "name" || key === "namespace") readMetadataValue(st, key, lexed, where);
+}
+
+/** Phase 6: once every line is read, the document must be one allowlisted object in the namespace. */
+function finishDocument(st: DocState, where: Where, ns: string): ScannedObject {
   if (st.kind === undefined || st.apiVersion === undefined) {
     refuse("every document needs a top-level apiVersion and kind", where);
   }
@@ -497,6 +536,53 @@ function scanDocument(
     name: st.name,
     ...(st.namespace === undefined ? {} : { namespace: st.namespace }),
   };
+}
+
+/**
+ * Scan one document; returns its object, or `undefined` when it holds no content at all. The phases
+ * run in this order for every line, and then once for the document.
+ */
+function scanDocument(
+  lines: readonly DocLine[],
+  docNo: number,
+  ns: string,
+): ScannedObject | undefined {
+  const st: DocState = {
+    apiVersion: undefined,
+    kind: undefined,
+    sawMetadata: false,
+    name: undefined,
+    namespace: undefined,
+    hasContent: false,
+    blockColumn: undefined,
+    inMetadata: false,
+    childIndent: undefined,
+    pendingColumn: undefined,
+  };
+
+  for (const { no, text } of lines) {
+    const where: Where = { doc: docNo, line: no };
+    const indent = skipSpaces(text, 0);
+    const rest = text.slice(indent);
+
+    if (isSkipped(st, indent, rest)) continue; // 1. block scalar content, blanks, comments
+    noteContent(st, indent, where); // 2. the first line is at column 0
+    checkNoContinuation(st, indent, where); // 3. interpreted values stay on one line
+
+    const lexed = lexLine(rest, indent, where);
+    if (lexed.value.t === "block") st.blockColumn = lexed.column;
+
+    if (indent === 0) {
+      st.inMetadata = false;
+      st.childIndent = undefined;
+      readTopLevelKey(st, requireTopLevelKey(lexed, where), lexed, where); // 4. column 0
+    } else if (st.inMetadata) {
+      readMetadataLine(st, lexed, indent, where); // 5. a line under metadata
+    }
+  }
+
+  if (!st.hasContent) return undefined;
+  return finishDocument(st, { doc: docNo, line: lines.at(-1)?.no ?? 1 }, ns); // 6. the document
 }
 
 /**

@@ -141,9 +141,20 @@ const RESOURCE_PREFIX: Readonly<Record<string, string>> = {
   PodDisruptionBudget: "poddisruptionbudget.policy",
 };
 
+/**
+ * Order by UTF-16 code unit, the same on every machine. Not `localeCompare`: collation can tie two
+ * distinct strings, and these lists are compared element by element.
+ */
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 /** The sorted `<prefix>/<name>` list the scan expects kubectl to report. */
 function expectedNames(scanned: readonly ScannedObject[]): string[] {
-  return scanned.map((o) => `${RESOURCE_PREFIX[o.kind] ?? o.kind}/${o.name}`).sort();
+  return scanned
+    .map((o) => `${RESOURCE_PREFIX[o.kind] ?? o.kind}/${o.name}`)
+    .sort(compareCodeUnits);
 }
 
 /**
@@ -157,7 +168,7 @@ function assertSameObjects(
   scanned: readonly ScannedObject[],
   when: string,
 ): void {
-  const have = [...reported].sort();
+  const have = [...reported].sort(compareCodeUnits);
   const want = expectedNames(scanned);
   if (have.length !== want.length || have.some((n, i) => n !== want[i])) {
     throw new Error(

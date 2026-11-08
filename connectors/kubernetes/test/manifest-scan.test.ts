@@ -176,7 +176,11 @@ describe("scanNamespacedManifest: characters", () => {
   }
 
   it("refuses a lone CR but accepts CRLF", () => {
-    refused(BASE.replace("\n", "\r"), /U\+000D/);
+    // Deliberately turn only the FIRST line feed into a bare CR (not a sanitiser: the input is the
+    // thing under test), spelled with indexOf and slice so it says so.
+    const firstLf = BASE.indexOf(String.fromCharCode(10));
+    const loneCr = BASE.slice(0, firstLf) + String.fromCharCode(13) + BASE.slice(firstLf + 1);
+    refused(loneCr, /U\+000D/);
     expect(scan(BASE.replaceAll("\n", "\r\n"))).toHaveLength(1);
   });
 

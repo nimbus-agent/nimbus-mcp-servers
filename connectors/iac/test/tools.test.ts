@@ -219,7 +219,7 @@ describe("iac terraform (gateway mode)", () => {
       "show",
       "-json",
       "-no-color",
-      realpathSync(file),
+      realpathSync.native(file),
     ]);
     expect(stub.calls[0]?.env["TF_INPUT"]).toBe("0");
   });
@@ -399,7 +399,7 @@ describe("iac terraform (gateway mode)", () => {
   ] as const) {
     it(`${tool} applies the SAME (real) plan file it hashed, with no -auto-approve and no -destroy, then removes it`, async () => {
       const { file, hash } = savedPlan("APPROVED-PLAN", name);
-      const real = realpathSync(file);
+      const real = realpathSync.native(file);
       const stub = terraform(0);
       expect(
         await tools.callJson(tool, { workingDirectory: "w", planFile: file, planSha256: hash }),
