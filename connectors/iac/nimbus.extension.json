@@ -2,7 +2,7 @@
   "id": "com.nimbus.iac",
   "displayName": "Infrastructure-as-Code",
   "version": "0.1.0",
-  "description": "Terraform / Pulumi / OpenTofu CLI helpers. The connector itself opens no sockets; CLI subprocesses' network access is sandbox-bounded. Workspace paths are tool-call scoped (workingDirectory argument), not baked into the manifest. Mutations require Gateway HITL.",
+  "description": "Terraform / CloudFormation / Pulumi CLI helpers. Applies are plan-bound: a Terraform apply runs only a saved plan file whose SHA-256 the owner approved, a CloudFormation deploy executes only a reviewed change set made for the exact template, and Pulumi up is refused. The connector itself opens no sockets; CLI subprocesses' network access is sandbox-bounded. Workspace paths are tool-call scoped (workingDirectory argument), not baked into the manifest. Plans are saved under NIMBUS_IAC_PLAN_DIR. Mutations require Gateway HITL.",
   "author": "Nimbus",
   "entrypoint": "dist/server.js",
   "runtime": "bun",

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 
-import { runCliJson, runCliJsonThrowing, runCliOk, runCliOkThrowing } from "./run-cli-json.ts";
+import {
+  runCliCode,
+  runCliJson,
+  runCliJsonThrowing,
+  runCliOk,
+  runCliOkThrowing,
+} from "./run-cli-json.ts";
 
 // Spawn the current Bun binary with `-e <js>` — present on every platform, no shell.
 const BUN = process.execPath;
@@ -110,5 +116,36 @@ describe("runCliJsonThrowing", () => {
 
   it("throws on an empty command", async () => {
     await expect(runCliJsonThrowing([], {})).rejects.toThrow("empty command");
+  });
+});
+
+describe("runCliCode", () => {
+  it("returns an empty command as code 1 without spawning", async () => {
+    expect(await runCliCode([], {})).toEqual({ code: 1, stdout: "", stderr: "empty command" });
+  });
+
+  it("returns exit 0 with its output", async () => {
+    const r = await runCliCode(
+      evalCmd("process.stdout.write('out'); process.stderr.write('err')"),
+      {},
+    );
+    expect(r).toEqual({ code: 0, stdout: "out", stderr: "err" });
+  });
+
+  it("returns a non-zero exit as an answer rather than throwing", async () => {
+    for (const code of [1, 2, 7]) {
+      const r = await runCliCode(
+        evalCmd(`process.stderr.write('c${String(code)}'); process.exit(${String(code)})`),
+        {},
+      );
+      expect(r).toEqual({ code, stdout: "", stderr: `c${String(code)}` });
+    }
+  });
+
+  it("passes env through to the child", async () => {
+    const r = await runCliCode(evalCmd("process.stdout.write(process.env.NIMBUS_RCC_TEST ?? '')"), {
+      NIMBUS_RCC_TEST: "hi",
+    });
+    expect(r.stdout).toBe("hi");
   });
 });

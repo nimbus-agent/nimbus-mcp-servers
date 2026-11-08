@@ -111,6 +111,31 @@ const ALLOWED: readonly {
   readonly reason: string;
 }[] = [];
 
+/**
+ * Tools whose ORDINARY arguments are refused by design, so no baseline call can reach a CLI: each
+ * is bound to a state a generic argument cannot name (a saved plan file with the hash it was
+ * approved under, a change set made for exactly this template, a manifest the namespaced-kind
+ * scanner accepts with its hash), or refused outright. The value maps each argument that reaches
+ * argv to the CLI it is handed to; the others reach none. For these the sweep still tries every
+ * hostile value in every string argument and requires that none reaches an argv, which holds
+ * because the schema refuses each before anything runs; what it cannot show is that an ordinary
+ * value does arrive, and `iac/test/tools.test.ts` and `kubernetes/test/tools.test.ts` pin each
+ * one's exact argv.
+ */
+const BOUND_TO_STATE: ReadonlyMap<string, Readonly<Record<string, string>>> = new Map([
+  ["iac_terraform_plan", { workingDirectory: "terraform" }],
+  ["iac_terraform_destroy_plan", { workingDirectory: "terraform" }],
+  ["iac_terraform_show_json", { workingDirectory: "terraform", planFile: "terraform" }],
+  ["iac_terraform_apply", { workingDirectory: "terraform", planFile: "terraform" }],
+  ["iac_terraform_destroy", { workingDirectory: "terraform", planFile: "terraform" }],
+  ["iac_cloudformation_changeset_create", { stackName: "aws" }],
+  ["iac_cloudformation_changeset_discard", { stackName: "aws", changeSetId: "aws" }],
+  ["iac_cloudformation_deploy", { stackName: "aws", changeSetId: "aws" }],
+  ["iac_pulumi_up", { workingDirectory: "pulumi" }],
+  ["k8s_manifest_plan", { namespace: "kubectl" }],
+  ["k8s_manifest_apply", { namespace: "kubectl" }],
+]);
+
 /** The one file that starts a process, held to that by `spawn-chokepoint.test.ts`. */
 const SPAWN_CHOKEPOINT = join(ROOT, "shared", "nimbus-spawn.ts");
 
@@ -195,7 +220,15 @@ async function registrarOf(id: string): Promise<ConnectorRegistrar> {
  * Values a schema accepts that no generic string is: an EC2 instance id is `i-` and hex digits.
  * A plain `z.object` strips a key it does not declare, so seeding every tool with this is harmless.
  */
-const SWEEP_SEED: Record<string, unknown> = { instanceId: "i-0123456789abcdef0" };
+const SWEEP_SEED: Record<string, unknown> = {
+  instanceId: "i-0123456789abcdef0",
+  // iac: a plan hash and a change set ARN, which no generic string satisfies.
+  planSha256: "a".repeat(64),
+  // kubernetes: a manifest hash, which no generic string satisfies either.
+  manifestSha256: "a".repeat(64),
+  changeSetId:
+    "arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-x/11111111-2222-3333-4444-555555555555",
+};
 
 /**
  * The reply every stubbed CLI gives. The read tools that PROJECT a reply (a deployment, a node pool,
@@ -331,6 +364,25 @@ describe("caller-supplied CLI arguments", () => {
         const allowedUsed = new Set<(typeof ALLOWED)[number]>();
         for (const name of tools.names()) {
           const args = sweepArgs(name, tools.get(name).schema as ParsableSchema);
+          const bound = BOUND_TO_STATE.get(name);
+          if (bound !== undefined) {
+            for (const [field, value] of Object.entries(args)) {
+              if (typeof value === "string") {
+                const cli = bound[field];
+                violations.push(
+                  ...(await fieldViolations(
+                    tools,
+                    name,
+                    args,
+                    field,
+                    cli === undefined ? [] : [cli],
+                    allowedUsed,
+                  )),
+                );
+              }
+            }
+            continue;
+          }
           const baseline = await run(tools, name, args);
           if (baseline.refused || baseline.argv.length === 0) {
             violations.push(`${name}: ordinary arguments did not reach a CLI`);
