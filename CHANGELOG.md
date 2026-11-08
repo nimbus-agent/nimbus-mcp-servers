@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.8.0...connectors-v0.9.0) (2026-11-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **connectors:** plan-bound terraform and cloudformation, kubernetes manifest apply, pulumi up refused ([#75](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/75))
+
+### Features
+
+* **connectors:** plan-bound terraform and cloudformation, kubernetes manifest apply, pulumi up refused ([#75](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/75)) ([32934d5](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/32934d5560994c3c96ecd36a0dd865cfe77f99b9))
+
 ## [0.8.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.7.0...connectors-v0.8.0) (2026-11-07)
 
 
