@@ -21,10 +21,11 @@
 import { constants } from "node:fs";
 import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, join } from "node:path";
+import { configuredScratchBase } from "./private-scratch.ts";
 
 /** Names the directory private kubeconfigs are made in; an absolute path, else `os.tmpdir()`. */
-export const SCRATCH_DIR_ENV = "NIMBUS_CONNECTOR_SCRATCH_DIR";
+export { SCRATCH_DIR_ENV } from "./private-scratch.ts";
 
 /**
  * The one path `raw` (a `KUBECONFIG` value) names. A list of paths throws: a tool that cannot say
@@ -57,14 +58,14 @@ export function singleKubeconfigPath(
   return only;
 }
 
-/** The base directory private kubeconfigs are made under. */
+/**
+ * The base directory private kubeconfigs are made under: the configured scratch base, else
+ * `os.tmpdir()` on every platform. Unlike `withScratchDir` (private-scratch.ts) this does NOT
+ * refuse on Windows under the gateway: the before-state reads shipped in 0.8.0 run there today
+ * without the env var, and the gateway grants it with the Kubernetes write rows (D3).
+ */
 function scratchBase(): string {
-  const configured = process.env[SCRATCH_DIR_ENV]?.trim();
-  if (configured === undefined || configured === "") return tmpdir();
-  if (!isAbsolute(configured)) {
-    throw new Error(`${SCRATCH_DIR_ENV} must be an absolute path`);
-  }
-  return configured;
+  return configuredScratchBase() ?? tmpdir();
 }
 
 /** Refuse a source that is not a plain file: a symlink, a directory, a device. */

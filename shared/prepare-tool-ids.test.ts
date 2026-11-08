@@ -29,6 +29,9 @@ const GATEWAY_READ_VERBS = [
   "metadata",
 ];
 
+/** A tool id prefix that is not the name of the connector directory that registers it. */
+const CONNECTOR_OF_PREFIX: Readonly<Record<string, string>> = { k8s: "kubernetes" };
+
 /** Every non-test source file of every connector, with its comments left in (calls are matched). */
 function connectorSources(): { file: string; src: string }[] {
   const out: { file: string; src: string }[] = [];
@@ -60,8 +63,16 @@ function calleesOf(id: string): { file: string; callee: string }[] {
 }
 
 describe("PREPARE_TOOL_IDS", () => {
-  test("is the two commit tools, and nothing is listed twice", () => {
-    expect([...PREPARE_TOOL_IDS]).toEqual(["github_commit_prepare", "gitlab_commit_prepare"]);
+  test("is the commit, IaC and Kubernetes prepare tools, and nothing is listed twice", () => {
+    expect([...PREPARE_TOOL_IDS]).toEqual([
+      "github_commit_prepare",
+      "gitlab_commit_prepare",
+      "iac_terraform_plan",
+      "iac_terraform_destroy_plan",
+      "iac_terraform_show_json",
+      "iac_cloudformation_changeset_create",
+      "k8s_manifest_plan",
+    ]);
     expect(new Set(PREPARE_TOOL_IDS).size).toBe(PREPARE_TOOL_IDS.length);
   });
 
@@ -75,8 +86,11 @@ describe("PREPARE_TOOL_IDS", () => {
     test(`${id} is registered exactly once, through registerPrepareTool and nothing else`, () => {
       const calls = calleesOf(id);
       expect(calls.map((c) => c.callee)).toEqual(["registerPrepareTool"]);
-      // The connector that registers it is the one named by the id's prefix.
-      expect(calls[0]?.file.startsWith(`${id.split("_")[0] ?? "?"}/`)).toBe(true);
+      // The connector that registers it is the one named by the id's prefix (`k8s_` is the
+      // kubernetes connector's prefix, the one id prefix that is not its directory's name).
+      const prefix = id.split("_")[0] ?? "?";
+      const connector = CONNECTOR_OF_PREFIX[prefix] ?? prefix;
+      expect(calls[0]?.file.startsWith(`${connector}/`)).toBe(true);
     });
 
     test(`${id} does not end in a verb the gateway reads as a plain read`, () => {

@@ -26,6 +26,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,6 +117,26 @@ const MAIL_TO = { to: "ada@example.com" };
 const GITHUB_REPO = { owner: "zeta-labs", repo: "quokka" };
 /** iCloud event times are format-checked (UTC `YYYYMMDDTHHMMSSZ`), which `fixtureFor` cannot guess. */
 const ICLOUD_TIMES = { start: "20260101T000000Z", end: "20260101T010000Z" };
+
+/** iac: an absolute plan path, and a change set made for exactly `IAC_TEMPLATE`. */
+const IAC_PLAN_DIR = join(tmpdir(), "nimbus-write-scope", "plan-id");
+const IAC_TEMPLATE = "{}";
+const IAC_DEPLOY_ARN = `arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-${createHash("sha256").update(IAC_TEMPLATE).digest("hex")}-0123456789ab/11111111-2222-3333-4444-555555555555`;
+
+/**
+ * A one-object manifest `k8s_manifest_apply` accepts in namespace `shop`, and its plan hash: the
+ * namespace is bound into it (`nimbus-k8s-manifest-v1`, LF, namespace, LF, manifest).
+ */
+const K8S_MANIFEST = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n  namespace: shop\n";
+const K8S_PLAN_SHA256 = createHash("sha256")
+  .update(`nimbus-k8s-manifest-v1\nshop\n${K8S_MANIFEST}`, "utf8")
+  .digest("hex");
+
+/** Write tools no consent can unlock, and the refusal they answer with in standalone mode. */
+const ALWAYS_REFUSED: Readonly<Record<string, string>> = {
+  iac_pulumi_up:
+    "iac_pulumi_up is refused: Pulumi saved update plans are documented as experimental, so no plan-bound apply exists (OR-W34-2)",
+};
 
 /**
  * Every connector that registers a write tool, with each write tool's expected scope target.
@@ -440,23 +461,32 @@ const WRITES: Readonly<
   iac: {
     register: registerIacTools,
     cases: [
-      [
-        "iac_terraform_apply",
-        "iac.terraform.apply",
-        { workingDirectory: "infra/prod" },
-        "dir:infra/prod",
-      ],
-      [
-        "iac_terraform_destroy",
-        "iac.terraform.destroy",
-        { workingDirectory: "infra/prod" },
-        "dir:infra/prod",
-      ],
+      ...(["iac_terraform_apply", "iac_terraform_destroy"] as const).map(
+        (tool): WriteCase => [
+          tool,
+          tool === "iac_terraform_apply" ? "iac.terraform.apply" : "iac.terraform.destroy",
+          {
+            workingDirectory: "infra/prod",
+            planFile: join(
+              IAC_PLAN_DIR,
+              tool === "iac_terraform_apply" ? "plan.tfplan" : "destroy.tfplan",
+            ),
+            planSha256: "a".repeat(64),
+          },
+          "dir:infra/prod",
+        ],
+      ),
       ["iac_pulumi_up", "iac.pulumi.up", { workingDirectory: "infra/prod" }, "dir:infra/prod"],
       [
         "iac_cloudformation_deploy",
         "iac.cloudformation.deploy",
-        { stackName: "web-stack" },
+        { stackName: "web-stack", templateBody: IAC_TEMPLATE, changeSetId: IAC_DEPLOY_ARN },
+        "stack:web-stack",
+      ],
+      [
+        "iac_cloudformation_changeset_discard",
+        "iac.cloudformation.changeset.discard",
+        { stackName: "web-stack", changeSetId: IAC_DEPLOY_ARN },
         "stack:web-stack",
       ],
     ],
@@ -507,6 +537,14 @@ const WRITES: Readonly<
       ["k8s_pod_delete", "kubernetes.pod.delete", {}, "namespace:default"],
       ["k8s_rollout_restart", "kubernetes.rollout.restart", { namespace: "web" }, "namespace:web"],
       ["k8s_rollout_restart", "kubernetes.rollout.restart", {}, "namespace:default"],
+      [
+        "k8s_manifest_apply",
+        "kubernetes.manifest.apply",
+        // A manifest the namespaced-kind scanner accepts, with its real hash: refuseBefore would
+        // otherwise refuse it before the scope check this case is about.
+        { namespace: "shop", manifest: K8S_MANIFEST, planSha256: K8S_PLAN_SHA256 },
+        "namespace:shop",
+      ],
     ],
   },
   launchdarkly: {
@@ -821,6 +859,24 @@ describe("standalone write scope", () => {
       });
 
       for (const [tool, mutates, given, target] of cases) {
+        const alwaysRefused = ALWAYS_REFUSED[tool];
+        if (alwaysRefused !== undefined) {
+          // Refused on every door before scope, budget or prompt: no consent can lift it.
+          it(`${tool} is refused inside and outside ${target} alike, asking and sending nothing`, async () => {
+            for (const scope of [target, `${target.slice(0, target.indexOf(":"))}:other`]) {
+              const capture = await standalone(id, scope, true);
+              const { answer, requests } = await callUnplugged(
+                capture,
+                tool,
+                completeArgs(capture, tool, given),
+              );
+              expect(answer).toEqual({ ok: false, error: alwaysRefused });
+              expect(capture.prompts).toEqual([]);
+              expect(requests).toBe(0);
+            }
+          });
+          continue;
+        }
         describe(`${tool} ${JSON.stringify(given)}`, () => {
           it(`refuses outside ${target}, before asking or sending anything`, async () => {
             const kind = target.slice(0, target.indexOf(":"));

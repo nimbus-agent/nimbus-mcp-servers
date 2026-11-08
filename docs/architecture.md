@@ -95,9 +95,13 @@ enforces consent, the write-scope allow-list and the mutation budget, and it is 
 hold regardless of how a connector is written. `shared/write-scope.ts`, `shared/write-budget.ts` and
 `shared/audit-chain.ts` back it.
 
-**The prepare class.** A write bound to state the owner approves (a commit bound to the branch head
-it was prepared against) is preceded by a `*_prepare` tool the gateway calls before the approval
-prompt. Those tools register through `createPrepareToolRegistrar`, never `reg` and never the write
+**The prepare class.** A write bound to state the owner approves is preceded by a prepare tool the
+gateway calls before the approval prompt: a commit is bound to the branch head it was prepared
+against (`github_commit_prepare`, `gitlab_commit_prepare`), a Terraform apply or destroy to the
+hash of a saved plan (`iac_terraform_plan`, `iac_terraform_destroy_plan`; `iac_terraform_show_json`
+renders a saved plan for the preview), a CloudFormation deploy to a change set whose name carries
+the template's sha256 (`iac_cloudformation_changeset_create`), and a Kubernetes apply to the hash of
+the manifest a server-side dry run and diff were shown for (`k8s_manifest_plan`). Those tools register through `createPrepareToolRegistrar`, never `reg` and never the write
 registrar, and only under a name listed in `shared/prepare-tool-ids.ts` (`PREPARE_TOOL_IDS`, one
 literal list the gateway reads as text; the registrar throws for any other name). Standalone, a
 prepare tool is registered for every client, needs the same write scope as the writes it serves,

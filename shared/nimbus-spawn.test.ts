@@ -250,6 +250,19 @@ describe("childEnvironment", () => {
       ),
     ).toEqual({ PATH: "b", SYSTEMROOT: "D:/W", TEMP: "t" });
   });
+
+  test.each(["linux", "win32"] as const)(
+    "an override whose value is undefined shadows the base on %s",
+    (platform) => {
+      const env = childEnvironment(
+        { KEEP: "1", DROP_ME: "parent" },
+        { DROP_ME: undefined },
+        platform,
+      );
+      expect(env["DROP_ME"]).toBeUndefined();
+      expect(env["KEEP"]).toBe("1");
+    },
+  );
 });
 
 /**
@@ -289,3 +302,26 @@ describe.skipIf(process.platform !== "win32")(
     }
   },
 );
+
+describe.each([
+  ["spawnViaBun", spawnViaBun],
+  ["spawnViaNode", spawnViaNode],
+] as const)("%s and an undefined override", (_label, spawnImpl) => {
+  // kubectl diff runs the program KUBECTL_EXTERNAL_DIFF names; the Kubernetes plan must be able to
+  // guarantee that variable is ABSENT from the child even when the owner's shell sets it. Pinned
+  // with a real child because it rests on what each runtime does with an `undefined` value:
+  // neither passes the variable through, nor the string "undefined".
+  test("the variable is absent from the child, though the parent sets it", async () => {
+    const name = "NIMBUS_SPAWN_TEST_UNDEF";
+    process.env[name] = "from-the-parent";
+    try {
+      const probe = `process.stdout.write(JSON.stringify([${JSON.stringify(name)} in process.env, process.env[${JSON.stringify(name)}] ?? null]))`;
+      const kept = await spawnImpl([process.execPath, "-e", probe], {});
+      expect(JSON.parse(kept.stdout)).toEqual([true, "from-the-parent"]);
+      const dropped = await spawnImpl([process.execPath, "-e", probe], { [name]: undefined });
+      expect(JSON.parse(dropped.stdout)).toEqual([false, null]);
+    } finally {
+      delete process.env[name];
+    }
+  });
+});

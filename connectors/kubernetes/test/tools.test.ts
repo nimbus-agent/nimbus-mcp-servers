@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   approvedStandaloneWrite,
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   refusalSaying,
   type SpawnStub,
   stubSpawn,
+  stubSpawnScript,
+  withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
-import { registerKubernetesTools } from "../src/tools.ts";
+import { registerKubernetesTools, SECRET_DIFF_WITHHELD } from "../src/tools.ts";
 
 let tools: CapturedTools;
 let spawn: SpawnStub | undefined;
@@ -310,5 +314,559 @@ describe("k8s_deployment_get", () => {
       "KUBECONFIG env must be set",
     );
     expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("k8s_manifest_plan and k8s_manifest_apply", () => {
+  const MANIFEST = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n";
+  /** The plan hash: sha256 of the domain, the namespace and the manifest, newline-separated. */
+  const planHash = (ns: string, manifest: string) =>
+    createHash("sha256")
+      .update(
+        `nimbus-k8s-manifest-v1
+${ns}
+${manifest}`,
+        "utf8",
+      )
+      .digest("hex");
+  const SHA = planHash("shop", MANIFEST);
+  const savedEnv = new Map<string, string | undefined>();
+  let scratchBase = "";
+
+  /** What the fake kubectl saw of each call, read at spawn time (the tool removes the files after). */
+  interface Seen {
+    command: readonly string[];
+    env: Record<string, string | undefined>;
+    manifest: string | undefined;
+    mode: number | undefined;
+    file: string | undefined;
+  }
+  let seen: Seen[] = [];
+
+  /** A fake kubectl: `apply` prints object names, `diff` exits with `diffCode`. */
+  function kubectl(
+    opts: {
+      diffCode?: number;
+      diffOut?: string;
+      applyCode?: number;
+      applyOut?: string;
+      applyErr?: string;
+    } = {},
+  ): SpawnStub {
+    seen = [];
+    spawn?.restore();
+    spawn = stubSpawnScript((command, env) => {
+      const at = command.indexOf("-f");
+      const file = at === -1 ? undefined : command[at + 1];
+      seen.push({
+        command: [...command],
+        env,
+        file,
+        manifest: file === undefined ? undefined : readFileSync(file, "utf8"),
+        mode: file === undefined ? undefined : statSync(file).mode & 0o777,
+      });
+      if (command.includes("diff")) {
+        return { exitCode: opts.diffCode ?? 0, stdout: opts.diffOut ?? "", stderr: "diff err" };
+      }
+      return {
+        exitCode: opts.applyCode ?? 0,
+        stdout: opts.applyOut ?? "deployment.apps/api\n",
+        stderr: opts.applyErr ?? "",
+      };
+    });
+    return spawn;
+  }
+
+  beforeEach(() => {
+    for (const key of ["NIMBUS_CONNECTOR_SCRATCH_DIR", "KUBECTL_EXTERNAL_DIFF"]) {
+      savedEnv.set(key, process.env[key]);
+    }
+    scratchBase = mkdtempSync(join(tmpdir(), "k8s-scratch-"));
+    process.env["NIMBUS_CONNECTOR_SCRATCH_DIR"] = scratchBase;
+    process.env["KUBECTL_EXTERNAL_DIFF"] = "/owner/evil-diff";
+  });
+
+  afterEach(() => {
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(scratchBase, { recursive: true, force: true });
+  });
+
+  const PLAN_ARGS = { namespace: "shop", manifest: MANIFEST };
+  const APPLY_ARGS = { ...PLAN_ARGS, planSha256: SHA };
+
+  describe("plan", () => {
+    it("runs the server-side dry run, then the server-side diff, with exact argv", async () => {
+      process.env["KUBE_CONTEXT"] = "staging";
+      const stub = kubectl({ diffCode: 1, diffOut: "--- a\n+++ b\n" });
+      const out = (await tools.callJson("k8s_manifest_plan", PLAN_ARGS)) as Record<string, unknown>;
+      const file = seen[0]?.file ?? "";
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        [
+          "kubectl",
+          "--context",
+          "staging",
+          "apply",
+          "--server-side",
+          "--dry-run=server",
+          "--field-manager=nimbus",
+          "-n",
+          "shop",
+          "-f",
+          file,
+          "-o",
+          "name",
+        ],
+        [
+          "kubectl",
+          "--context",
+          "staging",
+          "diff",
+          "--server-side",
+          "--field-manager=nimbus",
+          "-n",
+          "shop",
+          "-f",
+          file,
+        ],
+      ]);
+      expect(out).toEqual({
+        planSha256: SHA,
+        namespace: "shop",
+        objects: ["deployment.apps/api"],
+        scanned: [{ apiVersion: "apps/v1", kind: "Deployment", name: "api" }],
+        diff: "--- a\n+++ b\n",
+        hasDifferences: true,
+      });
+    });
+
+    it("never passes --force-conflicts", async () => {
+      const stub = kubectl();
+      await tools.call("k8s_manifest_plan", PLAN_ARGS);
+      await tools.call("k8s_manifest_apply", APPLY_ARGS);
+      for (const c of stub.calls) expect(c.command).not.toContain("--force-conflicts");
+    });
+
+    it("hands kubectl the exact bytes, in an owner-only file inside the scratch base, removed afterwards", async () => {
+      kubectl();
+      await tools.call("k8s_manifest_plan", PLAN_ARGS);
+      for (const s of seen) {
+        expect(s.manifest).toBe(MANIFEST);
+        expect(dirname(dirname(s.file ?? ""))).toBe(scratchBase);
+        if (process.platform !== "win32") expect(s.mode).toBe(0o600);
+        expect(existsSync(s.file ?? "")).toBe(false);
+        expect(existsSync(dirname(s.file ?? ""))).toBe(false);
+      }
+      // A private kubeconfig, never the owner's file.
+      expect(seen[0]?.env["KUBECONFIG"]).not.toBe(kubeSource);
+    });
+
+    it("maps the diff's exit code: 0 no differences, 1 differences, anything else a failure", async () => {
+      kubectl({ diffCode: 0 });
+      expect(await tools.callJson("k8s_manifest_plan", PLAN_ARGS)).toMatchObject({
+        hasDifferences: false,
+      });
+      kubectl({ diffCode: 1, diffOut: "d" });
+      expect(await tools.callJson("k8s_manifest_plan", PLAN_ARGS)).toMatchObject({
+        hasDifferences: true,
+      });
+      kubectl({ diffCode: 2 });
+      await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow(
+        "kubectl diff exited 2: diff err",
+      );
+    });
+
+    it("the diff child has no KUBECTL_EXTERNAL_DIFF and a private temp directory", async () => {
+      kubectl({ diffCode: 1 });
+      await tools.call("k8s_manifest_plan", PLAN_ARGS);
+      const diffCall = seen.find((s) => s.command.includes("diff"));
+      const dir = dirname(diffCall?.file ?? "");
+      expect(diffCall?.env["KUBECTL_EXTERNAL_DIFF"]).toBeUndefined();
+      expect(diffCall?.env["TMPDIR"]).toBe(dir);
+      expect(diffCall?.env["TMP"]).toBe(dir);
+      expect(diffCall?.env["TEMP"]).toBe(dir);
+    });
+
+    it("a failing dry run throws kubectl's exit code and stderr, and the diff never runs", async () => {
+      const stub = kubectl({ applyCode: 1, applyErr: "admission webhook denied" });
+      await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow(
+        "kubectl exited 1: admission webhook denied",
+      );
+      expect(stub.calls).toHaveLength(1);
+    });
+
+    it("refuses a diff over 64 KiB", async () => {
+      kubectl({ diffCode: 1, diffOut: "x".repeat(65_537) });
+      await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow("diff too large");
+      kubectl({ diffCode: 1, diffOut: "x".repeat(65_536) });
+      expect(await tools.callJson("k8s_manifest_plan", PLAN_ARGS)).toMatchObject({
+        hasDifferences: true,
+      });
+    });
+
+    it("refuses a reply over 256 KiB", async () => {
+      // About 4,300 small ConfigMaps fit in the 256 KiB manifest cap; the scan summary plus kubectl's
+      // names for them are bigger than the reply cap.
+      const count = 4_300;
+      const manifest = Array.from(
+        { length: count },
+        (_, i) => `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c${String(i)}\n`,
+      ).join("---\n");
+      expect(Buffer.byteLength(manifest)).toBeLessThan(262_144);
+      kubectl({
+        diffCode: 1,
+        diffOut: "d",
+        applyOut: Array.from({ length: count }, (_, i) => `configmap/c${String(i)}\n`).join(""),
+      });
+      await expect(
+        tools.call("k8s_manifest_plan", { namespace: "shop", manifest }),
+      ).rejects.toThrow("plan reply too large");
+    });
+
+    it("refuses before the diff when kubectl reports other objects than the scan read", async () => {
+      // The review's exploit shape, as kubectl would see it: the wrapper is flattened and a
+      // ClusterRole is what the dry run names. The scanner refuses the manifest itself (items), so
+      // this drives the cross-check with a manifest the scanner accepts and a kubectl that disagrees.
+      const stub = kubectl({ applyOut: "clusterrole.rbac.authorization.k8s.io/evil\n" });
+      await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow(
+        /kubectl dry run reported different objects.*kubectl: clusterrole.*scan: deployment.apps\/api/,
+      );
+      expect(stub.calls).toHaveLength(1);
+      expect(stub.calls[0]?.command).not.toContain("diff");
+    });
+
+    it("compares the dry run's names to the scan as a multiset, whatever their order", async () => {
+      const manifest = `${MANIFEST}---\napiVersion: v1\nkind: Service\nmetadata:\n  name: api\n`;
+      kubectl({ applyOut: "service/api\ndeployment.apps/api\n" });
+      expect(
+        (await tools.callJson("k8s_manifest_plan", { namespace: "shop", manifest })) as {
+          objects: string[];
+        },
+      ).toMatchObject({ objects: ["service/api", "deployment.apps/api"] });
+      kubectl({ applyOut: "service/api\nservice/api\n" });
+      await expect(
+        tools.call("k8s_manifest_plan", { namespace: "shop", manifest }),
+      ).rejects.toThrow(/different objects/);
+      kubectl({ applyOut: "service/api\n" });
+      await expect(
+        tools.call("k8s_manifest_plan", { namespace: "shop", manifest }),
+      ).rejects.toThrow(/different objects/);
+    });
+
+    it("withholds kubectl's stderr when the manifest holds a Secret", async () => {
+      const secretManifest =
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  pw: topsecret\n";
+      kubectl({ applyCode: 1, applyErr: 'invalid value "topsecret"' });
+      const err = await tools
+        .call("k8s_manifest_plan", { namespace: "shop", manifest: secretManifest })
+        .catch((e: unknown) => String(e));
+      expect(err).toContain("(stderr withheld: the manifest holds a Secret)");
+      expect(err).not.toContain("topsecret");
+    });
+
+    it("withholds the diff body, but not the fact of a difference, when the manifest holds a Secret", async () => {
+      const secretManifest =
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  pw: topsecret\n";
+      kubectl({ diffCode: 1, diffOut: "+  pw: topsecret\n", applyOut: "secret/s\n" });
+      const out = (await tools.callJson("k8s_manifest_plan", {
+        namespace: "shop",
+        manifest: secretManifest,
+      })) as { diff: string; hasDifferences: boolean };
+      expect(out.diff).toBe(SECRET_DIFF_WITHHELD);
+      expect(out.hasDifferences).toBe(true);
+      expect(JSON.stringify(out)).not.toContain("topsecret");
+    });
+
+    it("the plan hash binds the namespace: the same manifest in another namespace hashes differently", async () => {
+      kubectl();
+      const a = (await tools.callJson("k8s_manifest_plan", PLAN_ARGS)) as { planSha256: string };
+      const b = (await tools.callJson("k8s_manifest_plan", {
+        namespace: "shop2",
+        manifest: MANIFEST,
+      })) as { planSha256: string };
+      expect(a.planSha256).toBe(SHA);
+      expect(b.planSha256).toBe(planHash("shop2", MANIFEST));
+      expect(a.planSha256).not.toBe(b.planSha256);
+      expect(a).not.toHaveProperty("manifestSha256");
+    });
+
+    it("refuses a manifest over 256 KiB of UTF-8 bytes before any spawn", async () => {
+      const stub = kubectl();
+      // 140,000 two-byte characters: under the schema's character cap, over the byte cap.
+      const manifest = `# ${"é".repeat(140_000)}\n${MANIFEST}`;
+      await expect(
+        tools.call("k8s_manifest_plan", { namespace: "shop", manifest }),
+      ).rejects.toThrow("manifest is larger than 262144 bytes");
+      await expect(
+        tools.call("k8s_manifest_plan", { namespace: "shop", manifest: `#${"x".repeat(262_200)}` }),
+      ).rejects.toThrow();
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("refuses a manifest the scanner refuses, before any spawn", async () => {
+      const stub = kubectl();
+      const cases = [
+        "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: x\n",
+        MANIFEST.replace("name: api", "name: api\n  namespace: other"),
+        `${MANIFEST}---\nkind: Namespace\napiVersion: v1\nmetadata:\n  name: x\n`,
+        '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p"}}',
+        'apiVersion: apps/v1\n"kind": ClusterRole\nmetadata:\n  name: x\n',
+      ];
+      for (const manifest of cases) {
+        await expect(
+          tools.call("k8s_manifest_plan", { namespace: "shop", manifest }),
+        ).rejects.toThrow(/manifest refused/);
+      }
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("refuses a namespace kubectl would read as a flag, before any spawn", async () => {
+      const stub = kubectl();
+      await expect(
+        tools.call("k8s_manifest_plan", { namespace: "--kubeconfig=/x", manifest: MANIFEST }),
+      ).rejects.toThrow(refusalSaying('must not start with "-"'));
+      expect(stub.calls).toEqual([]);
+    });
+
+    it.skipIf(process.platform !== "win32")(
+      "on Windows under the gateway, refuses without a scratch directory, before any spawn",
+      async () => {
+        delete process.env["NIMBUS_CONNECTOR_SCRATCH_DIR"];
+        const stub = kubectl();
+        await expect(tools.call("k8s_manifest_plan", PLAN_ARGS)).rejects.toThrow(
+          "NIMBUS_CONNECTOR_SCRATCH_DIR is not set",
+        );
+        expect(stub.calls).toEqual([]);
+      },
+    );
+  });
+
+  describe("apply", () => {
+    it("dry-runs first, cross-checks, then runs one server-side apply and reports the objects", async () => {
+      process.env["KUBE_CONTEXT"] = "staging";
+      const stub = kubectl();
+      expect(await tools.callJson("k8s_manifest_apply", APPLY_ARGS)).toEqual({
+        ok: true,
+        status: "applied",
+        objects: ["deployment.apps/api"],
+      });
+      const file = seen[0]?.file ?? "";
+      const common = ["kubectl", "--context", "staging", "apply", "--server-side"];
+      const tail = ["--field-manager=nimbus", "-n", "shop", "-f", file, "-o", "name"];
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        [...common, "--dry-run=server", ...tail],
+        [...common, ...tail],
+      ]);
+      for (const s of seen) expect(s.manifest).toBe(MANIFEST);
+      expect(existsSync(file)).toBe(false);
+      expect(stub.calls[0]?.env["KUBECONFIG"]).not.toBe(kubeSource);
+    });
+
+    it("does not apply when the manifest file changed between the dry run and the apply", async () => {
+      spawn?.restore();
+      let calls = 0;
+      spawn = stubSpawnScript((command) => {
+        calls += 1;
+        const file = command[command.indexOf("-f") + 1];
+        // The dry run passes, then the file is rewritten before the real apply would read it.
+        if (file !== undefined) {
+          writeFileSync(file, MANIFEST.replace("name: api", "name: other"));
+        }
+        return { exitCode: 0, stdout: "deployment.apps/api\n" };
+      });
+      await expect(tools.call("k8s_manifest_apply", APPLY_ARGS)).rejects.toThrow(
+        "the manifest file changed before the apply",
+      );
+      expect(calls).toBe(1);
+    });
+
+    it("does not apply when the dry run names other objects than the scan read", async () => {
+      const stub = kubectl({ applyOut: "clusterrole.rbac.authorization.k8s.io/evil\n" });
+      await expect(tools.call("k8s_manifest_apply", APPLY_ARGS)).rejects.toThrow(
+        /different objects/,
+      );
+      expect(stub.calls).toHaveLength(1);
+      expect(stub.calls[0]?.command).toContain("--dry-run=server");
+    });
+
+    it("reports an applied set that differs from the scan, naming both sets", async () => {
+      // The dry run agrees, the real apply does not: the change has happened, so it is an error.
+      let call = 0;
+      spawn?.restore();
+      spawn = stubSpawnScript(() => {
+        call++;
+        return { stdout: call === 1 ? "deployment.apps/api\n" : "deployment.apps/other\n" };
+      });
+      await expect(tools.call("k8s_manifest_apply", APPLY_ARGS)).rejects.toThrow(
+        /applied and reported different objects.*kubectl: deployment.apps\/other; scan: deployment.apps\/api/,
+      );
+    });
+
+    it("an approved plan for one namespace cannot be replayed in another", async () => {
+      const stub = kubectl();
+      await expect(
+        tools.call("k8s_manifest_apply", { ...APPLY_ARGS, namespace: "other" }),
+      ).rejects.toThrow("manifest does not match the approved hash");
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("throws kubectl's exit code and stderr", async () => {
+      kubectl({ applyCode: 1, applyErr: "conflict" });
+      await expect(tools.call("k8s_manifest_apply", APPLY_ARGS)).rejects.toThrow(
+        "kubectl exited 1: conflict",
+      );
+    });
+
+    it("a manifest that does not hash to the approved value spawns nothing", async () => {
+      const stub = kubectl();
+      const edited = MANIFEST.replace("name: api", "name: api2");
+      await expect(
+        tools.call("k8s_manifest_apply", { ...APPLY_ARGS, manifest: edited }),
+      ).rejects.toThrow("manifest does not match the approved hash");
+      await expect(
+        tools.call("k8s_manifest_apply", { ...APPLY_ARGS, planSha256: "0".repeat(64) }),
+      ).rejects.toThrow("manifest does not match the approved hash");
+      // The hash is of the bytes: a different line ending is a different manifest.
+      await expect(
+        tools.call("k8s_manifest_apply", {
+          ...APPLY_ARGS,
+          manifest: MANIFEST.replaceAll("\n", "\r\n"),
+        }),
+      ).rejects.toThrow("manifest does not match the approved hash");
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("refuses a hash that is not 64 lowercase hex, before any spawn", async () => {
+      const stub = kubectl();
+      for (const planSha256 of [SHA.toUpperCase(), SHA.slice(1), `${SHA}0`, "", "zz"]) {
+        await expect(
+          tools.call("k8s_manifest_apply", { ...APPLY_ARGS, planSha256 }),
+        ).rejects.toThrow();
+      }
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("spawns nothing for a manifest the scanner refuses, even with a matching hash", async () => {
+      const stub = kubectl();
+      const bad = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: x\n";
+      const sha = planHash("shop", bad);
+      await expect(
+        tools.call("k8s_manifest_apply", { namespace: "shop", manifest: bad, planSha256: sha }),
+      ).rejects.toThrow(/not on the namespaced allowlist/);
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("refuses an oversize manifest before any spawn", async () => {
+      const stub = kubectl();
+      const manifest = `# ${"é".repeat(140_000)}\n${MANIFEST}`;
+      await expect(
+        tools.call("k8s_manifest_apply", { namespace: "shop", manifest, planSha256: SHA }),
+      ).rejects.toThrow("manifest is larger than 262144 bytes");
+      expect(stub.calls).toEqual([]);
+    });
+  });
+
+  describe("standalone mode", () => {
+    beforeEach(() => {
+      resetConnectorModeForTests();
+      setConnectorMode("standalone");
+    });
+
+    it("refuseBefore stops a refused manifest before the prompt, and the audit says refused", async () => {
+      const stub = kubectl();
+      const auditDir = mkdtempSync(join(tmpdir(), "k8s-audit-"));
+      const auditLog = join(auditDir, "audit.jsonl");
+      try {
+        await withEnv(
+          { NIMBUS_MCP_KUBERNETES_WRITE_SCOPE: "namespace:shop", NIMBUS_MCP_AUDIT_LOG: auditLog },
+          async () => {
+            const cap = captureStandaloneTools(registerKubernetesTools, { elicitation: true });
+            const bad = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: x\n";
+            const sha = planHash("shop", bad);
+            const res = (await cap.tools.callJson("k8s_manifest_apply", {
+              namespace: "shop",
+              manifest: bad,
+              planSha256: sha,
+            })) as { ok: boolean; error: string };
+            expect(res.ok).toBe(false);
+            expect(res.error).toMatch(/not on the namespaced allowlist/);
+            const wrong = (await cap.tools.callJson("k8s_manifest_apply", {
+              ...APPLY_ARGS,
+              planSha256: "0".repeat(64),
+            })) as { ok: boolean; error: string };
+            expect(wrong.error).toBe("manifest does not match the approved hash");
+            expect(cap.prompts).toEqual([]);
+          },
+        );
+        expect(readFileSync(auditLog, "utf8")).toContain("refused");
+      } finally {
+        rmSync(auditDir, { recursive: true, force: true });
+      }
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("an approved apply records the namespace, hash and scanned objects as its pre-state", async () => {
+      kubectl();
+      const run = await approvedStandaloneWrite(
+        registerKubernetesTools,
+        { NIMBUS_MCP_KUBERNETES_WRITE_SCOPE: "namespace:shop" },
+        "k8s_manifest_apply",
+        APPLY_ARGS,
+      );
+      expect(run.answer).toMatchObject({ ok: true, status: "applied" });
+      expect(run.audit.find((e) => e.outcome === "executed")?.detail["preState"]).toEqual({
+        namespace: "shop",
+        planSha256: SHA,
+        objects: [{ apiVersion: "apps/v1", kind: "Deployment", name: "api" }],
+      });
+    });
+
+    it("an apply out of scope is refused without a prompt or a spawn", async () => {
+      const stub = kubectl();
+      await withEnv({ NIMBUS_MCP_KUBERNETES_WRITE_SCOPE: "namespace:other" }, async () => {
+        const cap = captureStandaloneTools(registerKubernetesTools, { elicitation: true });
+        const res = (await cap.tools.callJson("k8s_manifest_apply", APPLY_ARGS)) as {
+          ok: boolean;
+          error: string;
+        };
+        expect(res.error).toContain("out of scope: namespace:shop");
+        expect(cap.prompts).toEqual([]);
+      });
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("plan out of scope is refused; in scope it runs and is audited as prepared", async () => {
+      const stub = kubectl();
+      const auditDir = mkdtempSync(join(tmpdir(), "k8s-audit-"));
+      const auditLog = join(auditDir, "audit.jsonl");
+      try {
+        await withEnv({ NIMBUS_MCP_KUBERNETES_WRITE_SCOPE: "namespace:other" }, async () => {
+          const cap = captureStandaloneTools(registerKubernetesTools, { elicitation: false });
+          expect(cap.tools.names()).toContain("k8s_manifest_plan");
+          const res = (await cap.tools.callJson("k8s_manifest_plan", PLAN_ARGS)) as {
+            ok: boolean;
+            error: string;
+          };
+          expect(res.ok).toBe(false);
+          expect(res.error).toContain("out of scope: namespace:shop");
+        });
+        expect(stub.calls).toEqual([]);
+        await withEnv(
+          { NIMBUS_MCP_KUBERNETES_WRITE_SCOPE: "namespace:shop", NIMBUS_MCP_AUDIT_LOG: auditLog },
+          async () => {
+            const cap = captureStandaloneTools(registerKubernetesTools, { elicitation: false });
+            const res = (await cap.tools.callJson("k8s_manifest_plan", PLAN_ARGS)) as {
+              planSha256: string;
+            };
+            expect(res.planSha256).toBe(SHA);
+          },
+        );
+        expect(readFileSync(auditLog, "utf8")).toContain("prepared");
+      } finally {
+        rmSync(auditDir, { recursive: true, force: true });
+      }
+    });
   });
 });
