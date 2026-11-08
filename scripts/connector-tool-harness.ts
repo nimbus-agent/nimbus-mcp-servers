@@ -511,14 +511,38 @@ export function stubSpawn(
     onSpawn?: (command: readonly string[]) => void;
   } = {},
 ): SpawnStub {
+  return stubSpawnScript((command) => {
+    reply.onSpawn?.(command);
+    return reply;
+  });
+}
+
+/** What one scripted CLI invocation answers. */
+export interface ScriptedReply {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly exitCode?: number;
+}
+
+/**
+ * {@link stubSpawn}, answering each invocation with what `script` returns for it, for a tool that
+ * runs several commands and branches on their answers (a CloudFormation change set is described
+ * until it settles; `kubectl diff` exits 1 for "differences"). `script` runs at the moment of the
+ * spawn, with the command and the child's environment, so it can also read the files the command
+ * names before the tool removes them.
+ */
+export function stubSpawnScript(
+  script: (command: readonly string[], env: Record<string, string | undefined>) => ScriptedReply,
+): SpawnStub {
   const original = Bun.spawn;
   const calls: RecordedSpawn[] = [];
   const fake = (
     command: readonly string[],
     options?: { env?: Record<string, string | undefined> },
   ): unknown => {
-    calls.push({ command: [...command], env: options?.env ?? {} });
-    reply.onSpawn?.(command);
+    const env = options?.env ?? {};
+    calls.push({ command: [...command], env });
+    const reply = script(command, env);
     return {
       exited: Promise.resolve(reply.exitCode ?? 0),
       stdout: new Blob([reply.stdout ?? "{}"]),

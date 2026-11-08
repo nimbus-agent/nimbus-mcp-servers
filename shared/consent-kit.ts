@@ -82,6 +82,14 @@ export type WriteToolConfig<T> = {
   readonly capturePreState?: (args: T) => Promise<Record<string, unknown>>;
   /** The scope target this invocation would touch, checked against the allow-list. */
   readonly scopeTargetOf: (args: T) => { kind: string; value: string };
+  /**
+   * A refusal no consent can lift (an input the tool will reject, a tool that is refused outright),
+   * as its message, or `undefined` to proceed. Standalone only, and checked FIRST, before scope,
+   * budget and prompt: asking a human to approve a call that is certain to fail trains them to
+   * click through. It does NOT replace the handler's own check: in gateway mode the raw handler is
+   * registered and this is never called, so the handler must refuse the same input itself.
+   */
+  readonly refuseBefore?: (args: T) => string | undefined;
 };
 
 export type WriteToolRegistrar = <T>(
@@ -347,6 +355,13 @@ export function createWriteToolRegistrar(
 
     const guarded = async (args: T): Promise<McpListResult> => {
       const target = toolCfg.scopeTargetOf(args);
+
+      // 0. A refusal no consent can lift comes before everything that could involve a human.
+      const early = toolCfg.refuseBefore?.(args);
+      if (early !== undefined) {
+        await record(name, "refused", { reason: early, target });
+        return refused(early);
+      }
 
       // 1. SCOPE FIRST — before prompting. Asking a human to approve something the operator
       //    already forbade cannot change the outcome, and training people to click through

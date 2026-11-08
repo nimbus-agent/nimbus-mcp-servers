@@ -231,7 +231,12 @@ function serverWith(elicit: Elicit): FakeServer {
 function registerAndGet(
   srv: FakeServer,
   handler: () => Promise<McpListResult>,
-  opts: { scope?: string | undefined; budget?: number; auditLog?: string } = {},
+  opts: {
+    scope?: string | undefined;
+    budget?: number;
+    auditLog?: string;
+    refuseBefore?: (a: { branch: string }) => string | undefined;
+  } = {},
 ): (args: { branch: string }) => Promise<McpListResult> {
   // `"scope" in opts` distinguishes an OMITTED scope (default to a permissive one, so consent
   // cases are not accidentally testing the scope gate) from an explicitly `undefined` one, which
@@ -254,6 +259,7 @@ function registerAndGet(
       recoverable: false,
       capturePreState: () => Promise.resolve({ sha: "abc" }),
       scopeTargetOf: (a: { branch: string }) => ({ kind: "repo", value: a.branch }),
+      ...(opts.refuseBefore === undefined ? {} : { refuseBefore: opts.refuseBefore }),
     },
     "Delete a branch.",
     z.object({ branch: z.string() }),
@@ -358,6 +364,63 @@ describe("client-independent controls", () => {
     const res = await call({ branch: "acme/other" });
     expect(prompted).toBe(0);
     expect(JSON.stringify(res)).toMatch(/out of scope/i);
+  });
+
+  test("refuseBefore refuses BEFORE scope, budget and prompt, and is audited as refused", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "consent-refuse-before-"));
+    const log = join(dir, "audit.jsonl");
+    let prompted = 0;
+    let ran = 0;
+    const srv = serverWith(() => {
+      prompted += 1;
+      return Promise.resolve({ action: "accept", content: { confirm: true } });
+    });
+    // Out of scope AND budget 1: the refusal still names refuseBefore's reason, so it ran first.
+    const call = registerAndGet(
+      srv,
+      async () => {
+        ran += 1;
+        return ok();
+      },
+      {
+        scope: "repo:elsewhere",
+        budget: 1,
+        auditLog: log,
+        refuseBefore: (a) => (a.branch === "bad" ? "bad is refused" : undefined),
+      },
+    );
+    expect(JSON.stringify(await call({ branch: "bad" }))).toContain("bad is refused");
+    expect(prompted).toBe(0);
+    expect(ran).toBe(0);
+    const entries = (await readFile(log, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map(
+        (l) => (JSON.parse(l) as { entry: { outcome: string; detail: { reason?: string } } }).entry,
+      );
+    expect(entries.map((e) => [e.outcome, e.detail.reason])).toEqual([
+      ["refused", "bad is refused"],
+    ]);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("refuseBefore returning undefined leaves the normal path untouched", async () => {
+    let prompted = 0;
+    const srv = serverWith(() => {
+      prompted += 1;
+      return Promise.resolve({ action: "accept", content: { confirm: true } });
+    });
+    let ran = 0;
+    const call = registerAndGet(
+      srv,
+      async () => {
+        ran += 1;
+        return ok();
+      },
+      { refuseBefore: () => undefined },
+    );
+    await call({ branch: "acme/api" });
+    expect([prompted, ran]).toEqual([1, 1]);
   });
 
   test("an EMPTY scope refuses every mutation — unset is not unrestricted", async () => {

@@ -1,4 +1,4 @@
-import { nimbusSpawn } from "./nimbus-spawn.ts";
+import { nimbusSpawn, type SpawnResult } from "./nimbus-spawn.ts";
 
 export type RunCliJsonResult = { ok: true; data: unknown } | { ok: false; message: string };
 
@@ -74,4 +74,20 @@ export async function runCliJsonThrowing(
     throw new Error(r.message);
   }
   return r.data;
+}
+
+/**
+ * Spawn `command` and hand back its exit code with its output, for a CLI whose non-zero exits are
+ * answers rather than failures (`terraform plan -detailed-exitcode` exits 2 for "changes";
+ * `kubectl diff` exits 1 for "differences"). The caller maps every code itself, so an
+ * unexpected one is never taken for success. An empty command is code 1, as nimbusSpawn reports.
+ */
+export async function runCliCode(
+  command: readonly string[],
+  env: Record<string, string | undefined>,
+): Promise<SpawnResult> {
+  if (command.length === 0) {
+    return { code: 1, stdout: "", stderr: "empty command" };
+  }
+  return nimbusSpawn(command, env);
 }
