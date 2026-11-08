@@ -998,6 +998,11 @@ describe("iac cloudformation (gateway mode)", () => {
       expect(subs(stub)).not.toContain("delete-change-set");
       const stub2 = aws(newWorld());
       await expect(discard({ changeSetId: arnOf("manual") })).rejects.toThrow("nimbus-");
+      // A `nimbus-` prefix alone is not this connector's name shape: a person's own change set
+      // named that way must be refused too, before any aws call.
+      await expect(discard({ changeSetId: arnOf("nimbus-prod-hotfix") })).rejects.toThrow(
+        "nimbus-<template sha256>",
+      );
       expect(stub2.calls).toEqual([]);
     });
   });

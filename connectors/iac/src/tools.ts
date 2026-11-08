@@ -439,8 +439,9 @@ async function awaitChangeSet(
     if (status !== "CREATE_PENDING" && status !== "CREATE_IN_PROGRESS") {
       // FAILED (a template with no changes lands here too: its StatusReason says so) or any
       // other terminal status.
+      // Capped like every stderr echo here: the reason is AWS's text and may quote the template.
       throw new Error(
-        `change set ${status ?? "unknown"}: ${str(d["StatusReason"]) ?? "no reason given"}`,
+        `change set ${status ?? "unknown"}: ${(str(d["StatusReason"]) ?? "no reason given").slice(0, 500)}`,
       );
     }
     if (iacTimeHooks.now() >= deadline) {
@@ -513,7 +514,23 @@ async function changeSetCreate(p: {
       "create-change-set",
     );
     const changeSetId = str(created["Id"]);
-    if (changeSetId === undefined) throw new Error("unexpected reply from aws create-change-set");
+    if (changeSetId === undefined) {
+      // The call succeeded, so a change set (and, for CREATE, a REVIEW_IN_PROGRESS stack) may
+      // exist: delete it by name, best effort, rather than leave it behind with no Id to report.
+      await runCliCode(
+        [
+          "aws",
+          "cloudformation",
+          "delete-change-set",
+          "--change-set-name",
+          name,
+          "--stack-name",
+          p.stackName,
+        ],
+        awsEnv(),
+      );
+      throw new Error("unexpected reply from aws create-change-set");
+    }
     const stackId = str(created["StackId"]) ?? "";
 
     const describe = (nextToken?: string): Promise<string> =>
@@ -594,10 +611,17 @@ async function changeSetExecute(p: {
   });
 }
 
+/**
+ * The exact shape of a change set name this connector makes (`nimbus-<template sha256>-<12 hex>`).
+ * Discard requires all of it, not a `nimbus-` prefix: a person's own `nimbus-prod-hotfix` change
+ * set must not be deletable through a tool that says it deletes only its own.
+ */
+const NIMBUS_CHANGE_SET_NAME = /^nimbus-[0-9a-f]{64}-[0-9a-f]{12}$/;
+
 function discardProblem(changeSetId: string): string | undefined {
-  return changeSetNameOf(changeSetId).startsWith("nimbus-")
+  return NIMBUS_CHANGE_SET_NAME.test(changeSetNameOf(changeSetId))
     ? undefined
-    : "only a change set this connector made (nimbus-…) can be discarded";
+    : "only a change set this connector made (nimbus-<template sha256>-<12 hex>) can be discarded";
 }
 
 async function describeChangeSetOrMissing(

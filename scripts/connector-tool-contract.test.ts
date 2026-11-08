@@ -161,7 +161,7 @@ const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
     {
       planSha256: "a".repeat(64),
       changeSetId:
-        "arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-x/11111111-2222-3333-4444-555555555555",
+        "arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0123456789ab/11111111-2222-3333-4444-555555555555",
     },
   ],
   // The commit tools take a list of {path, content} objects and a full 40-hex head sha.

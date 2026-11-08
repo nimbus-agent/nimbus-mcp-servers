@@ -118,3 +118,12 @@ AGPL-3.0
   `nimbus-<sha>-<12 hex>`). A `get-template` comparison was dropped because CloudFormation
   re-serialises templates.
 - No spawn timeout (repo-wide, pre-existing). Stderr echoed in errors is capped at 500 characters.
+- **`iac_terraform_show_json` returns the plan JSON as Terraform renders it**, sensitive values
+  included (Terraform marks them with `*_sensitive` but prints them). It is a prepare tool: under
+  the gateway its reply is for the gateway's own preview render, never handed to the model as is;
+  a standalone client should treat it as secret.
+- **A standalone approval shows a hash, not the plan.** The apply prompt names `planFile`,
+  `planSha256` and `workingDirectory`; run `iac_terraform_show_json` on the same file first to see
+  what that hash stands for.
+- Discard deletes only a change set whose name has this connector's exact shape,
+  `nimbus-<template sha256>-<12 hex>`; a person's own `nimbus-…` change set is refused.

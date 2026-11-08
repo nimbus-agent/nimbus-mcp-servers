@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { scanNamespacedManifest } from "../src/manifest-scan.ts";
+import { scanNamespacedManifest, trimTrailingSpaces } from "../src/manifest-scan.ts";
 
 const NS = "shop";
 const DEPLOY = ["apiVersion: apps/v1", "kind: Deployment", "metadata:", "  name: api", ""].join(
@@ -721,5 +721,21 @@ describe("scanNamespacedManifest: round-1 review fixes", () => {
     } catch (e) {
       expect(String(e)).not.toContain("na me");
     }
+  });
+});
+
+describe("scanNamespacedManifest: linear time", () => {
+  it("trimTrailingSpaces trims only trailing spaces", () => {
+    expect(trimTrailingSpaces("a b   ")).toBe("a b");
+    expect(trimTrailingSpaces("   ")).toBe("");
+    expect(trimTrailingSpaces("a\t ")).toBe("a\t");
+  });
+
+  it("a value with a quarter-million interior spaces scans in well under a second", () => {
+    // A trailing-space regex retried from every space of the run: this took 12 s before.
+    const manifest = `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\ndata:\n  k: a${" ".repeat(250_000)}b\n`;
+    const started = performance.now();
+    expect(scanNamespacedManifest(manifest, "shop")).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });

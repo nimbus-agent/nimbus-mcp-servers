@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { cliArg } from "../../../shared/cli-json-kit.ts";
@@ -115,6 +115,9 @@ function kubectlFailure(
     : stderr.slice(0, 500);
   return new Error(`${label} exited ${String(code)}: ${detail}`);
 }
+
+/** What a plan's `diff` holds in place of kubectl's when the manifest holds a Secret. */
+export const SECRET_DIFF_WITHHELD = "(diff withheld: the manifest holds a Secret)";
 
 /** The `kubectl ... -o name` resource prefix of each allowlisted kind. */
 const RESOURCE_PREFIX: Readonly<Record<string, string>> = {
@@ -409,12 +412,16 @@ export function registerKubernetesTools(
           if (Buffer.byteLength(diff.stdout, "utf8") > DIFF_MAX_BYTES) {
             throw new Error(`diff too large (over ${String(DIFF_MAX_BYTES)} bytes)`);
           }
+          // kubectl masks a Secret's `data`, but the diff's context lines can still carry its
+          // plaintext (a `last-applied-configuration` annotation, `stringData`), so with a Secret
+          // in the manifest only the fact of a difference is returned, never the body.
+          const holdsSecret = scanned.some((o) => o.kind === "Secret");
           return {
             planSha256: sha256,
             namespace: ns,
             objects,
             scanned,
-            diff: diff.stdout,
+            diff: holdsSecret ? SECRET_DIFF_WITHHELD : diff.stdout,
             hasDifferences: diff.code === 1,
           };
         });
@@ -457,6 +464,11 @@ export function registerKubernetesTools(
           // Dry run and cross-check FIRST, so an object kubectl would apply that the scan did not
           // read stops the call before anything changes.
           await serverDryRun(kube, p.namespace, file, scanned);
+          // The file the real apply reads must still hold the approved bytes: the dry run was a
+          // child process with the same file, and on Windows the 0600 mode is not enforced.
+          if (!bytes.equals(await readFile(file))) {
+            throw new Error("the manifest file changed before the apply");
+          }
           const applied = await runCliCode(
             [
               ...kubectlBase(),

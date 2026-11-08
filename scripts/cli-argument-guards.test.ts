@@ -225,7 +225,7 @@ const SWEEP_SEED: Record<string, unknown> = {
   // iac: a plan hash and a change set ARN, which no generic string satisfies.
   planSha256: "a".repeat(64),
   changeSetId:
-    "arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-x/11111111-2222-3333-4444-555555555555",
+    "arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0123456789ab/11111111-2222-3333-4444-555555555555",
 };
 
 /**

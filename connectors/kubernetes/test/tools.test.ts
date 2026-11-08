@@ -15,7 +15,7 @@ import {
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
-import { registerKubernetesTools } from "../src/tools.ts";
+import { registerKubernetesTools, SECRET_DIFF_WITHHELD } from "../src/tools.ts";
 
 let tools: CapturedTools;
 let spawn: SpawnStub | undefined;
@@ -566,6 +566,19 @@ ${manifest}`,
       expect(err).not.toContain("topsecret");
     });
 
+    it("withholds the diff body, but not the fact of a difference, when the manifest holds a Secret", async () => {
+      const secretManifest =
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: s\nstringData:\n  pw: topsecret\n";
+      kubectl({ diffCode: 1, diffOut: "+  pw: topsecret\n", applyOut: "secret/s\n" });
+      const out = (await tools.callJson("k8s_manifest_plan", {
+        namespace: "shop",
+        manifest: secretManifest,
+      })) as { diff: string; hasDifferences: boolean };
+      expect(out.diff).toBe(SECRET_DIFF_WITHHELD);
+      expect(out.hasDifferences).toBe(true);
+      expect(JSON.stringify(out)).not.toContain("topsecret");
+    });
+
     it("the plan hash binds the namespace: the same manifest in another namespace hashes differently", async () => {
       kubectl();
       const a = (await tools.callJson("k8s_manifest_plan", PLAN_ARGS)) as { planSha256: string };
@@ -647,6 +660,24 @@ ${manifest}`,
       for (const s of seen) expect(s.manifest).toBe(MANIFEST);
       expect(existsSync(file)).toBe(false);
       expect(stub.calls[0]?.env["KUBECONFIG"]).not.toBe(kubeSource);
+    });
+
+    it("does not apply when the manifest file changed between the dry run and the apply", async () => {
+      spawn?.restore();
+      let calls = 0;
+      spawn = stubSpawnScript((command) => {
+        calls += 1;
+        const file = command[command.indexOf("-f") + 1];
+        // The dry run passes, then the file is rewritten before the real apply would read it.
+        if (file !== undefined) {
+          writeFileSync(file, MANIFEST.replace("name: api", "name: other"));
+        }
+        return { exitCode: 0, stdout: "deployment.apps/api\n" };
+      });
+      await expect(tools.call("k8s_manifest_apply", APPLY_ARGS)).rejects.toThrow(
+        "the manifest file changed before the apply",
+      );
+      expect(calls).toBe(1);
     });
 
     it("does not apply when the dry run names other objects than the scan read", async () => {

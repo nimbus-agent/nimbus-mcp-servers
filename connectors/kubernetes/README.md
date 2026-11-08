@@ -94,3 +94,19 @@ nimbus ask "Summarize my recent activity in Kubernetes"
 ## License
 
 AGPL-3.0
+
+## Further bounds (security review, round 2)
+
+- **A Secret withholds the diff body.** When the manifest holds a `Secret`, the plan's `diff` is
+  `(diff withheld: the manifest holds a Secret)` and only `hasDifferences` tells whether anything
+  would change: kubectl masks `data`, but context lines (a `last-applied-configuration`
+  annotation) can carry plaintext. The plan reads live cluster state for every object it names.
+- **`planSha256` is an integrity check, not a capability.** It proves the apply carries the very
+  namespace and manifest that were planned; a standalone client can compute it without running the
+  plan. Under the gateway it is bound from the plan's own reply. A standalone prompt shows the
+  manifest, not the diff: run `k8s_manifest_plan` first to see the diff.
+- **The standalone audit log records the parameters,** the manifest included (a Secret's values
+  too) when `NIMBUS_MCP_AUDIT_LOG` is set. Keep that log private.
+- **The manifest file is re-read before the real apply** and the apply refused if it changed after
+  the dry run (on Windows the 0600 mode is not enforced).
+- The scanner is linear in the manifest size (a trailing-space regex that was quadratic is gone).

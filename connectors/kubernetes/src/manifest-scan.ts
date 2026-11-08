@@ -221,6 +221,17 @@ function isIndicatorAt(s: string, i: number): boolean {
 }
 
 /**
+ * `s` without its trailing spaces, in one backwards pass. Not `.replace(/ +$/, "")`: that regex
+ * retries from every space of an interior run, so a value holding a quarter-million spaces before
+ * a non-space took twelve seconds to scan (a manifest under the size cap could stall the connector).
+ */
+export function trimTrailingSpaces(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.codePointAt(end - 1) === 0x20) end -= 1;
+  return s.slice(0, end);
+}
+
+/**
  * The text after a `key:` or a `- `: refuse what cannot be read with certainty, strip a trailing
  * comment, and classify it. Applied to EVERY line at EVERY depth.
  */
@@ -253,7 +264,7 @@ function lexValue(raw: string, where: Where): Value {
     refuse("a nested sequence or empty-key indicator on one line is not accepted", where);
   }
   const hash = v.indexOf(" #");
-  const text = (hash === -1 ? v : v.slice(0, hash)).replace(/ +$/, "");
+  const text = trimTrailingSpaces(hash === -1 ? v : v.slice(0, hash));
   if (text.endsWith(":") || text.includes(": ")) {
     refuse("a mapping indicator inside a value is not accepted", where);
   }
