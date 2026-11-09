@@ -130,17 +130,77 @@ describe("codemagic_build_latest", () => {
     const stub = serve(JSON.stringify(BUILDS));
     await withToken(async () => {
       expect(await tools.callJson("codemagic_build_latest", ARGS)).toEqual({
-        build: BUILDS.builds[2],
+        build: { id: "b1", status: "finished", branch: "main", workflowId: "ios-release" },
         scanned: 3,
       });
       expect(
         await tools.callJson("codemagic_build_latest", { appId: "app_1", branch: "dev" }),
-      ).toMatchObject({ build: { _id: "b2" } });
+      ).toMatchObject({ build: { id: "b2" } });
       expect(await tools.callJson("codemagic_build_latest", { appId: "app_1" })).toMatchObject({
-        build: { _id: "b3" },
+        build: { id: "b3" },
       });
     });
     expect(stub.calls[0]?.url).toBe(`${API}/builds?appId=app_1&limit=50`);
+  });
+
+  it("projects a fixed field set, dropping artefacts, config and unknown fields, and caps strings", async () => {
+    serve(
+      JSON.stringify({
+        builds: [
+          {
+            _id: "b9",
+            status: "finished",
+            branch: "main",
+            workflowId: "ios-release",
+            index: 41,
+            createdAt: "c",
+            startedAt: "s",
+            finishedAt: "f",
+            artefacts: [{ url: "https://secret.example/app.ipa" }],
+            config: { env: { TOKEN: "x" } },
+            surprise: "dropped",
+          },
+          { _id: "b8", workflowId: "ios-release", status: "q".repeat(900) },
+        ],
+      }),
+    );
+    await withToken(async () => {
+      expect(await tools.callJson("codemagic_build_latest", { appId: "app_1" })).toEqual({
+        build: {
+          id: "b9",
+          status: "finished",
+          branch: "main",
+          workflowId: "ios-release",
+          index: 41,
+          createdAt: "c",
+          startedAt: "s",
+          finishedAt: "f",
+        },
+        scanned: 2,
+      });
+    });
+  });
+
+  it("caps a long status at 500 characters with a marker", async () => {
+    serve(JSON.stringify({ builds: [{ _id: "b", status: "q".repeat(900) }] }));
+    await withToken(async () => {
+      const out = (await tools.callJson("codemagic_build_latest", { appId: "app_1" })) as {
+        build: { status: string };
+      };
+      expect(out.build.status).toBe(`${"q".repeat(500)}...[truncated]`);
+    });
+  });
+
+  it("a 202 with a plain-text body to the trigger is still accepted, with no second request", async () => {
+    const stub = serve({ status: 202, body: "Accepted" });
+    await withToken(async () => {
+      expect(await tools.callJson("codemagic_build_trigger", ARGS)).toMatchObject({
+        ok: true,
+        status: "accepted",
+        buildId: null,
+      });
+    });
+    expect(stub.calls).toHaveLength(1);
   });
 
   it("returns build: null when nothing matches", async () => {

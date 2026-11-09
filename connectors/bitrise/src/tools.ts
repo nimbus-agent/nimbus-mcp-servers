@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { capText } from "../../../shared/cap-text.ts";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
   createJsonGetter,
@@ -159,11 +160,11 @@ export function registerBitriseTools(
             : {
                 slug,
                 status: first["status"],
-                status_text: str(first["status_text"]),
-                branch: str(first["branch"]),
-                triggered_workflow: str(first["triggered_workflow"]),
-                triggered_at: str(first["triggered_at"]),
-                finished_at: str(first["finished_at"]),
+                status_text: capText(first["status_text"]),
+                branch: capText(first["branch"]),
+                triggered_workflow: capText(first["triggered_workflow"]),
+                triggered_at: capText(first["triggered_at"]),
+                finished_at: capText(first["finished_at"]),
               },
       });
     },

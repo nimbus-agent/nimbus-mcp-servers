@@ -35,7 +35,7 @@ Tools exposed:
 | `codemagic_list`   | List the user's apps, or recent builds for an app (limit optional).         |
 | `codemagic_get`    | Fetch a single build by id, or the app list.                                |
 | `codemagic_search` | Substring search across recent builds (branch / message / workflow / status). |
-| `codemagic_build_latest` | The app's latest build, optionally of one workflow and branch, filtered here from its last 50 builds. |
+| `codemagic_build_latest` | The app's latest build, optionally of one workflow and branch, filtered here from its last 50 builds and projected to `id, status, branch, workflowId, index, createdAt, startedAt, finishedAt` (nothing about artefacts or config; these field names are unverified). |
 | `codemagic_build_trigger` | WRITE. `POST /builds`, body `{ appId, workflowId, branch }`, `x-auth-token`. Branch and trigger settings in codemagic.yaml are not applied to an API build. Mutates `codemagic.build.trigger`, recoverable (a build can be cancelled). Scope `app:<appId>`. |
 
 ### Write tools

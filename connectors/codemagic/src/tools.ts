@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { capText } from "../../../shared/cap-text.ts";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
   createJsonGetter,
@@ -49,6 +50,26 @@ function asObj(v: unknown): Obj {
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/**
+ * A build reduced to a fixed field set. Everything else Codemagic returns (artefacts, config,
+ * commit and workflow settings) is dropped, and so is any unknown field. The field names are
+ * Codemagic's and are not verified against a live account.
+ */
+function projectBuild(b: Obj): Obj {
+  const scalar = (v: unknown): string | number | undefined =>
+    typeof v === "number" ? v : capText(v);
+  return {
+    id: capText(b["_id"]) ?? capText(b["id"]),
+    status: capText(b["status"]),
+    branch: capText(b["branch"]),
+    workflowId: capText(b["workflowId"]),
+    index: scalar(b["index"]),
+    createdAt: scalar(b["createdAt"]),
+    startedAt: scalar(b["startedAt"]),
+    finishedAt: scalar(b["finishedAt"]),
+  };
 }
 
 export function registerCodemagicTools(
@@ -111,7 +132,7 @@ export function registerCodemagicTools(
 
   reg(
     "codemagic_build_latest",
-    "Read an app's most recent Codemagic build, optionally of one `workflowId` and/or `branch`: the app's last 50 builds (`GET /builds?appId=<id>&limit=50`) filtered here, newest first. Returns `{ build: <the build object as Codemagic returned it> | null, scanned }`. The build's field names are Codemagic's own and are not remapped.",
+    "Read an app's most recent Codemagic build, optionally of one `workflowId` and/or `branch`: the app's last 50 builds (`GET /builds?appId=<id>&limit=50`) filtered here, newest first. Returns `{ build: { id, status, branch, workflowId, index, createdAt, startedAt, finishedAt } | null, scanned }`; every other field is dropped. The field names are Codemagic's own and unverified.",
     z.object({
       appId: idArg,
       workflowId: idArg.optional(),
@@ -129,7 +150,10 @@ export function registerCodemagicTools(
           (p.branch === undefined || b["branch"] === p.branch)
         );
       });
-      return jsonResult({ build: match ?? null, scanned: builds.length });
+      return jsonResult({
+        build: match === undefined ? null : projectBuild(asObj(match)),
+        scanned: builds.length,
+      });
     },
   );
 

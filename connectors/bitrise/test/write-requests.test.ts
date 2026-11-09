@@ -182,6 +182,28 @@ describe("bitrise_build_latest", () => {
     );
   });
 
+  it("caps a long status_text at 500 characters with a marker", async () => {
+    serve(JSON.stringify({ data: [{ slug: "b1", status_text: "x".repeat(700) }] }));
+    await withToken(async () => {
+      const out = (await tools.callJson("bitrise_build_latest", { appSlug: "app-1" })) as {
+        build: { status_text: string };
+      };
+      expect(out.build.status_text).toBe(`${"x".repeat(500)}...[truncated]`);
+    });
+  });
+
+  it("a 202 with a plain-text body to the trigger is still accepted, with no second request", async () => {
+    const stub = serve({ status: 202, body: "Accepted" });
+    await withToken(async () => {
+      expect(await tools.callJson("bitrise_build_trigger", ARGS)).toMatchObject({
+        ok: true,
+        status: "accepted",
+        buildSlug: null,
+      });
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+
   it("returns build: null when the app has none, with only limit=1 in the query", async () => {
     const stub = serve('{"data":[]}');
     await withToken(async () => {
