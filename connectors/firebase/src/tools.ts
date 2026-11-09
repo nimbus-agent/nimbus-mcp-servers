@@ -64,7 +64,14 @@ async function appDistRequest(
   if (!res.ok) {
     throw new Error(`${LABEL} ${String(res.status)}: ${text.slice(0, 400)}`);
   }
-  return text === "" ? {} : (JSON.parse(text) as unknown);
+  if (text === "") return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    // A 2xx means the call was applied: an unparseable body must not read as a failure, or the
+    // caller retries and invites every tester twice.
+    return {};
+  }
 }
 
 async function appDistGet(path: string): Promise<unknown> {
@@ -104,7 +111,8 @@ function distributeRecipients(p: DistributeArgs): {
 } {
   return {
     groupAliases: [...new Set(p.groupAliases ?? [])],
-    testerEmails: [...new Set(p.testerEmails ?? [])],
+    // Email addresses are case-insensitive here: fold before de-duplicating, send the folded form.
+    testerEmails: [...new Set((p.testerEmails ?? []).map((e) => e.toLowerCase()))],
   };
 }
 

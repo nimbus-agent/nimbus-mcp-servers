@@ -759,7 +759,12 @@ const WRITES: Readonly<
   netlify: {
     register: registerNetlifyTools,
     cases: [
-      ["netlify_build_trigger", "netlify.build.trigger", { siteId: "site-z" }, "site:site-z"],
+      [
+        "netlify_build_trigger",
+        "netlify.build.trigger",
+        { siteId: "site-z", production: true },
+        "site:site-z",
+      ],
     ],
   },
   testflight: {

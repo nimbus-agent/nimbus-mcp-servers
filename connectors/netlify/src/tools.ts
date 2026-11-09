@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { capText } from "../../../shared/cap-text.ts";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
   createJsonGetter,
@@ -49,6 +50,32 @@ function asObj(v: unknown): Obj {
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+interface TriggerArgs {
+  readonly siteId: string;
+  readonly branch?: string | undefined;
+  readonly production?: true | undefined;
+  readonly clearCache?: boolean | undefined;
+}
+
+/**
+ * Why a build trigger is refused before anything is sent, or `undefined`. An omitted `branch`
+ * publishes the PRODUCTION site, and the owner's preview shows the input only, so that choice must
+ * be written in the input: `production: true`. Shared by `refuseBefore` (standalone) and the
+ * handler (gateway mode registers the raw handler).
+ */
+function triggerProblem(p: TriggerArgs): string | undefined {
+  if (p.branch !== undefined && p.production === true) {
+    return "give a branch or production: true, not both; nothing was sent";
+  }
+  if (p.branch === undefined && p.production !== true) {
+    return "name a branch, or pass production: true to publish the production site; nothing was sent";
+  }
+  if (p.branch !== undefined && !isSafeGitRef(p.branch)) {
+    return "branch is not a safe git ref; nothing was sent";
+  }
+  return undefined;
 }
 
 export function registerNetlifyTools(
@@ -112,14 +139,14 @@ export function registerNetlifyTools(
         deploys.map((raw) => {
           const d = asObj(raw);
           return {
-            id: str(d["id"]),
-            state: str(d["state"]),
-            branch: str(d["branch"]),
-            context: str(d["context"]),
-            commit_ref: str(d["commit_ref"]),
-            created_at: str(d["created_at"]),
-            published_at: str(d["published_at"]),
-            error_message: str(d["error_message"]),
+            id: capText(d["id"]),
+            state: capText(d["state"]),
+            branch: capText(d["branch"]),
+            context: capText(d["context"]),
+            commit_ref: capText(d["commit_ref"]),
+            created_at: capText(d["created_at"]),
+            published_at: capText(d["published_at"]),
+            error_message: capText(d["error_message"]),
           };
         }),
       );
@@ -133,17 +160,18 @@ export function registerNetlifyTools(
       // A build adds a deploy; it does not delete one, and a production deploy is replaced by the next one.
       recoverable: true,
       scopeTargetOf: (p: { siteId: string }) => ({ kind: "site", value: p.siteId }),
+      refuseBefore: (p: TriggerArgs) => triggerProblem(p),
     },
-    "Start a Netlify build of a site (`POST /api/v1/sites/{siteId}/builds`, query `branch` and `clear_cache`, NO body). IMPORTANT: when `branch` is omitted Netlify treats the build as a PRODUCTION deploy and publishes it when it succeeds; a branch that is not the site's production branch makes a branch deploy. `clearCache: true` discards the build cache first. The reply is `accepted` with the build id: Netlify builds it afterwards, so check `netlify_deploy_list`.",
+    "Start a Netlify build of a site (`POST /api/v1/sites/{siteId}/builds`, query `branch` and `clear_cache`, NO body). IMPORTANT: Netlify treats a build with no branch as a PRODUCTION deploy and publishes it when it succeeds, so you MUST either name a `branch` (a branch that is not the site's production branch makes a branch deploy) or pass `production: true` to publish the production site on purpose; neither, or both, sends nothing. `clearCache: true` discards the build cache first. The reply is `accepted` with the build id: Netlify builds it afterwards, so check `netlify_deploy_list`.",
     z.object({
       siteId: siteIdArg,
       branch: z.string().min(1).max(255).optional(),
+      production: z.literal(true).optional(),
       clearCache: z.boolean().optional(),
     }),
     async (p) => {
-      if (p.branch !== undefined && !isSafeGitRef(p.branch)) {
-        throw new Error("branch is not a safe git ref; nothing was sent");
-      }
+      const problem = triggerProblem(p);
+      if (problem !== undefined) throw new Error(problem);
       // Netlify documents these as QUERY parameters, so nothing goes in a body.
       const search = new URLSearchParams();
       if (p.branch !== undefined) {
@@ -164,7 +192,7 @@ export function registerNetlifyTools(
         ok: true,
         status: "accepted",
         siteId: p.siteId,
-        // Omitted branch = a production deploy, as documented; say so in the result too.
+        // No branch = a production deploy (documented), and only `production: true` gets here without one.
         branch: p.branch ?? null,
         production: p.branch === undefined,
         buildId: str(reply["id"]) ?? null,

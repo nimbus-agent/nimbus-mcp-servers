@@ -52,7 +52,8 @@ Tools exposed:
 | `testflight_get`    | Fetch a single build by id, or a single app by id.                               |
 | `testflight_search` | Substring search across an app's recent builds (version / processing state / id). |
 | `testflight_build_groups_get` | The beta groups a build is already in (`GET /v1/builds/{id}/betaGroups`), with `isInternalGroup` and `publicLinkEnabled` (a group with a public link reaches anyone holding it). |
-| `testflight_build_distribute` | WRITE. `POST /v1/builds/{buildId}/relationships/betaGroups`, body `{ data: [{ type: "betaGroups", id }] }`, 1 to 20 groups. The build must belong to `appId`: `GET /v1/builds/{buildId}?include=app` is read first and a build of another app sends nothing. Mutates `testflight.build.distribute`; not recoverable, the groups the build is already in are audited first. Scope `app:<appId>`. |
+| `testflight_beta_groups_list` | An app's beta groups (`GET /v1/apps/{appId}/betaGroups`, at most 200), with `isInternalGroup` and `publicLinkEnabled`. Read it before a distribute to see which TARGET groups are public. |
+| `testflight_build_distribute` | WRITE. `POST /v1/builds/{buildId}/relationships/betaGroups`, body `{ data: [{ type: "betaGroups", id }] }`, 1 to 20 groups. The build must belong to `appId`: `GET /v1/builds/{buildId}?include=app` is read first and a build of another app sends nothing, and so does a `betaGroupId` that is not one of the app's groups (`GET /v1/apps/{appId}/betaGroups`). Mutates `testflight.build.distribute`; not recoverable, the groups the build is already in are audited first. Scope `app:<appId>`. |
 
 ### Write tools
 

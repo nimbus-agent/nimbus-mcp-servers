@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   type FetchStub,
   type RecordedRequest,
@@ -127,10 +128,59 @@ describe("netlify_build_trigger (gateway mode)", () => {
     const stub = serve('{"id":"bld_2","deploy_id":"dpl_2"}');
     let result: unknown;
     await withToken(async () => {
-      result = await tools.callJson("netlify_build_trigger", { siteId: "site-1" });
+      result = await tools.callJson("netlify_build_trigger", {
+        siteId: "site-1",
+        production: true,
+      });
     });
     expect(stub.only.url).toBe(`${API}/api/v1/sites/site-1/builds`);
     expect(result).toMatchObject({ branch: null, production: true, buildId: "bld_2" });
+  });
+
+  it("refuses neither a branch nor production: true, and both together, before any request", async () => {
+    const stub = serve("{}");
+    await withToken(async () => {
+      await expect(tools.call("netlify_build_trigger", { siteId: "site-1" })).rejects.toThrow(
+        "name a branch, or pass production: true to publish the production site; nothing was sent",
+      );
+      await expect(
+        tools.call("netlify_build_trigger", { siteId: "site-1", branch: "main", production: true }),
+      ).rejects.toThrow(/not both/);
+      await expect(
+        tools.call("netlify_build_trigger", { siteId: "site-1", production: false }),
+      ).rejects.toThrow();
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("production: true sends no branch query", async () => {
+    const stub = serve("{}");
+    await withToken(async () => {
+      await tools.call("netlify_build_trigger", { siteId: "site-1", production: true });
+    });
+    expect(stub.only.url).toBe(`${API}/api/v1/sites/site-1/builds`);
+  });
+
+  it("a 202 with a plain-text body is still accepted, with no second request", async () => {
+    const stub = serve({ status: 202, body: "Accepted" });
+    await withToken(async () => {
+      expect(
+        await tools.callJson("netlify_build_trigger", { siteId: "site-1", production: true }),
+      ).toMatchObject({ ok: true, status: "accepted", buildId: null });
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("deploy_list caps long vendor strings at 500 characters with a marker", async () => {
+    serve(JSON.stringify([{ id: "d1", error_message: "e".repeat(800), branch: "b".repeat(501) }]));
+    await withToken(async () => {
+      const out = (await tools.callJson("netlify_deploy_list", { siteId: "site-1" })) as {
+        error_message: string;
+        branch: string;
+      }[];
+      expect(out[0]?.error_message).toBe(`${"e".repeat(500)}...[truncated]`);
+      expect(out[0]?.branch).toBe(`${"b".repeat(500)}...[truncated]`);
+    });
   });
 
   it("clearCache false sends no clear_cache", async () => {
@@ -148,9 +198,9 @@ describe("netlify_build_trigger (gateway mode)", () => {
   it("refuses a 307 and sends no second request", async () => {
     const stub = serve({ status: 307, headers: { Location: "https://evil.test/steal" } });
     await withToken(async () => {
-      await expect(tools.call("netlify_build_trigger", { siteId: "site-1" })).rejects.toThrow(
-        /redirect/i,
-      );
+      await expect(
+        tools.call("netlify_build_trigger", { siteId: "site-1", production: true }),
+      ).rejects.toThrow(/redirect/i);
     });
     expect(stub.calls).toHaveLength(1);
     expect(stub.only.redirect).toBe("manual");
@@ -160,7 +210,9 @@ describe("netlify_build_trigger (gateway mode)", () => {
     const stub = serve("{}");
     await withToken(async () => {
       for (const bad of ["../x", "a/b", "a b", "", ".", ".."]) {
-        await expect(tools.call("netlify_build_trigger", { siteId: bad })).rejects.toThrow();
+        await expect(
+          tools.call("netlify_build_trigger", { siteId: bad, production: true }),
+        ).rejects.toThrow();
       }
       for (const bad of ["../x", "-x", "a b", "a..b", "x.lock", "a&clear_cache=true"]) {
         await expect(
@@ -174,9 +226,9 @@ describe("netlify_build_trigger (gateway mode)", () => {
   it("refuses without NETLIFY_TOKEN before any request", async () => {
     const stub = serve("{}");
     await withEnv({ NETLIFY_TOKEN: undefined }, async () => {
-      await expect(tools.call("netlify_build_trigger", { siteId: "site-1" })).rejects.toThrow(
-        "NETLIFY_TOKEN is not set",
-      );
+      await expect(
+        tools.call("netlify_build_trigger", { siteId: "site-1", production: true }),
+      ).rejects.toThrow("NETLIFY_TOKEN is not set");
     });
     expect(stub.calls).toEqual([]);
   });
@@ -184,14 +236,40 @@ describe("netlify_build_trigger (gateway mode)", () => {
   it("surfaces an API refusal and never reports completion", async () => {
     serve({ status: 422, body: "bad branch" });
     await withToken(async () => {
-      await expect(tools.call("netlify_build_trigger", { siteId: "site-1" })).rejects.toThrow(
-        /422.*bad branch/,
-      );
+      await expect(
+        tools.call("netlify_build_trigger", { siteId: "site-1", production: true }),
+      ).rejects.toThrow(/422.*bad branch/);
     });
     serve('{"id":"b","deploy_id":"d","done":true}');
     await withToken(async () => {
-      const text = JSON.stringify(await tools.callJson("netlify_build_trigger", { siteId: "s" }));
+      const text = JSON.stringify(
+        await tools.callJson("netlify_build_trigger", { siteId: "s", production: true }),
+      );
       expect(text).not.toMatch(/deployed|done|completed/i);
     });
+  });
+});
+
+describe("netlify_build_trigger (standalone mode)", () => {
+  it("refuses a build with neither a branch nor production: true before asking or sending", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    let capture: ReturnType<typeof captureStandaloneTools> | undefined;
+    await withEnv(
+      { NIMBUS_MCP_NETLIFY_WRITE_SCOPE: "site:site-1", NIMBUS_MCP_AUDIT_LOG: undefined },
+      () => {
+        capture = captureStandaloneTools(registerNetlifyTools, { elicitation: true });
+      },
+    );
+    const stub = serve("{}");
+    await withToken(async () => {
+      expect(await capture?.tools.callJson("netlify_build_trigger", { siteId: "site-1" })).toEqual({
+        ok: false,
+        error:
+          "name a branch, or pass production: true to publish the production site; nothing was sent",
+      });
+    });
+    expect(capture?.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
   });
 });

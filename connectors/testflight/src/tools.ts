@@ -1,5 +1,6 @@
 import { signAppStoreConnectJwt } from "@nimbus-dev/sdk";
 import { z } from "zod";
+import { capText } from "../../../shared/cap-text.ts";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import {
   createJsonGetter,
@@ -42,6 +43,7 @@ export const TESTFLIGHT_TOOL_NAMES = [
   "testflight_get",
   "testflight_search",
   "testflight_build_groups_get",
+  "testflight_beta_groups_list",
   "testflight_build_distribute",
 ] as const;
 
@@ -65,20 +67,34 @@ function str(v: unknown): string | undefined {
  * on purpose: a group with a public link is open to anyone who holds the link, whoever is in it.
  */
 async function readBuildGroups(buildId: string): Promise<Obj[]> {
-  const root = asObj(
+  return projectGroups(
     await appstoreGet(`/v1/builds/${encodeURIComponent(buildId)}/betaGroups?limit=200`),
+    200,
   );
-  const data = Array.isArray(root["data"]) ? root["data"] : [];
-  return data.map((raw) => {
+}
+
+/** At most `cap` groups of an App Store Connect list reply, as `{id, name, isInternalGroup, publicLinkEnabled}`. */
+function projectGroups(reply: unknown, cap: number): Obj[] {
+  const data = Array.isArray(asObj(reply)["data"]) ? (asObj(reply)["data"] as unknown[]) : [];
+  return data.slice(0, cap).map((raw) => {
     const g = asObj(raw);
     const attrs = asObj(g["attributes"]);
     return {
-      id: str(g["id"]),
-      name: str(attrs["name"]),
+      id: capText(g["id"]),
+      name: capText(attrs["name"]),
       isInternalGroup: attrs["isInternalGroup"],
       publicLinkEnabled: attrs["publicLinkEnabled"],
     };
   });
+}
+
+/** The ids of the beta groups an app has, from `GET /v1/apps/{appId}/betaGroups`. */
+async function appGroupIds(appId: string): Promise<Set<string>> {
+  const groups = projectGroups(
+    await appstoreGet(`/v1/apps/${encodeURIComponent(appId)}/betaGroups?limit=200`),
+    200,
+  );
+  return new Set(groups.map((g) => g["id"]).filter((id): id is string => typeof id === "string"));
 }
 
 /** The app a build belongs to, from `GET /v1/builds/{id}?include=app`. */
@@ -150,6 +166,19 @@ export function registerTestflightTools(
     async (p) => jsonResult({ groups: await readBuildGroups(p.buildId) }),
   );
 
+  reg(
+    "testflight_beta_groups_list",
+    "List an app's TestFlight beta groups (`GET /v1/apps/{appId}/betaGroups`), at most `limit` (default 100, max 200), projected to `{ groups: [{ id, name, isInternalGroup, publicLinkEnabled }] }`. Read it BEFORE `testflight_build_distribute` to see which target groups are public: a group with `publicLinkEnabled: true` is reachable by anyone who holds its link.",
+    z.object({ appId: idArg, limit: z.number().int().min(1).max(200).optional() }),
+    async (p) => {
+      const search = new URLSearchParams({ limit: String(p.limit ?? 100) });
+      const root = await appstoreGet(
+        `/v1/apps/${encodeURIComponent(p.appId)}/betaGroups?${search.toString()}`,
+      );
+      return jsonResult({ groups: projectGroups(root, p.limit ?? 100) });
+    },
+  );
+
   registerWriteTool(
     "testflight_build_distribute",
     {
@@ -176,6 +205,14 @@ export function registerTestflightTools(
       const owner = await appOfBuild(p.buildId);
       if (owner !== p.appId) {
         throw new Error(`build ${p.buildId} does not belong to app ${p.appId}; nothing was sent`);
+      }
+      // Every target group must be one of this app's: one GET, and nothing is sent on a mismatch.
+      const known = await appGroupIds(p.appId);
+      const stray = p.betaGroupIds.filter((id) => !known.has(id));
+      if (stray.length > 0) {
+        throw new Error(
+          `beta group(s) ${stray.join(", ")} do not belong to app ${p.appId}; nothing was sent`,
+        );
       }
       await appstoreSend(
         "POST",

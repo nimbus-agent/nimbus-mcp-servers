@@ -234,8 +234,21 @@ export function createJsonSender(
             },
       errorPrefix(method, path),
     );
-    return text === "" ? {} : (JSON.parse(text) as unknown);
+    return parsedOrEmpty(text);
   };
+}
+
+/**
+ * A 2xx body as JSON, or `{}` when it is empty or not JSON. The write was applied either way, and a
+ * throw here would invite the caller to retry it (a duplicate build, a second invitation email).
+ */
+function parsedOrEmpty(text: string): unknown {
+  if (text === "") return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return {};
+  }
 }
 
 /**

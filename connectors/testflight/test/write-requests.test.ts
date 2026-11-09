@@ -73,10 +73,21 @@ function configured(fn: () => Promise<void>): Promise<void> {
 }
 
 /** The build's app on GET, 204 on the POST. */
+/** The target groups the app has: grp-a, grp-b and g0..g19. */
+const APP_GROUPS = {
+  data: ["grp-a", "grp-b", ...Array.from({ length: 20 }, (_, i) => `g${String(i)}`)].map((id) => ({
+    id,
+    type: "betaGroups",
+    attributes: { name: id, isInternalGroup: false, publicLinkEnabled: id === "grp-b" },
+  })),
+};
+
 const ownedBy =
   (app: unknown) =>
-  (req: RecordedRequest): StubReply =>
-    req.method === "GET" ? JSON.stringify(app) : { status: 204, body: "" };
+  (req: RecordedRequest): StubReply => {
+    if (req.method !== "GET") return { status: 204, body: "" };
+    return req.url.includes("/v1/apps/") ? JSON.stringify(APP_GROUPS) : JSON.stringify(app);
+  };
 
 beforeAll(() => {
   const { privateKey } = generateKeyPairSync("ec", {
@@ -113,9 +124,10 @@ describe("testflight writes (gateway mode)", () => {
     });
     expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       `GET ${API}/v1/builds/bld-1?include=app`,
+      `GET ${API}/v1/apps/app-1/betaGroups?limit=200`,
       `POST ${API}/v1/builds/bld-1/relationships/betaGroups`,
     ]);
-    const post = stub.calls[1];
+    const post = stub.calls[2];
     expect(post?.headers["authorization"]).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
     expect(post?.headers["content-type"]).toBe("application/json");
     expect(JSON.parse(post?.body ?? "null")).toEqual({
@@ -143,6 +155,67 @@ describe("testflight writes (gateway mode)", () => {
     expect(stub.calls.map((c) => c.method)).toEqual(["GET"]);
   });
 
+  it("sends no POST for a beta group that is not one of the app's", async () => {
+    const stub = serve(ownedBy(BUILD_OF_APP_1));
+    await configured(async () => {
+      await expect(
+        tools.call("testflight_build_distribute", {
+          ...ARGS,
+          betaGroupIds: ["grp-a", "grp-elsewhere"],
+        }),
+      ).rejects.toThrow(/grp-elsewhere do not belong to app app-1/);
+    });
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "GET"]);
+  });
+
+  it("a 202 with a plain-text body is still accepted, with no second request", async () => {
+    const stub = serve((req) =>
+      req.method === "POST" ? { status: 202, body: "Accepted" } : ownedBy(BUILD_OF_APP_1)(req),
+    );
+    await configured(async () => {
+      expect(await tools.callJson("testflight_build_distribute", ARGS)).toMatchObject({
+        ok: true,
+        status: "accepted",
+      });
+    });
+    expect(stub.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+
+  it("beta_groups_list reads the app's groups, projected, and caps the result at limit", async () => {
+    const stub = serve(JSON.stringify(APP_GROUPS));
+    await configured(async () => {
+      const out = (await tools.callJson("testflight_beta_groups_list", {
+        appId: "app-1",
+        limit: 2,
+      })) as { groups: unknown[] };
+      expect(out.groups).toEqual([
+        { id: "grp-a", name: "grp-a", isInternalGroup: false, publicLinkEnabled: false },
+        { id: "grp-b", name: "grp-b", isInternalGroup: false, publicLinkEnabled: true },
+      ]);
+    });
+    expect(stub.only.url).toBe(`${API}/v1/apps/app-1/betaGroups?limit=2`);
+    await configured(async () => {
+      await expect(
+        tools.call("testflight_beta_groups_list", { appId: "app-1", limit: 201 }),
+      ).rejects.toThrow();
+      await expect(tools.call("testflight_beta_groups_list", { appId: ".." })).rejects.toThrow();
+    });
+  });
+
+  it("caps a long group name at 500 characters with a marker", async () => {
+    serve(
+      JSON.stringify({
+        data: [{ id: "g", attributes: { name: "n".repeat(900), publicLinkEnabled: true } }],
+      }),
+    );
+    await configured(async () => {
+      const out = (await tools.callJson("testflight_build_groups_get", { buildId: "bld-1" })) as {
+        groups: { name: string }[];
+      };
+      expect(out.groups[0]?.name).toBe(`${"n".repeat(500)}...[truncated]`);
+    });
+  });
+
   it("sends no POST when the build names no app, or does not exist", async () => {
     const stub = serve(ownedBy({ data: { id: "bld-1" } }));
     await configured(async () => {
@@ -161,7 +234,7 @@ describe("testflight writes (gateway mode)", () => {
   it("surfaces Apple's 409 and 422 refusals with their bodies", async () => {
     for (const status of [409, 422]) {
       serve((req) =>
-        req.method === "GET" ? JSON.stringify(BUILD_OF_APP_1) : { status, body: "not ready" },
+        req.method === "GET" ? ownedBy(BUILD_OF_APP_1)(req) : { status, body: "not ready" },
       );
       await configured(async () => {
         await expect(tools.call("testflight_build_distribute", ARGS)).rejects.toThrow(
@@ -174,14 +247,14 @@ describe("testflight writes (gateway mode)", () => {
   it("refuses a 307 on the POST and sends no second request", async () => {
     const stub = serve((req) =>
       req.method === "GET"
-        ? JSON.stringify(BUILD_OF_APP_1)
+        ? ownedBy(BUILD_OF_APP_1)(req)
         : { status: 307, headers: { Location: "https://evil.test/steal" } },
     );
     await configured(async () => {
       await expect(tools.call("testflight_build_distribute", ARGS)).rejects.toThrow(/redirect/i);
     });
-    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "POST"]);
-    expect(stub.calls[1]?.redirect).toBe("manual");
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "GET", "POST"]);
+    expect(stub.calls[2]?.redirect).toBe("manual");
   });
 
   it("refuses ids that could reach another path, and 0, 21 or duplicate groups, before any request", async () => {
@@ -219,7 +292,7 @@ describe("testflight writes (gateway mode)", () => {
         betaGroupIds: Array.from({ length: 20 }, (_, i) => `g${String(i)}`),
       });
     });
-    expect(JSON.parse(stub.calls[1]?.body ?? "null").data).toHaveLength(20);
+    expect(JSON.parse(stub.calls.at(-1)?.body ?? "null").data).toHaveLength(20);
   });
 
   it("refuses without its App Store Connect credential before any request", async () => {
@@ -281,6 +354,7 @@ describe("testflight writes (standalone mode)", () => {
     );
     const stub = serve((req) => {
       if (req.method === "POST") return { status: 204, body: "" };
+      if (req.url.includes("/v1/apps/")) return JSON.stringify(APP_GROUPS);
       return req.url.includes("/betaGroups")
         ? JSON.stringify(GROUPS)
         : JSON.stringify(BUILD_OF_APP_1);
@@ -288,7 +362,7 @@ describe("testflight writes (standalone mode)", () => {
     await configured(async () => {
       await tools?.call("testflight_build_distribute", ARGS);
     });
-    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "GET", "POST"]);
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "GET", "GET", "POST"]);
     const executed = readFileSync(auditLog, "utf8")
       .trim()
       .split("\n")

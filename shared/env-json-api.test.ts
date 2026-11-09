@@ -340,6 +340,19 @@ describe("createJsonSender", () => {
     expect(call?.headers.get("authorization")).toBe("Bearer tok");
   });
 
+  it("resolves a 2xx whose body is not JSON to {} instead of throwing", async () => {
+    const { calls } = stubFetch({ status: 202, body: "Accepted" });
+    process.env[ENV] = "tok";
+    expect(await createJsonSender(cfg())("POST", "/x", undefined)).toEqual({});
+    expect(calls).toHaveLength(1);
+  });
+
+  it("still throws for a non-2xx whatever its body", async () => {
+    stubFetch({ status: 500, body: "Accepted" });
+    process.env[ENV] = "tok";
+    await expect(createJsonSender(cfg())("POST", "/x", undefined)).rejects.toThrow("500");
+  });
+
   it("refuses a 307 on a POST with no second request", async () => {
     const { calls } = stubFetch({ status: 307 });
     process.env[ENV] = "tok";

@@ -46,7 +46,7 @@ Tools exposed:
 | `netlify_get` | Fetch one site by id (`GET /api/v1/sites/{siteId}`). |
 | `netlify_search` | Substring search across sites (id, name, url, ssl_url, repo, branch, deploy state, commit ref). |
 | `netlify_deploy_list` | A site's latest deploys, newest first (`GET /api/v1/sites/{siteId}/deploys`, at most 10), projected to id, state, branch, context, commit ref and times. |
-| `netlify_build_trigger` | WRITE. `POST /api/v1/sites/{siteId}/builds` with `branch` and `clear_cache` as QUERY parameters and NO body and no JSON Content-Type. **An omitted branch is a PRODUCTION deploy** (Netlify's documented behaviour); the result says `production: true`. Mutates `netlify.build.trigger`, recoverable (the next deploy supersedes it). Scope `site:<siteId>`. |
+| `netlify_build_trigger` | WRITE. `POST /api/v1/sites/{siteId}/builds` with `branch` and `clear_cache` as QUERY parameters and NO body and no JSON Content-Type. **A build with no branch is a PRODUCTION deploy** (Netlify's documented behaviour), so the tool refuses unless you name a `branch` or pass `production: true` (not both); the owner's preview shows that input. Mutates `netlify.build.trigger`, recoverable (the next deploy supersedes it). Scope `site:<siteId>`. |
 
 ### Write tools
 

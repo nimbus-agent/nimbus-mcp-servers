@@ -223,6 +223,43 @@ describe("firebase_app_distribution_distribute (gateway mode)", () => {
     expect(apiCalls(stub2)).toHaveLength(1);
   });
 
+  it("lowercases tester emails before de-duplicating, and sends and returns the lowercase form", async () => {
+    const stub = serve("{}");
+    let result: unknown;
+    await configured(async () => {
+      result = await tools.callJson("firebase_app_distribution_distribute", {
+        ...ARGS,
+        testerEmails: ["A@x.com", "a@x.com", "B@X.com"],
+      });
+    });
+    expect(JSON.parse(String(apiCalls(stub)[0]?.body))).toEqual({
+      testerEmails: ["a@x.com", "b@x.com"],
+    });
+    expect(result).toMatchObject({ testerEmails: ["a@x.com", "b@x.com"] });
+  });
+
+  it("a 202 with a plain-text body is still accepted, with no second request", async () => {
+    const stub = serve({ status: 202, body: "Accepted" });
+    await configured(async () => {
+      expect(
+        await tools.callJson("firebase_app_distribution_distribute", {
+          ...ARGS,
+          groupAliases: ["g"],
+        }),
+      ).toMatchObject({ ok: true, status: "accepted" });
+    });
+    expect(apiCalls(stub)).toHaveLength(1);
+  });
+
+  it("a non-2xx with a text body still throws", async () => {
+    serve({ status: 500, body: "Accepted" });
+    await configured(async () => {
+      await expect(
+        tools.call("firebase_app_distribution_distribute", { ...ARGS, groupAliases: ["g"] }),
+      ).rejects.toThrow(/500/);
+    });
+  });
+
   it("refuses an app that is not in FIREBASE_APP_IDS, before any request", async () => {
     const stub = serve("{}");
     await configured(async () => {
