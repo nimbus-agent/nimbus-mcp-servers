@@ -6,8 +6,9 @@ First-party Nimbus MCP connector for
 [Firebase App Distribution](https://firebase.google.com/docs/app-distribution),
 via the [App Distribution REST API](https://firebase.google.com/docs/reference/app-distribution/rest).
 Indexes each configured app's recent **releases** into the local index as
-`firebase:release` items and exposes three read-only tools to the Nimbus agent
-(`firebase_list`, `firebase_get`, `firebase_search`).
+`firebase:release` items and exposes read tools (`firebase_list`, `firebase_get`,
+`firebase_search`) and one owner-approved write tool
+(`firebase_app_distribution_distribute`).
 
 ## Install
 
@@ -58,10 +59,13 @@ Tools exposed:
 | `firebase_list`   | List the configured app ids, or recent releases for an app (pageSize optional).   |
 | `firebase_get`    | Fetch a single release by `appId` + `releaseId`.                                   |
 | `firebase_search` | Substring search across an app's recent releases (display/build version, notes).   |
+| `firebase_app_distribution_distribute` | WRITE. `POST /v1/projects/<n>/apps/<appId>/releases/<releaseId>:distribute`, body `{ testerEmails, groupAliases }` with empty arrays omitted, at least one of the two, at most 999 together. **An email that is not yet a tester becomes a new tester and is sent an invitation email, and testers get a release email; none of it can be unsent.** The app must be in `FIREBASE_APP_IDS`. Mutates `firebase.release.distribute`; not recoverable, the release (version, build, test state) is audited first. Scope `app:<appId>`. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Write
-actions (create/distribute a release, manage tester groups) are deferred — the
-roadmap row scopes this connector to read-only mobile release observability.
+### Write tools
+
+Each write needs the owner's approval (`hitlRequired: ["write"]`). Standalone, set `NIMBUS_MCP_FIREBASE_WRITE_SCOPE` to `app:<appId>` terms; see `docs/configuration.md`. The result says `accepted` and lists every group and tester sent; nothing here reports the release as delivered. Every App Distribution request now goes through the shared redirect guard, so the bearer token is never re-sent to a redirect target and a redirect on a write is refused.
+
+The API cannot say who already has a release (a release has no groups or testers field), so the only before-state is the release itself and the owner's preview lists everything it will add. Not verified against a live account: that a missing group answers INVALID_ARGUMENT, and the exact status of an email Firebase rejects. Creating releases and managing tester groups are not built.
 
 ## See also
 

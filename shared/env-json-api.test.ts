@@ -328,6 +328,38 @@ describe("createJsonSender", () => {
     expect(calls[0]?.headers.get("authorization")).toBe("Bearer tok");
   });
 
+  it("sends no body and no Content-Type when the body is undefined", async () => {
+    const { calls } = stubFetch({ body: '{"id":"b1"}' });
+    process.env[ENV] = "tok";
+    const send = createJsonSender(cfg());
+    expect(await send("POST", "/builds?branch=main", undefined)).toEqual({ id: "b1" });
+    const call = calls[0];
+    expect(call?.method).toBe("POST");
+    expect(call?.headers.get("content-type")).toBeNull();
+    expect(call?.body).toBeNull();
+    expect(call?.headers.get("authorization")).toBe("Bearer tok");
+  });
+
+  it("resolves a 2xx whose body is not JSON to {} instead of throwing", async () => {
+    const { calls } = stubFetch({ status: 202, body: "Accepted" });
+    process.env[ENV] = "tok";
+    expect(await createJsonSender(cfg())("POST", "/x", undefined)).toEqual({});
+    expect(calls).toHaveLength(1);
+  });
+
+  it("still throws for a non-2xx whatever its body", async () => {
+    stubFetch({ status: 500, body: "Accepted" });
+    process.env[ENV] = "tok";
+    await expect(createJsonSender(cfg())("POST", "/x", undefined)).rejects.toThrow("500");
+  });
+
+  it("refuses a 307 on a POST with no second request", async () => {
+    const { calls } = stubFetch({ status: 307 });
+    process.env[ENV] = "tok";
+    await expect(createJsonSender(cfg())("POST", "/x", undefined)).rejects.toThrow(/redirect/);
+    expect(calls).toHaveLength(1);
+  });
+
   it("names label, method and path in the error", async () => {
     stubFetch({ status: 405, body: "needs approval" });
     process.env[ENV] = "tok";

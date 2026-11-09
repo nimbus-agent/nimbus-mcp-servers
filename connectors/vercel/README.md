@@ -4,8 +4,9 @@
 
 First-party Nimbus MCP connector for [Vercel](https://vercel.com). Indexes the
 user's recent **deployments** as `vercel:deployment` items in the local index
-and exposes three read-only tools to the Nimbus agent (`vercel_list`,
-`vercel_get`, `vercel_search`). Useful for correlating deploys with PR / Slack
+and exposes read tools (`vercel_list`, `vercel_get`, `vercel_search`,
+`vercel_project_production_get`) and two owner-approved write tools
+(`vercel_deployment_redeploy`, `vercel_deployment_promote`). Useful for correlating deploys with PR / Slack
 history — "which deploy shipped this commit?".
 
 ## Install
@@ -45,10 +46,18 @@ Tools exposed:
 | `vercel_list` | List recent deployments (`GET /v6/deployments`). |
 | `vercel_get` | Fetch one deployment by id or `*.vercel.app` URL (`GET /v13/deployments/{idOrUrl}`). |
 | `vercel_search` | Substring search across recent deployments (uid, name, state, target, url, commit message). |
+| `vercel_project_production_get` | The project's current production deployment (`GET /v9/projects/{id}`, `targets.production`). What a promote replaces. |
+| `vercel_deployment_redeploy` | WRITE. `POST /v13/deployments?forceNew=1`, body `{ name, deploymentId, target, withLatestCommit? }`. `target` is always sent (`production` or `preview`): omitting it makes a preview. `name` is read from the source deployment first; an unknown deployment sends nothing. Mutates `vercel.deployment.redeploy`; not recoverable (a production redeploy can supersede what is live), source deployment audited. Scope `deployment:<deploymentId>`. |
+| `vercel_deployment_promote` | WRITE. `POST /v10/projects/{projectId}/promote/{deploymentId}`, no body; promotes WITHOUT rebuilding. Mutates `vercel.deployment.promote`; not recoverable, the current production deployment is audited first. Scope `project:<projectId>`. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Projects,
-domains, environment variables, aliases, and build logs are deferred follow-ups
-— v1 indexes deployments only.
+### Write tools
+
+Each write needs the owner's approval (`hitlRequired: ["write"]`). Standalone, set `NIMBUS_MCP_VERCEL_WRITE_SCOPE` to `project|deployment:<value>` terms; see `docs/configuration.md`. A write's result says `accepted` and names the id to poll: the vendor runs the work afterwards, and nothing here reports it as finished. A redirect on a write is refused and never followed, so the token is never re-sent anywhere else.
+
+Not verified against a live account (documented in Vercel's OpenAPI, not in fixtures): which token
+scope a promote needs, and that `target: "preview"` is accepted by a redeploy. Rollback
+(`POST /v1/projects/{id}/rollback/...`) is not built. The `vercel_list` read still uses `/v6/deployments`.
+Projects, domains, environment variables, aliases, and build logs are deferred follow-ups.
 
 ## See also
 

@@ -1,6 +1,14 @@
-import { runReadOnlyMcpConnector } from "../../../shared/run-read-only-mcp-connector.ts";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CONSENT_SERVER_CAPABILITIES } from "../../../shared/consent-kit.ts";
 import { registerCodemagicTools } from "./tools.ts";
 
-await runReadOnlyMcpConnector("nimbus-codemagic", (reg) => {
-  registerCodemagicTools(reg);
-});
+const server = new McpServer(
+  { name: "nimbus-codemagic", version: "0.1.0" },
+  { capabilities: CONSENT_SERVER_CAPABILITIES },
+);
+
+registerCodemagicTools(server);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);

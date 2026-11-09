@@ -2,14 +2,14 @@
   "id": "com.nimbus.testflight",
   "displayName": "TestFlight",
   "version": "0.1.0",
-  "description": "TestFlight connector via Apple's App Store Connect API (read-only). Surfaces apps and recent builds (version, processing state, uploaded date, min OS, encryption flag) so the local index can correlate iOS/macOS beta builds back to releases and incidents.",
+  "description": "TestFlight connector via Apple's App Store Connect API. Surfaces apps and recent builds (version, processing state, uploaded date, min OS, encryption flag) so the local index can correlate iOS/macOS beta builds back to releases and incidents. Write tool (needs owner approval): `testflight.build.distribute`, which adds a build to beta groups.",
   "author": "Nimbus",
   "entrypoint": "dist/server.js",
   "runtime": "bun",
   "permissions": {
     "network": ["api.appstoreconnect.apple.com"]
   },
-  "hitlRequired": [],
+  "hitlRequired": ["write"],
   "syncInterval": 600,
   "minNimbusVersion": "0.2.0"
 }

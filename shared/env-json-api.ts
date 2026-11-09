@@ -222,15 +222,33 @@ export function createJsonSender(
   return async (method, path, body, extraHeaders) => {
     const text = await send(
       path,
-      (headers) => ({
-        method,
-        headers: { ...headers, "Content-Type": "application/json", ...extraHeaders },
-        body: JSON.stringify(body),
-      }),
+      // An `undefined` body is a bodiless request (Netlify's build trigger, Vercel's promote): no
+      // entity, so no Content-Type either, which a server may read as a body that must parse.
+      (headers) =>
+        body === undefined
+          ? { method, headers: { ...headers, ...extraHeaders } }
+          : {
+              method,
+              headers: { ...headers, "Content-Type": "application/json", ...extraHeaders },
+              body: JSON.stringify(body),
+            },
       errorPrefix(method, path),
     );
-    return text === "" ? {} : (JSON.parse(text) as unknown);
+    return parsedOrEmpty(text);
   };
+}
+
+/**
+ * A 2xx body as JSON, or `{}` when it is empty or not JSON. The write was applied either way, and a
+ * throw here would invite the caller to retry it (a duplicate build, a second invitation email).
+ */
+function parsedOrEmpty(text: string): unknown {
+  if (text === "") return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return {};
+  }
 }
 
 /**

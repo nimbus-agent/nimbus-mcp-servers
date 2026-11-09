@@ -2,14 +2,14 @@
   "id": "com.nimbus.firebase",
   "displayName": "Firebase App Distribution",
   "version": "0.1.0",
-  "description": "Firebase App Distribution connector (read-only). Surfaces each configured app's recent releases (display/build version, release notes, create time, console + testing URIs) so the local index can correlate mobile beta releases back to builds and incidents. Binary download links are stored as metadata but never fetched.",
+  "description": "Firebase App Distribution connector. Surfaces each configured app's recent releases (display/build version, release notes, create time, console + testing URIs) so the local index can correlate mobile beta releases back to builds and incidents. Binary download links are stored as metadata but never fetched. Write tool (needs owner approval): `firebase.release.distribute`, which invites testers by email.",
   "author": "Nimbus",
   "entrypoint": "dist/server.js",
   "runtime": "bun",
   "permissions": {
     "network": ["firebaseappdistribution.googleapis.com", "oauth2.googleapis.com"]
   },
-  "hitlRequired": [],
+  "hitlRequired": ["write"],
   "syncInterval": 600,
   "minNimbusVersion": "0.2.0"
 }

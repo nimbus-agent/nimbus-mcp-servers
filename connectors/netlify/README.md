@@ -4,8 +4,8 @@
 
 First-party Nimbus MCP connector for [Netlify](https://www.netlify.com). Indexes
 the user's **sites** as `netlify:site` items in the local index and exposes
-three read-only tools to the Nimbus agent (`netlify_list`, `netlify_get`,
-`netlify_search`). Each site carries its embedded **published-deploy status**
+read tools (`netlify_list`, `netlify_get`, `netlify_search`,
+`netlify_deploy_list`) and one owner-approved write tool (`netlify_build_trigger`). Each site carries its embedded **published-deploy status**
 (state / branch / commit ref / deploy preview URL), so you can answer "is the
 latest deploy live?" and "which site shipped this commit?" without an N+1
 per-site deploy walk.
@@ -45,10 +45,15 @@ Tools exposed:
 | `netlify_list` | List sites (`GET /api/v1/sites`). |
 | `netlify_get` | Fetch one site by id (`GET /api/v1/sites/{siteId}`). |
 | `netlify_search` | Substring search across sites (id, name, url, ssl_url, repo, branch, deploy state, commit ref). |
+| `netlify_deploy_list` | A site's latest deploys, newest first (`GET /api/v1/sites/{siteId}/deploys`, at most 10), projected to id, state, branch, context, commit ref and times. |
+| `netlify_build_trigger` | WRITE. `POST /api/v1/sites/{siteId}/builds` with `branch` and `clear_cache` as QUERY parameters and NO body and no JSON Content-Type. **A build with no branch is a PRODUCTION deploy** (Netlify's documented behaviour), so the tool refuses unless you name a `branch` or pass `production: true` (not both); the owner's preview shows that input. Mutates `netlify.build.trigger`, recoverable (the next deploy supersedes it). Scope `site:<siteId>`. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty. Per-deploy
-history, forms, functions, environment variables, and DNS are deferred
-follow-ups — v1 indexes sites + their embedded published-deploy status only.
+### Write tools
+
+Each write needs the owner's approval (`hitlRequired: ["write"]`). Standalone, set `NIMBUS_MCP_NETLIFY_WRITE_SCOPE` to `site:<value>` terms; see `docs/configuration.md`. A write's result says `accepted` and names the id to poll: the vendor runs the work afterwards, and nothing here reports it as finished. A redirect on a write is refused and never followed, so the token is never re-sent anywhere else.
+
+Not verified against a live account: the HTTP status of a build that is refused (for example a branch
+Netlify does not know). Forms, functions, environment variables, and DNS are deferred follow-ups.
 
 ## See also
 

@@ -98,11 +98,12 @@ accepts `dir:<workingDirectory>` (Terraform) and `stack:<stackName>` (CloudForma
 `kubernetes` accepts `namespace:<namespace>`; the prepare tools that come before their writes
 (`iac_terraform_plan`, `iac_cloudformation_changeset_create`, `k8s_manifest_plan` and the others in
 `shared/prepare-tool-ids.ts`) need the same term as the write they prepare.
+The deploy and mobile-release connectors scope by what the write names: `vercel` accepts `project:<projectId>` (promote) and `deployment:<deploymentId>` (redeploy, which names only its source deployment), `netlify` accepts `site:<siteId>`, and `bitrise`, `codemagic`, `testflight` and `firebase` accept `app:<id>` (the Bitrise app slug, the Codemagic app id, the App Store Connect app id and the Firebase app id, e.g. `app:1:123456789:android:abc`). Their results say `accepted` and name the id to poll: the build, deploy or distribution runs afterwards, and none of them is reported as finished.
 Do not derive it from a connector's tool names or action types — `monte-carlo`'s are
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
 
 **Redirects.** A credential header is never sent to another origin. The `gitlab` connector, the flag
-connectors and the JSM Operations tools refuse any redirect on a write. A read follows at most 3
+connectors, the JSM Operations tools and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
 redirects, only to the same origin or the same host's http -> https upgrade (never https -> http).
 A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the token is then sent in
 clear.

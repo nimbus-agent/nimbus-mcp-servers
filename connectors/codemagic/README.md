@@ -4,9 +4,9 @@
 
 First-party Nimbus MCP connector for [Codemagic](https://codemagic.io/).
 Indexes the user's Codemagic **apps** and recent **builds** into the local
-index as `codemagic:app` and `codemagic:build` items and exposes three
-read-only tools to the Nimbus agent (`codemagic_list`, `codemagic_get`,
-`codemagic_search`).
+index as `codemagic:app` and `codemagic:build` items and exposes read tools
+(`codemagic_list`, `codemagic_get`, `codemagic_search`, `codemagic_build_latest`)
+and one owner-approved write tool (`codemagic_build_trigger`).
 
 ## Install
 
@@ -35,10 +35,17 @@ Tools exposed:
 | `codemagic_list`   | List the user's apps, or recent builds for an app (limit optional).         |
 | `codemagic_get`    | Fetch a single build by id, or the app list.                                |
 | `codemagic_search` | Substring search across recent builds (branch / message / workflow / status). |
+| `codemagic_build_latest` | The app's latest build, optionally of one workflow and branch, filtered here from its last 50 builds and projected to `id, status, branch, workflowId, index, createdAt, startedAt, finishedAt` (nothing about artefacts or config; these field names are unverified). |
+| `codemagic_build_trigger` | WRITE. `POST /builds`, body `{ appId, workflowId, branch }`, `x-auth-token`. Branch and trigger settings in codemagic.yaml are not applied to an API build. Mutates `codemagic.build.trigger`, recoverable (a build can be cancelled). Scope `app:<appId>`. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty.
-Codemagic write actions (start build, cancel build) are deferred — the
-roadmap row scopes this connector to read-only mobile CI observability.
+### Write tools
+
+Each write needs the owner's approval (`hitlRequired: ["write"]`). Standalone, set `NIMBUS_MCP_CODEMAGIC_WRITE_SCOPE` to `app:<value>` terms; see `docs/configuration.md`. A write's result says `accepted` and names the id to poll: the vendor runs the work afterwards, and nothing here reports it as finished. A redirect on a write is refused and never followed, so the token is never re-sent anywhere else.
+
+Not verified against a live account: the field names of a build in the `/builds` list (so
+`codemagic_build_latest` filters on `workflowId` and `branch` and returns the build as Codemagic
+sent it), and the query parameters the builds list accepts. Codemagic says it is transitioning to a
+new API. Cancelling a build is not built.
 
 ## See also
 

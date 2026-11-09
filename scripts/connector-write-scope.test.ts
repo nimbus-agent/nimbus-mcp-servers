@@ -37,10 +37,13 @@ import { registerAwsTools } from "../connectors/aws/src/tools.ts";
 import { registerAzureTools } from "../connectors/azure/src/tools.ts";
 import { registerBigeyeTools } from "../connectors/bigeye/src/server.ts";
 import { registerBitbucketTools } from "../connectors/bitbucket/src/tools.ts";
+import { registerBitriseTools } from "../connectors/bitrise/src/tools.ts";
 import { registerCircleciTools } from "../connectors/circleci/src/tools.ts";
+import { registerCodemagicTools } from "../connectors/codemagic/src/tools.ts";
 import { registerConfluenceTools } from "../connectors/confluence/src/tools.ts";
 import { registerDiscordTools } from "../connectors/discord/src/tools.ts";
 import { registerFastmailTools } from "../connectors/fastmail/src/tools.ts";
+import { registerFirebaseTools } from "../connectors/firebase/src/tools.ts";
 import { registerFlagsmithTools } from "../connectors/flagsmith/src/tools.ts";
 import { registerFluxTools } from "../connectors/flux/src/server.ts";
 import { registerGcpTools } from "../connectors/gcp/src/tools.ts";
@@ -59,6 +62,7 @@ import { registerLinearTools } from "../connectors/linear/src/tools.ts";
 import { registerLookerTools } from "../connectors/looker/src/server.ts";
 import { registerMlflowTools } from "../connectors/mlflow/src/server.ts";
 import { registerMonteCarloTools } from "../connectors/monte-carlo/src/server.ts";
+import { registerNetlifyTools } from "../connectors/netlify/src/tools.ts";
 import { registerNotionTools } from "../connectors/notion/src/tools.ts";
 import { registerObsidianTools } from "../connectors/obsidian/src/tools.ts";
 import { registerOnedriveTools } from "../connectors/onedrive/src/tools.ts";
@@ -70,6 +74,8 @@ import { registerSlackTools } from "../connectors/slack/src/tools.ts";
 import { registerSnowflakeTools } from "../connectors/snowflake/src/server.ts";
 import { registerTableauTools } from "../connectors/tableau/src/server.ts";
 import { registerTeamsTools } from "../connectors/teams/src/tools.ts";
+import { registerTestflightTools } from "../connectors/testflight/src/tools.ts";
+import { registerVercelTools } from "../connectors/vercel/src/tools.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../shared/connector-mode.ts";
 import { registersWriteTool } from "../standalone/src/launcher.ts";
 import { connectorDirs } from "./check-connector-consent.ts";
@@ -728,6 +734,67 @@ const WRITES: Readonly<
       ],
     ],
   },
+  bitrise: {
+    register: registerBitriseTools,
+    cases: [["bitrise_build_trigger", "bitrise.build.trigger", { appSlug: "app-z" }, "app:app-z"]],
+  },
+  codemagic: {
+    register: registerCodemagicTools,
+    cases: [
+      ["codemagic_build_trigger", "codemagic.build.trigger", { appId: "app_z" }, "app:app_z"],
+    ],
+  },
+  firebase: {
+    register: registerFirebaseTools,
+    cases: [
+      [
+        "firebase_app_distribution_distribute",
+        "firebase.release.distribute",
+        // A recipient: with none the tool's refuseBefore refuses ahead of scope.
+        { appId: "1:123:android:zz", groupAliases: ["qa"] },
+        "app:1:123:android:zz",
+      ],
+    ],
+  },
+  netlify: {
+    register: registerNetlifyTools,
+    cases: [
+      [
+        "netlify_build_trigger",
+        "netlify.build.trigger",
+        { siteId: "site-z", production: true },
+        "site:site-z",
+      ],
+    ],
+  },
+  testflight: {
+    register: registerTestflightTools,
+    cases: [
+      [
+        "testflight_build_distribute",
+        "testflight.build.distribute",
+        { appId: "app-z" },
+        "app:app-z",
+      ],
+    ],
+  },
+  vercel: {
+    register: registerVercelTools,
+    cases: [
+      [
+        "vercel_deployment_redeploy",
+        "vercel.deployment.redeploy",
+        { deploymentId: "dpl_z" },
+        "deployment:dpl_z",
+      ],
+      [
+        "vercel_deployment_promote",
+        "vercel.deployment.promote",
+        { projectId: "prj_z" },
+        "project:prj_z",
+      ],
+    ],
+  },
   tableau: {
     register: registerTableauTools,
     cases: [
@@ -768,6 +835,12 @@ const REGISTRATION_ENV = {
   OBSIDIAN_VAULT_PATHS_JSON: JSON.stringify([join(tmpdir(), "nimbus-write-scope-no-vault")]),
 };
 
+/**
+ * Read at CALL time by a tool's `refuseBefore`: Firebase refuses an app outside FIREBASE_APP_IDS
+ * before scope, so the census configures the app it calls (otherwise every row reads that refusal).
+ */
+const CALL_ENV = { FIREBASE_APP_IDS: "1:123:android:zz" };
+
 /** Register `id` in standalone mode under `scope`, for a client that does or does not elicit. */
 async function standalone(
   id: string,
@@ -807,7 +880,10 @@ async function callUnplugged(
   const http = stubFetch(() => undefined);
   const spawn = stubSpawn();
   try {
-    const answer = await capture.tools.callJson(tool, args);
+    let answer: unknown;
+    await withEnv(CALL_ENV, async () => {
+      answer = await capture.tools.callJson(tool, args);
+    });
     return { answer, requests: http.calls.length + spawn.calls.length };
   } finally {
     spawn.restore();
