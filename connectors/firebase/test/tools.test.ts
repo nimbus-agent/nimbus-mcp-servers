@@ -18,6 +18,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import {
   __resetFirebaseTokenCacheForTests,
   FIREBASE_TOOL_NAMES,
@@ -88,12 +89,14 @@ beforeAll(() => {
 
 beforeEach(() => {
   __resetFirebaseTokenCacheForTests();
+  setConnectorMode("gateway");
   tools = captureTools(registerFirebaseTools);
 });
 
 afterEach(() => {
   http?.restore();
   http = undefined;
+  resetConnectorModeForTests();
   setSystemTime();
   __resetFirebaseTokenCacheForTests();
 });
@@ -114,8 +117,8 @@ function configured(fn: () => Promise<void>): Promise<void> {
 }
 
 describe("firebase tools", () => {
-  it("registers exactly FIREBASE_TOOL_NAMES", () => {
-    expect(tools.names()).toEqual([...FIREBASE_TOOL_NAMES]);
+  it("registers exactly FIREBASE_TOOL_NAMES, in order", () => {
+    expect(tools.registrationOrder()).toEqual([...FIREBASE_TOOL_NAMES]);
   });
 
   it("list with no app returns the configured app ids, with no request at all", async () => {

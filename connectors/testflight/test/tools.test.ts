@@ -9,6 +9,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerTestflightTools, TESTFLIGHT_TOOL_NAMES } from "../src/tools.ts";
 
 const API = "https://api.appstoreconnect.apple.com";
@@ -64,12 +65,14 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  setConnectorMode("gateway");
   tools = captureTools(registerTestflightTools);
 });
 
 afterEach(() => {
   http?.restore();
   http = undefined;
+  resetConnectorModeForTests();
 });
 
 describe("testflight tools", () => {

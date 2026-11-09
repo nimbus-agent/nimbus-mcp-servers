@@ -6,8 +6,9 @@ First-party Nimbus MCP connector for [TestFlight](https://developer.apple.com/te
 via Apple's [App Store Connect API](https://developer.apple.com/documentation/appstoreconnectapi).
 Indexes the user's App Store Connect **apps** and recent TestFlight **builds**
 into the local index as `testflight:app` and `testflight:build` items and
-exposes three read-only tools to the Nimbus agent (`testflight_list`,
-`testflight_get`, `testflight_search`).
+exposes read tools (`testflight_list`, `testflight_get`, `testflight_search`,
+`testflight_build_groups_get`) and one owner-approved write tool
+(`testflight_build_distribute`).
 
 ## Install
 
@@ -50,11 +51,16 @@ Tools exposed:
 | `testflight_list`   | List the user's apps, or recent builds for an app (limit optional).              |
 | `testflight_get`    | Fetch a single build by id, or a single app by id.                               |
 | `testflight_search` | Substring search across an app's recent builds (version / processing state / id). |
+| `testflight_build_groups_get` | The beta groups a build is already in (`GET /v1/builds/{id}/betaGroups`), with `isInternalGroup` and `publicLinkEnabled` (a group with a public link reaches anyone holding it). |
+| `testflight_build_distribute` | WRITE. `POST /v1/builds/{buildId}/relationships/betaGroups`, body `{ data: [{ type: "betaGroups", id }] }`, 1 to 20 groups. The build must belong to `appId`: `GET /v1/builds/{buildId}?include=app` is read first and a build of another app sends nothing. Mutates `testflight.build.distribute`; not recoverable, the groups the build is already in are audited first. Scope `app:<appId>`. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty.
-TestFlight write actions (expire a build, manage tester groups, submit beta
-feedback) are deferred — the roadmap row scopes this connector to read-only
-mobile beta-build observability.
+### Write tools
+
+Each write needs the owner's approval (`hitlRequired: ["write"]`). Standalone, set `NIMBUS_MCP_TESTFLIGHT_WRITE_SCOPE` to `app:<value>` terms; see `docs/configuration.md`. A write's result says `accepted` and names the id to poll: the vendor runs the work afterwards, and nothing here reports it as finished. A redirect on a write is refused and never followed, so the token is never re-sent anywhere else.
+
+Not verified against a live account: what Apple needs before it accepts the add (a VALID build, an
+external group past beta review): a refusal comes back as Apple's 409 or 422 and its body is shown.
+Expiring a build and managing testers are not built.
 
 ## See also
 

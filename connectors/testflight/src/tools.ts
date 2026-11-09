@@ -1,9 +1,17 @@
 import { signAppStoreConnectJwt } from "@nimbus-dev/sdk";
 import { z } from "zod";
-import { createJsonGetter } from "../../../shared/env-json-api.ts";
+import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import {
+  createJsonGetter,
+  createJsonSender,
+  type JsonApiConfig,
+} from "../../../shared/env-json-api.ts";
 import { matchesResult } from "../../../shared/mcp-search-tool.ts";
-import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
-import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import {
+  createRegisterSimpleTool,
+  createZodToolRegistrar,
+  mcpJsonResult as jsonResult,
+} from "../../../shared/mcp-tool-kit.ts";
 import { jwtParamsFromEnv } from "./jwt.ts";
 import { filterTestflightBuilds } from "./search-filter.ts";
 
@@ -14,11 +22,15 @@ function authHeader(): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: "application/json" };
 }
 
-const appstoreGet = createJsonGetter({
+const api: JsonApiConfig = {
   base: APPSTORECONNECT_API,
   label: "App Store Connect",
   headers: authHeader,
-});
+};
+
+const appstoreGet = createJsonGetter(api);
+// A mutation's 3xx is refused (never followed), so the token is not replayed anywhere.
+const appstoreSend = createJsonSender(api);
 
 function buildsPath(appId: string, limit: number): string {
   return `/v1/builds?filter[app]=${encodeURIComponent(appId)}&sort=-uploadedDate&limit=${String(limit)}`;
@@ -29,9 +41,63 @@ export const TESTFLIGHT_TOOL_NAMES = [
   "testflight_list",
   "testflight_get",
   "testflight_search",
+  "testflight_build_groups_get",
+  "testflight_build_distribute",
 ] as const;
 
-export function registerTestflightTools(reg: ZodToolRegistrar): void {
+/** App Store Connect resource ids (UUIDs and numeric app ids); never a dot segment. */
+const idArg = z
+  .string()
+  .regex(/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,64}$/, "letters, digits, '.', '_' and '-' only");
+
+type Obj = Record<string, unknown>;
+
+function asObj(v: unknown): Obj {
+  return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Obj) : {};
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v !== "" ? v : undefined;
+}
+
+/**
+ * The beta groups a build is in, projected to what an approver needs. `publicLinkEnabled` is kept
+ * on purpose: a group with a public link is open to anyone who holds the link, whoever is in it.
+ */
+async function readBuildGroups(buildId: string): Promise<Obj[]> {
+  const root = asObj(
+    await appstoreGet(`/v1/builds/${encodeURIComponent(buildId)}/betaGroups?limit=200`),
+  );
+  const data = Array.isArray(root["data"]) ? root["data"] : [];
+  return data.map((raw) => {
+    const g = asObj(raw);
+    const attrs = asObj(g["attributes"]);
+    return {
+      id: str(g["id"]),
+      name: str(attrs["name"]),
+      isInternalGroup: attrs["isInternalGroup"],
+      publicLinkEnabled: attrs["publicLinkEnabled"],
+    };
+  });
+}
+
+/** The app a build belongs to, from `GET /v1/builds/{id}?include=app`. */
+async function appOfBuild(buildId: string): Promise<string | undefined> {
+  const root = asObj(await appstoreGet(`/v1/builds/${encodeURIComponent(buildId)}?include=app`));
+  const rel = asObj(asObj(asObj(root["data"])["relationships"])["app"]);
+  return str(asObj(rel["data"])["id"]);
+}
+
+export function registerTestflightTools(
+  server: ConsentServer & { tool: (...args: never) => unknown },
+): void {
+  const reg = createZodToolRegistrar(createRegisterSimpleTool(server));
+  const registerWriteTool = createWriteToolRegistrar(server, {
+    connector: "testflight",
+    scopeEnv: "NIMBUS_MCP_TESTFLIGHT_WRITE_SCOPE",
+    scopeKinds: ["app"],
+  });
+
   reg(
     "testflight_list",
     "List TestFlight resources via the App Store Connect API. When `appId` is omitted, returns the user's accessible apps via `GET /v1/apps`. When `appId` is provided, returns that app's most-recent builds via `GET /v1/builds?filter[app]=<id>&sort=-uploadedDate` (limit optional).",
@@ -74,6 +140,57 @@ export function registerTestflightTools(reg: ZodToolRegistrar): void {
       const root = await appstoreGet(buildsPath(p.appId, 200));
       const data = (root as { data?: unknown[] } | null)?.data;
       return matchesResult(data, filterTestflightBuilds, p);
+    },
+  );
+
+  reg(
+    "testflight_build_groups_get",
+    "Read the beta groups a TestFlight build is already in (`GET /v1/builds/{buildId}/betaGroups`), projected to `{ groups: [{ id, name, isInternalGroup, publicLinkEnabled }] }`. A group with `publicLinkEnabled: true` is reachable by anyone who has its public link.",
+    z.object({ buildId: idArg }),
+    async (p) => jsonResult({ groups: await readBuildGroups(p.buildId) }),
+  );
+
+  registerWriteTool(
+    "testflight_build_distribute",
+    {
+      mutates: "testflight.build.distribute",
+      // Testers who were given the build cannot be un-invited from here; the groups the build was
+      // already in are recorded in the audit pre-state.
+      recoverable: false,
+      capturePreState: async (p: { buildId: string }) => ({
+        buildId: p.buildId,
+        groups: await readBuildGroups(p.buildId),
+      }),
+      scopeTargetOf: (p: { appId: string }) => ({ kind: "app", value: p.appId }),
+    },
+    'Add a TestFlight build to beta groups (`POST /v1/builds/{buildId}/relationships/betaGroups`, body `{ data: [{ type: "betaGroups", id }] }`). The build must belong to `appId`: it is read first (`GET /v1/builds/{buildId}?include=app`) and a build of another app sends nothing. Adding a build to a group makes it available to every tester in it, and a group with a public link reaches anyone holding the link (see `testflight_build_groups_get`). Apple may refuse (409/422) a build that is not VALID or a external group that has not passed beta review; the body is returned in the error. The reply is `accepted`.',
+    z.object({
+      appId: idArg,
+      buildId: idArg,
+      betaGroupIds: z.array(idArg).min(1).max(20),
+    }),
+    async (p) => {
+      if (new Set(p.betaGroupIds).size !== p.betaGroupIds.length) {
+        throw new Error("betaGroupIds has a duplicate; nothing was sent");
+      }
+      const owner = await appOfBuild(p.buildId);
+      if (owner !== p.appId) {
+        throw new Error(`build ${p.buildId} does not belong to app ${p.appId}; nothing was sent`);
+      }
+      await appstoreSend(
+        "POST",
+        `/v1/builds/${encodeURIComponent(p.buildId)}/relationships/betaGroups`,
+        {
+          data: p.betaGroupIds.map((id) => ({ type: "betaGroups", id })),
+        },
+      );
+      return jsonResult({
+        ok: true,
+        status: "accepted",
+        appId: p.appId,
+        buildId: p.buildId,
+        betaGroupIds: p.betaGroupIds,
+      });
     },
   );
 }
