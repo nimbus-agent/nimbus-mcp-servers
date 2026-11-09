@@ -90,6 +90,43 @@ function releasePath(appId: string, releaseId: string): string {
 /** Firebase accepts at most 999 testers and groups together in one distribute call. */
 const MAX_RECIPIENTS = 999;
 
+interface DistributeArgs {
+  readonly appId: string;
+  readonly releaseId: string;
+  readonly groupAliases?: readonly string[] | undefined;
+  readonly testerEmails?: readonly string[] | undefined;
+}
+
+/** The recipients as sent: each list de-duplicated (Firebase would mail a repeated tester twice). */
+function distributeRecipients(p: DistributeArgs): {
+  groupAliases: string[];
+  testerEmails: string[];
+} {
+  return {
+    groupAliases: [...new Set(p.groupAliases ?? [])],
+    testerEmails: [...new Set(p.testerEmails ?? [])],
+  };
+}
+
+/**
+ * Why a distribute call is refused before anything is read or sent, or `undefined`. Shared by
+ * `refuseBefore` (standalone: before scope, consent and the pre-state read) and the handler
+ * (gateway mode registers the raw handler, so it must refuse the same input itself).
+ */
+function distributeProblem(p: DistributeArgs): string | undefined {
+  const { groupAliases, testerEmails } = distributeRecipients(p);
+  if (!configuredAppIds().includes(p.appId)) {
+    return `app ${p.appId} is not in FIREBASE_APP_IDS; nothing was sent`;
+  }
+  if (groupAliases.length + testerEmails.length === 0) {
+    return "give at least one tester email or group alias; nothing was sent";
+  }
+  if (groupAliases.length + testerEmails.length > MAX_RECIPIENTS) {
+    return `at most ${String(MAX_RECIPIENTS)} testers and groups together; nothing was sent`;
+  }
+  return undefined;
+}
+
 const releaseIdArg = z
   .string()
   .regex(/^[A-Za-z0-9_-]{1,128}$/, "letters, digits, '_' and '-' only");
@@ -172,6 +209,7 @@ export function registerFirebaseTools(
         };
       },
       scopeTargetOf: (p: { appId: string }) => ({ kind: "app", value: p.appId }),
+      refuseBefore: (p: DistributeArgs) => distributeProblem(p),
     },
     "Send an existing Firebase App Distribution release to testers and groups (`POST /v1/projects/<n>/apps/<appId>/releases/<releaseId>:distribute`, body `{ testerEmails, groupAliases }`, empty arrays omitted). WARNING, vendor behaviour: an email that is not yet a tester BECOMES a new tester and is SENT an invitation email, and testers get a release email; none of that can be unsent. At least one of `testerEmails` and `groupAliases` is required, at most 999 together; a missing group makes Firebase answer INVALID_ARGUMENT and the app must be one of the connector's FIREBASE_APP_IDS. The API cannot say who already has the release, so every group and tester sent is listed in the result. The reply is `accepted`.",
     z.object({
@@ -181,20 +219,10 @@ export function registerFirebaseTools(
       testerEmails: z.array(z.email().max(254)).max(MAX_RECIPIENTS).optional(),
     }),
     async (p) => {
-      const groupAliases = p.groupAliases ?? [];
-      const testerEmails = p.testerEmails ?? [];
-      // Validated here, not with `.refine` on the schema: a refined schema loses `.shape`.
-      if (groupAliases.length + testerEmails.length === 0) {
-        throw new Error("give at least one tester email or group alias; nothing was sent");
-      }
-      if (groupAliases.length + testerEmails.length > MAX_RECIPIENTS) {
-        throw new Error(
-          `at most ${String(MAX_RECIPIENTS)} testers and groups together; nothing was sent`,
-        );
-      }
-      if (!configuredAppIds().includes(p.appId)) {
-        throw new Error(`app ${p.appId} is not in FIREBASE_APP_IDS; nothing was sent`);
-      }
+      // Validated here and in `refuseBefore`, not with `.refine` (a refined schema loses `.shape`).
+      const problem = distributeProblem(p);
+      if (problem !== undefined) throw new Error(problem);
+      const { groupAliases, testerEmails } = distributeRecipients(p);
       const body: Record<string, string[]> = {};
       if (testerEmails.length > 0) {
         body["testerEmails"] = testerEmails;

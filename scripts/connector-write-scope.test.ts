@@ -750,7 +750,8 @@ const WRITES: Readonly<
       [
         "firebase_app_distribution_distribute",
         "firebase.release.distribute",
-        { appId: "1:123:android:zz" },
+        // A recipient: with none the tool's refuseBefore refuses ahead of scope.
+        { appId: "1:123:android:zz", groupAliases: ["qa"] },
         "app:1:123:android:zz",
       ],
     ],
@@ -829,6 +830,12 @@ const REGISTRATION_ENV = {
   OBSIDIAN_VAULT_PATHS_JSON: JSON.stringify([join(tmpdir(), "nimbus-write-scope-no-vault")]),
 };
 
+/**
+ * Read at CALL time by a tool's `refuseBefore`: Firebase refuses an app outside FIREBASE_APP_IDS
+ * before scope, so the census configures the app it calls (otherwise every row reads that refusal).
+ */
+const CALL_ENV = { FIREBASE_APP_IDS: "1:123:android:zz" };
+
 /** Register `id` in standalone mode under `scope`, for a client that does or does not elicit. */
 async function standalone(
   id: string,
@@ -868,7 +875,10 @@ async function callUnplugged(
   const http = stubFetch(() => undefined);
   const spawn = stubSpawn();
   try {
-    const answer = await capture.tools.callJson(tool, args);
+    let answer: unknown;
+    await withEnv(CALL_ENV, async () => {
+      answer = await capture.tools.callJson(tool, args);
+    });
     return { answer, requests: http.calls.length + spawn.calls.length };
   } finally {
     spawn.restore();

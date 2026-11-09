@@ -194,6 +194,35 @@ describe("firebase_app_distribution_distribute (gateway mode)", () => {
     expect(stub.calls).toEqual([]);
   });
 
+  it("sends each tester and group once, and counts the cap after de-duplication (review)", async () => {
+    const stub = serve("{}");
+    let result: unknown;
+    await configured(async () => {
+      result = await tools.callJson("firebase_app_distribution_distribute", {
+        ...ARGS,
+        testerEmails: ["ada@example.com", "ada@example.com"],
+        groupAliases: ["qa", "qa", "beta"],
+      });
+    });
+    const body = JSON.parse(String(apiCalls(stub)[0]?.body)) as Record<string, unknown>;
+    expect(body).toEqual({ testerEmails: ["ada@example.com"], groupAliases: ["qa", "beta"] });
+    expect(result).toMatchObject({
+      testerEmails: ["ada@example.com"],
+      groupAliases: ["qa", "beta"],
+    });
+    // 999 distinct + one repeat is within the cap once the repeat is dropped.
+    const many = Array.from({ length: 999 }, (_, i) => `t${String(i)}@example.com`);
+    const stub2 = serve("{}");
+    await configured(async () => {
+      await tools.callJson("firebase_app_distribution_distribute", {
+        ...ARGS,
+        testerEmails: [...many.slice(0, 998), many[0] as string],
+        groupAliases: ["g"],
+      });
+    });
+    expect(apiCalls(stub2)).toHaveLength(1);
+  });
+
   it("refuses an app that is not in FIREBASE_APP_IDS, before any request", async () => {
     const stub = serve("{}");
     await configured(async () => {
@@ -285,6 +314,36 @@ describe("firebase_app_distribution_distribute (standalone mode)", () => {
 
   afterEach(() => {
     rmSync(auditDir, { recursive: true, force: true });
+  });
+
+  it("an app outside FIREBASE_APP_IDS is refused before scope, consent and the pre-state read (review)", async () => {
+    let tools: CapturedTools | undefined;
+    await withEnv(
+      {
+        // In scope, so only refuseBefore can stop it before the pre-state read.
+        NIMBUS_MCP_FIREBASE_WRITE_SCOPE: "app:1:999:android:zzz",
+        NIMBUS_MCP_AUDIT_LOG: auditLog,
+        NIMBUS_MCP_WRITE_BUDGET: undefined,
+      },
+      () => {
+        tools = captureStandaloneTools(registerFirebaseTools, { elicitation: true }).tools;
+      },
+    );
+    const stub = serve("{}");
+    const other = "1:999:android:zzz";
+    await configured(async () => {
+      await tools?.call("firebase_app_distribution_distribute", {
+        appId: other,
+        releaseId: "rel-1",
+        groupAliases: ["g"],
+      });
+    });
+    expect(stub.calls).toEqual([]); // no token request, no GET, no POST
+    const outcomes = readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => (JSON.parse(l) as { entry: { outcome: string } }).entry.outcome);
+    expect(outcomes).toEqual(["refused"]);
   });
 
   it("records the release itself as the before-state, then distributes", async () => {
