@@ -4,9 +4,9 @@
 
 First-party Nimbus MCP connector for [Bitrise](https://www.bitrise.io/).
 Indexes the user's Bitrise **apps** and recent **builds** into the local
-index as `bitrise:app` and `bitrise:build` items and exposes three
-read-only tools to the Nimbus agent (`bitrise_list`, `bitrise_get`,
-`bitrise_search`).
+index as `bitrise:app` and `bitrise:build` items and exposes read tools
+(`bitrise_list`, `bitrise_get`, `bitrise_search`, `bitrise_build_latest`) and one
+owner-approved write tool (`bitrise_build_trigger`).
 
 ## Install
 
@@ -33,10 +33,15 @@ Tools exposed:
 | `bitrise_list`   | List the user's apps, or recent builds for an app (status filter + limit).    |
 | `bitrise_get`    | Fetch a single app or build by slug.                                          |
 | `bitrise_search` | Substring search across recent builds (branch / commit / workflow / status). |
+| `bitrise_build_latest` | The app's latest build, optionally of one branch and workflow (the list tool has no such filter). |
+| `bitrise_build_trigger` | WRITE. `POST /v0.1/apps/{appSlug}/builds`, body `{ hook_info: { type: "bitrise" }, build_params: { branch, workflow_id } }`; the token is sent raw in `Authorization`, no Bearer. The build slug is read from `build_slug` at the root, then `slug`, then `results[0].build_slug` (never the deprecated `build_url`). Mutates `bitrise.build.trigger`, recoverable (a build can be aborted). Scope `app:<appSlug>`. |
 
-All three tools are read-only; `hitlRequired` is intentionally empty.
-Bitrise write actions (trigger build, abort build) are deferred — the
-roadmap row scopes this connector to read-only mobile CI observability.
+### Write tools
+
+Each write needs the owner's approval (`hitlRequired: ["write"]`). Standalone, set `NIMBUS_MCP_BITRISE_WRITE_SCOPE` to `app:<value>` terms; see `docs/configuration.md`. A write's result says `accepted` and names the id to poll: the vendor runs the work afterwards, and nothing here reports it as finished. A redirect on a write is refused and never followed, so the token is never re-sent anywhere else.
+
+Not verified against a live account: which of the three slug fields a current reply carries (the
+swagger marks `build_slug` deprecated beside `slug`). Aborting a build is not built.
 
 ## See also
 

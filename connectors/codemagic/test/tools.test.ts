@@ -7,6 +7,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { CODEMAGIC_TOOL_NAMES, registerCodemagicTools } from "../src/tools.ts";
 
 const API = "https://api.codemagic.io";
@@ -44,12 +45,14 @@ function configured(fn: () => Promise<void>): Promise<void> {
 }
 
 beforeEach(() => {
+  setConnectorMode("gateway");
   tools = captureTools(registerCodemagicTools);
 });
 
 afterEach(() => {
   http?.restore();
   http = undefined;
+  resetConnectorModeForTests();
 });
 
 describe("codemagic tools", () => {

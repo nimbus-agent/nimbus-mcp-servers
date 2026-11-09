@@ -7,6 +7,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { BITRISE_TOOL_NAMES, registerBitriseTools } from "../src/tools.ts";
 
 const API = "https://api.bitrise.io/v0.1";
@@ -49,17 +50,19 @@ async function urlOf(name: string, args: Record<string, unknown>): Promise<strin
 }
 
 beforeEach(() => {
+  setConnectorMode("gateway");
   tools = captureTools(registerBitriseTools);
 });
 
 afterEach(() => {
   http?.restore();
   http = undefined;
+  resetConnectorModeForTests();
 });
 
 describe("bitrise tools", () => {
-  it("registers exactly BITRISE_TOOL_NAMES", () => {
-    expect(tools.names()).toEqual([...BITRISE_TOOL_NAMES]);
+  it("registers exactly BITRISE_TOOL_NAMES, in order", () => {
+    expect(tools.registrationOrder()).toEqual([...BITRISE_TOOL_NAMES]);
   });
 
   it("list with no app lists the user's apps, sending the token with no scheme", async () => {

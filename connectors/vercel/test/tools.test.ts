@@ -8,6 +8,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
+import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerVercelTools, VERCEL_TOOL_NAMES } from "../src/tools.ts";
 
 const API = "https://api.vercel.com";
@@ -49,17 +50,19 @@ async function request(
 }
 
 beforeEach(() => {
+  setConnectorMode("gateway");
   tools = captureTools(registerVercelTools);
 });
 
 afterEach(() => {
   http?.restore();
   http = undefined;
+  resetConnectorModeForTests();
 });
 
 describe("vercel tools", () => {
-  it("registers exactly VERCEL_TOOL_NAMES", () => {
-    expect(tools.names()).toEqual([...VERCEL_TOOL_NAMES]);
+  it("registers exactly VERCEL_TOOL_NAMES, in order", () => {
+    expect(tools.registrationOrder()).toEqual([...VERCEL_TOOL_NAMES]);
   });
 
   it("list asks for 100 deployments by default, and `limit` when given", async () => {
