@@ -449,6 +449,12 @@ const WRITES: Readonly<
       ["gmail_message_send", "gmail.message.send", MAIL_TO, "recipient:ada@example.com"],
       ["gmail_draft_create", "gmail.draft.create", MAIL_TO, "recipient:ada@example.com"],
       ["gmail_draft_send", "gmail.draft.send", { draftId: "r-123" }, "draft:r-123"],
+      [
+        "gmail_thread_archive",
+        "gmail.thread.archive",
+        { threadId: "18c2f0a1b2" },
+        "thread:18c2f0a1b2",
+      ],
     ],
   },
   "google-drive": {
@@ -848,6 +854,8 @@ function registersWrites(id: string): boolean {
 /** Obsidian resolves its vaults while registering, so it cannot register without the variable. */
 const REGISTRATION_ENV = {
   OBSIDIAN_VAULT_PATHS_JSON: JSON.stringify([join(tmpdir(), "nimbus-write-scope-no-vault")]),
+  // gmail_thread_archive registers only for a token holding gmail.modify.
+  GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/gmail.modify",
 };
 
 /**

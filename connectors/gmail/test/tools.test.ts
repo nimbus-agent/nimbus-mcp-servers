@@ -201,6 +201,55 @@ describe("gmail tools", () => {
   });
 });
 
+describe("gmail_thread_archive", () => {
+  const MODIFY = "https://www.googleapis.com/auth/gmail.modify";
+
+  /** The tools as a gateway registers them for a token holding `scopes`. */
+  async function toolsWith(scopes: string | undefined): Promise<CapturedTools> {
+    return await withEnv({ GOOGLE_OAUTH_SCOPES: scopes }, () => captureTools(registerGmailTools));
+  }
+
+  it("is listed only for a token holding gmail.modify", async () => {
+    expect((await toolsWith(undefined)).names()).not.toContain("gmail_thread_archive");
+    expect(
+      (await toolsWith("https://www.googleapis.com/auth/gmail.readonly")).names(),
+    ).not.toContain("gmail_thread_archive");
+    expect((await toolsWith(MODIFY)).names()).toContain("gmail_thread_archive");
+  });
+
+  it("removes the INBOX label from the thread, and nothing else", async () => {
+    tools = await toolsWith(MODIFY);
+    const req = await request("gmail_thread_archive", { threadId: "18c2f0a1b2" });
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe(`${API}/threads/18c2f0a1b2/modify`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ removeLabelIds: ["INBOX"] });
+    expect(req.headers["authorization"]).toBe("Bearer ya29.gmail");
+  });
+
+  it("refuses an id that is not a Gmail thread id, before any request", async () => {
+    tools = await toolsWith(MODIFY);
+    for (const threadId of ["", "../labels", "a/b", "x".repeat(65), "18c2 f0"]) {
+      const stub = serve();
+      await withEnv({ GOOGLE_OAUTH_ACCESS_TOKEN: "t" }, async () => {
+        await expect(tools.call("gmail_thread_archive", { threadId })).rejects.toThrow();
+      });
+      expect(stub.calls, threadId).toEqual([]);
+    }
+  });
+
+  it("surfaces Gmail's refusal (a 403 for a missing scope, a 404 for an unknown thread)", async () => {
+    tools = await toolsWith(MODIFY);
+    for (const status of [403, 404]) {
+      serve({ status, body: "nope" });
+      await withEnv({ GOOGLE_OAUTH_ACCESS_TOKEN: "t" }, async () => {
+        await expect(tools.call("gmail_thread_archive", { threadId: "abc" })).rejects.toThrow(
+          `Gmail API ${String(status)}`,
+        );
+      });
+    }
+  });
+});
+
 describe("gmail_draft_send standalone: an unrecoverable send records its draft", () => {
   beforeEach(() => {
     resetConnectorModeForTests();

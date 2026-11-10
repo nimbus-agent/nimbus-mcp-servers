@@ -12,6 +12,7 @@ import {
   makeRestToolRegistrar,
   makeRestWriteToolRegistrar,
 } from "../../../shared/rest-tool-kit.ts";
+import { gmailToolShouldRegister, parseGoogleOAuthScopesFromEnv } from "./tool-scope-policy.ts";
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -67,7 +68,7 @@ export function registerGmailTools(
   const registerWriteTool = createWriteToolRegistrar(server, {
     connector: "gmail",
     scopeEnv: "NIMBUS_MCP_GMAIL_WRITE_SCOPE",
-    scopeKinds: ["recipient", "draft"],
+    scopeKinds: ["recipient", "draft", "thread"],
   });
 
   /**
@@ -206,4 +207,26 @@ export function registerGmailTools(
     () => `${GMAIL_BASE}/messages/send`,
     (data) => jsonPost({ raw: rawMessage(data) }),
   );
+
+  // Registered only when the token holds `gmail.modify` (or the full-mailbox scope): the default
+  // grant is read + compose, and a fresh `nimbus connector auth gmail` is what adds it.
+  if (gmailToolShouldRegister("gmail_thread_archive", parseGoogleOAuthScopesFromEnv())) {
+    const gmailThreadArchiveArgs = z.object({
+      // Gmail thread ids are hex; anything else is refused before any request.
+      threadId: z.string().regex(/^[A-Za-z0-9]{1,64}$/, "threadId must be a Gmail thread id"),
+    });
+
+    registerGmailWriteTool(
+      "gmail_thread_archive",
+      {
+        mutates: "gmail.thread.archive",
+        recoverable: true,
+        scopeTargetOf: (p) => ({ kind: "thread", value: p.threadId }),
+      },
+      "Archive a Gmail thread: remove it from the inbox (every message keeps its other labels; nothing is deleted). Requires Gateway HITL gmail.thread.archive.",
+      gmailThreadArchiveArgs,
+      (data) => `${GMAIL_BASE}/threads/${encodeURIComponent(data.threadId)}/modify`,
+      () => jsonPost({ removeLabelIds: ["INBOX"] }),
+    );
+  }
 }
