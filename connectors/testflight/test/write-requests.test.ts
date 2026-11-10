@@ -17,7 +17,15 @@ import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/co
 import { registerTestflightTools } from "../src/tools.ts";
 
 const API = "https://api.appstoreconnect.apple.com";
-const ARGS = { appId: "app-1", buildId: "bld-1", betaGroupIds: ["grp-a", "grp-b"] };
+// grp-b has a public link (see APP_GROUPS), so the shared args say so; the public-link tests below
+// use PRIVATE_ARGS and the default.
+const ARGS = {
+  appId: "app-1",
+  buildId: "bld-1",
+  betaGroupIds: ["grp-a", "grp-b"],
+  allowPublicLink: true,
+};
+const PRIVATE_ARGS = { appId: "app-1", buildId: "bld-1", betaGroupIds: ["grp-a", "g0"] };
 
 /** Shaped like `GET /v1/builds/{id}?include=app`: the relationship carries the app's id. */
 const BUILD_OF_APP_1 = {
@@ -86,6 +94,16 @@ const ownedBy =
   (app: unknown) =>
   (req: RecordedRequest): StubReply => {
     if (req.method !== "GET") return { status: 204, body: "" };
+    const group = /\/v1\/betaGroups\/([^/?]+)$/.exec(req.url)?.[1];
+    if (group !== undefined) {
+      return JSON.stringify({
+        data: {
+          id: group,
+          type: "betaGroups",
+          attributes: { publicLinkEnabled: group === "grp-b" },
+        },
+      });
+    }
     return req.url.includes("/v1/apps/") ? JSON.stringify(APP_GROUPS) : JSON.stringify(app);
   };
 
@@ -143,6 +161,69 @@ describe("testflight writes (gateway mode)", () => {
       buildId: "bld-1",
       betaGroupIds: ["grp-a", "grp-b"],
     });
+  });
+
+  it("reads each target group at dispatch and sends when none has a public link", async () => {
+    const stub = serve(ownedBy(BUILD_OF_APP_1));
+    await configured(async () => {
+      expect(await tools.callJson("testflight_build_distribute", PRIVATE_ARGS)).toMatchObject({
+        ok: true,
+        status: "accepted",
+      });
+    });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${API}/v1/builds/bld-1?include=app`,
+      `GET ${API}/v1/apps/app-1/betaGroups?limit=200`,
+      `GET ${API}/v1/betaGroups/grp-a`,
+      `GET ${API}/v1/betaGroups/g0`,
+      `POST ${API}/v1/builds/bld-1/relationships/betaGroups`,
+    ]);
+  });
+
+  it("refuses a public-link group with testflight_public_link_forbidden and sends nothing", async () => {
+    const stub = serve(ownedBy(BUILD_OF_APP_1));
+    for (const args of [
+      { ...ARGS, allowPublicLink: undefined },
+      { ...ARGS, allowPublicLink: false },
+    ]) {
+      await configured(async () => {
+        await expect(tools.call("testflight_build_distribute", args)).rejects.toThrow(
+          /^testflight_public_link_forbidden: .*grp-b.*nothing was sent$/,
+        );
+      });
+    }
+    expect(stub.calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("sends to a public-link group when allowPublicLink is true, without reading the groups", async () => {
+    const stub = serve(ownedBy(BUILD_OF_APP_1));
+    await configured(async () => {
+      await tools.call("testflight_build_distribute", ARGS);
+    });
+    expect(stub.calls.some((c) => c.url.includes("/v1/betaGroups/"))).toBe(false);
+    expect(stub.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+
+  it("sends nothing when a group read fails", async () => {
+    const stub = serve((req) =>
+      req.url.includes("/v1/betaGroups/")
+        ? { status: 500, body: "boom" }
+        : ownedBy(BUILD_OF_APP_1)(req),
+    );
+    await configured(async () => {
+      await expect(tools.call("testflight_build_distribute", PRIVATE_ARGS)).rejects.toThrow(/500/);
+    });
+    expect(stub.calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("allowPublicLink must be a boolean", async () => {
+    const stub = serve(ownedBy(BUILD_OF_APP_1));
+    await configured(async () => {
+      await expect(
+        tools.call("testflight_build_distribute", { ...ARGS, allowPublicLink: "yes" }),
+      ).rejects.toThrow();
+    });
+    expect(stub.calls).toEqual([]);
   });
 
   it("sends no POST for a build of another app", async () => {

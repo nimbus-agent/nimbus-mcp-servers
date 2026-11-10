@@ -101,7 +101,7 @@ against (`github_commit_prepare`, `gitlab_commit_prepare`), a Terraform apply or
 hash of a saved plan (`iac_terraform_plan`, `iac_terraform_destroy_plan`; `iac_terraform_show_json`
 renders a saved plan for the preview), a CloudFormation deploy to a change set whose name carries
 the template's sha256 (`iac_cloudformation_changeset_create`), and a Kubernetes apply to the hash of
-the manifest a server-side dry run and diff were shown for (`k8s_manifest_plan`). Those tools register through `createPrepareToolRegistrar`, never `reg` and never the write
+the manifest, context and namespace a server-side dry run and a built-in diff were shown for (`k8s_manifest_plan`; the apply re-runs the plan and refuses if the diff changed). Those tools register through `createPrepareToolRegistrar`, never `reg` and never the write
 registrar, and only under a name listed in `shared/prepare-tool-ids.ts` (`PREPARE_TOOL_IDS`, one
 literal list the gateway reads as text; the registrar throws for any other name). Standalone, a
 prepare tool is registered for every client, needs the same write scope as the writes it serves,

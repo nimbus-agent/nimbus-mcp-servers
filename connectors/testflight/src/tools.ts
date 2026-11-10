@@ -97,6 +97,20 @@ async function appGroupIds(appId: string): Promise<Set<string>> {
   return new Set(groups.map((g) => g["id"]).filter((id): id is string => typeof id === "string"));
 }
 
+/**
+ * The ids, among `ids`, of beta groups that have a public link right now: one
+ * `GET /v1/betaGroups/{id}` each, read at dispatch so the answer is the group's state at the moment
+ * of the send, not at the time anyone was shown it.
+ */
+async function publicLinkGroupIds(ids: readonly string[]): Promise<string[]> {
+  const open: string[] = [];
+  for (const id of ids) {
+    const root = asObj(await appstoreGet(`/v1/betaGroups/${encodeURIComponent(id)}`));
+    if (asObj(asObj(root["data"])["attributes"])["publicLinkEnabled"] === true) open.push(id);
+  }
+  return open;
+}
+
 /** The app a build belongs to, from `GET /v1/builds/{id}?include=app`. */
 async function appOfBuild(buildId: string): Promise<string | undefined> {
   const root = asObj(await appstoreGet(`/v1/builds/${encodeURIComponent(buildId)}?include=app`));
@@ -192,11 +206,12 @@ export function registerTestflightTools(
       }),
       scopeTargetOf: (p: { appId: string }) => ({ kind: "app", value: p.appId }),
     },
-    'Add a TestFlight build to beta groups (`POST /v1/builds/{buildId}/relationships/betaGroups`, body `{ data: [{ type: "betaGroups", id }] }`). The build must belong to `appId`: it is read first (`GET /v1/builds/{buildId}?include=app`) and a build of another app sends nothing. Adding a build to a group makes it available to every tester in it, and a group with a public link reaches anyone holding the link (see `testflight_build_groups_get`). Apple may refuse (409/422) a build that is not VALID or a external group that has not passed beta review; the body is returned in the error. The reply is `accepted`.',
+    'Add a TestFlight build to beta groups (`POST /v1/builds/{buildId}/relationships/betaGroups`, body `{ data: [{ type: "betaGroups", id }] }`). The build must belong to `appId`: it is read first (`GET /v1/builds/{buildId}?include=app`) and a build of another app sends nothing. Adding a build to a group makes it available to every tester in it, and a group with a public link reaches anyone holding the link (see `testflight_build_groups_get`): each target group is read (`GET /v1/betaGroups/{id}`) right before the send, and one with `publicLinkEnabled: true` is refused with `testflight_public_link_forbidden` unless `allowPublicLink` is `true` (default false). Apple may refuse (409/422) a build that is not VALID or a external group that has not passed beta review; the body is returned in the error. The reply is `accepted`.',
     z.object({
       appId: idArg,
       buildId: idArg,
       betaGroupIds: z.array(idArg).min(1).max(20),
+      allowPublicLink: z.boolean().optional(),
     }),
     async (p) => {
       if (new Set(p.betaGroupIds).size !== p.betaGroupIds.length) {
@@ -213,6 +228,16 @@ export function registerTestflightTools(
         throw new Error(
           `beta group(s) ${stray.join(", ")} do not belong to app ${p.appId}; nothing was sent`,
         );
+      }
+      // A group with a public link reaches anyone who holds the link, so it is distributed to only
+      // when the caller said so. Read now, at dispatch, from each group itself.
+      if (p.allowPublicLink !== true) {
+        const open = await publicLinkGroupIds(p.betaGroupIds);
+        if (open.length > 0) {
+          throw new Error(
+            `testflight_public_link_forbidden: beta group(s) ${open.join(", ")} have a public link; pass allowPublicLink: true to distribute to them; nothing was sent`,
+          );
+        }
       }
       await appstoreSend(
         "POST",
