@@ -134,8 +134,11 @@ function dropGeneratedTokenVolume(spec: Obj): void {
   const kept = volumes.filter((v) => !isGeneratedTokenVolume(v));
   if (kept.length === 0) delete spec["volumes"];
   else spec["volumes"] = kept;
-  for (const list of ["containers", "initContainers", "ephemeralContainers"]) {
-    const containers = spec[list];
+  for (const containers of [
+    spec["containers"],
+    spec["initContainers"],
+    spec["ephemeralContainers"],
+  ]) {
     if (!Array.isArray(containers)) continue;
     for (const c of containers) {
       if (!isObj(c) || !Array.isArray(c["volumeMounts"])) continue;
