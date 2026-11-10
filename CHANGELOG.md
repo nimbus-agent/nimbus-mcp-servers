@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.11.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.10.0...connectors-v0.11.0) (2026-11-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **connectors:** kubernetes built-in diff, re-diff on apply, required context and namespace, and TestFlight public-link guard ([#79](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/79))
+
+### Features
+
+* **connectors:** kubernetes built-in diff, re-diff on apply, required context and namespace, and TestFlight public-link guard ([#79](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/79)) ([2ca5209](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/2ca5209639b06f19f91875d54d73ad2d8d32f112))
+
 ## [0.10.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.9.0...connectors-v0.10.0) (2026-11-09)
 
 
