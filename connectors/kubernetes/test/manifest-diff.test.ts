@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   ABSENT_LIVE,
   diffSha256,
+  GENERATED_JOB_UID,
   normaliseForDiff,
   planDiff,
   unpackKubeJson,
@@ -144,6 +145,52 @@ describe("normaliseForDiff", () => {
     expect(text).not.toContain("kube-api-access");
     expect(text).toContain('"/data"');
     expect(text).not.toContain('"/t"');
+  });
+
+  it("masks a Job's uid-derived selector and template labels, so two dry runs diff the same", () => {
+    const job = (uid: string, team = "core") => ({
+      apiVersion: "batch/v1",
+      kind: "Job",
+      metadata: { name: "j", uid },
+      spec: {
+        selector: { matchLabels: { "batch.kubernetes.io/controller-uid": uid } },
+        template: {
+          metadata: {
+            labels: {
+              "batch.kubernetes.io/controller-uid": uid,
+              "controller-uid": uid,
+              "job-name": "j",
+              team,
+            },
+          },
+          spec: { containers: [{ name: "c", image: "busybox" }], restartPolicy: "Never" },
+        },
+      },
+    });
+    const a = normaliseForDiff(job("11111111-aaaa"));
+    expect(a).toEqual(normaliseForDiff(job("22222222-bbbb")));
+    const text = a.join("\n");
+    expect(text).not.toContain("11111111-aaaa");
+    expect(text).toContain(GENERATED_JOB_UID);
+    expect(text).toContain('"job-name": "j"');
+    // A value the user wrote still diffs.
+    expect(normaliseForDiff(job("11111111-aaaa", "web"))).not.toEqual(a);
+  });
+
+  it("masks nothing in a Job without a uid, or in a non-Job carrying its uid", () => {
+    const labels = { "controller-uid": "u-1" };
+    const job = {
+      kind: "Job",
+      metadata: { name: "j" },
+      spec: { selector: { matchLabels: labels } },
+    };
+    expect(normaliseForDiff(job).join("\n")).toContain('"u-1"');
+    const dep = {
+      kind: "Deployment",
+      metadata: { name: "d", uid: "u-1" },
+      spec: { selector: { matchLabels: labels } },
+    };
+    expect(normaliseForDiff(dep).join("\n")).toContain('"u-1"');
   });
 
   it("keeps a token-named volume that is not a projected token, and any non-Pod's volumes", () => {
