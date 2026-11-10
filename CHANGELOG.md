@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.11.0...connectors-v0.12.0) (2026-11-10)
+
+
+### Features
+
+* **gmail:** archive a thread (gmail_thread_archive), registered only with gmail.modify ([#81](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/81)) ([39525a9](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/39525a92174e91ba4e4c85e736608210fdc5bbf1))
+
 ## [0.11.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.10.0...connectors-v0.11.0) (2026-11-10)
 
 
