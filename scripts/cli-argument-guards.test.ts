@@ -72,7 +72,8 @@ afterAll(() => {
 /** What a connector reads at call time, held fixed so its argv is the same on every machine. */
 const CALL_ENV: Record<string, string | undefined> = {
   KUBECONFIG: SWEEP_KUBECONFIG,
-  KUBE_CONTEXT: undefined,
+  // The kubernetes tools take a `context` that must equal this (the sweep names it nimbus-sweep-context).
+  KUBE_CONTEXT: "nimbus-sweep-context",
   BIGQUERY_PROJECT: "nimbus-sweep-project",
   GOOGLE_CLOUD_PROJECT: undefined,
   VERTEX_AI_REGION: undefined,
@@ -224,6 +225,7 @@ const SWEEP_SEED: Record<string, unknown> = {
   instanceId: "i-0123456789abcdef0",
   // iac: a plan hash and a change set ARN, which no generic string satisfies.
   planSha256: "a".repeat(64),
+  diffSha256: "a".repeat(64),
   changeSetId:
     "arn:aws:cloudformation:us-east-1:123456789012:changeSet/nimbus-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0123456789ab/11111111-2222-3333-4444-555555555555",
 };

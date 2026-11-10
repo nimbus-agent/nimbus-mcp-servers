@@ -17,28 +17,66 @@ import {
 import { withPrivateKubeconfig } from "../../../shared/private-kubeconfig.ts";
 import { withScratchDir } from "../../../shared/private-scratch.ts";
 import { runCliCode, runCliJsonThrowing, runCliOkThrowing } from "../../../shared/run-cli-json.ts";
+import {
+  compareCodeUnits,
+  diffSha256,
+  planDiff,
+  RESOURCE_PREFIX,
+  unpackKubeJson,
+} from "./manifest-diff.ts";
 import { type ScannedObject, scanNamespacedManifest } from "./manifest-scan.ts";
 
-function kubectlBase(): string[] {
-  const args = ["kubectl"];
-  const ctx = process.env["KUBE_CONTEXT"]?.trim();
-  if (ctx !== undefined && ctx !== "") {
-    args.push("--context", ctx);
+/** `kubectl --context <ctx>`: every call names its context, none relies on the kubeconfig's current one. */
+function kubectlBase(context: string): string[] {
+  return ["kubectl", "--context", context];
+}
+
+const CONTEXT_MISMATCH = "context does not match the configured context";
+
+/**
+ * The context every call of this process works against: `KUBE_CONTEXT` if the owner set it, else
+ * what `kubectl config current-context` prints for the call's private kubeconfig (never a
+ * hand-parse of the file). Fails closed: a kubectl error, no output, or a value that is not a plain
+ * argument is an error, so no call ever falls back to some other context.
+ */
+async function effectiveContext(kube: { readonly KUBECONFIG: string }): Promise<string> {
+  let ctx = process.env["KUBE_CONTEXT"]?.trim();
+  if (ctx === undefined || ctx === "") {
+    const r = await runCliCode(["kubectl", "config", "current-context"], kube);
+    if (r.code !== 0) {
+      throw new Error(`could not determine the kubectl context: kubectl exited ${String(r.code)}`);
+    }
+    ctx = r.stdout.trim();
+    if (ctx === "") {
+      throw new Error("could not determine the kubectl context: kubectl printed none");
+    }
   }
-  return args;
+  if (!cliArg.safeParse(ctx).success) {
+    throw new Error("the configured kubectl context is not a plain value");
+  }
+  return ctx;
 }
 
 /**
- * Run `body` against a private copy of the kubeconfig `KUBECONFIG` names (shared/private-kubeconfig.ts):
- * one tool call, one copy, so a call can neither change the owner's file nor race another call.
+ * Run `body` on a private kubeconfig copy (shared/private-kubeconfig.ts: one tool call, one copy, so
+ * a call can neither change the owner's file nor race another) with the effective context. A
+ * `given` context that is not that context throws before `body` runs.
  */
-function withKube<T>(body: (env: { readonly KUBECONFIG: string }) => Promise<T>): Promise<T> {
-  return withPrivateKubeconfig({ source: process.env["KUBECONFIG"] ?? "" }, body);
+function withKube<T>(
+  given: string | undefined,
+  body: (kube: { readonly KUBECONFIG: string }, context: string) => Promise<T>,
+): Promise<T> {
+  return withPrivateKubeconfig({ source: process.env["KUBECONFIG"] ?? "" }, async (kube) => {
+    const context = await effectiveContext(kube);
+    if (given !== undefined && given !== context) throw new Error(CONTEXT_MISMATCH);
+    return body(kube, context);
+  });
 }
 
-function kubectlJson(rest: string[]): Promise<unknown> {
-  const cmd = [...kubectlBase(), ...rest, "-o", "json"];
-  return withKube((env) => runCliJsonThrowing(cmd, env));
+function kubectlJson(rest: string[], given: string | undefined): Promise<unknown> {
+  return withKube(given, (env, context) =>
+    runCliJsonThrowing([...kubectlBase(context), ...rest, "-o", "json"], env),
+  );
 }
 
 /** A manifest may be at most this many UTF-8 bytes (the schema's character cap is a floor of it). */
@@ -47,9 +85,10 @@ const MANIFEST_MAX_BYTES = 262_144;
 const DIFF_MAX_BYTES = 65_536;
 /** The whole plan reply, which the gateway refuses above this size. */
 const PLAN_REPLY_MAX_BYTES = 262_144;
-/** Domain separator of the plan hash: sha256 of this, a newline, the namespace, a newline, the manifest. */
-const PLAN_HASH_DOMAIN = "nimbus-k8s-manifest-v1";
+/** Domain separator of the plan hash (see {@link planHash}). */
+const PLAN_HASH_DOMAIN = "nimbus-k8s-manifest-v2";
 const MISMATCH = "manifest does not match the approved hash";
+const CLUSTER_CHANGED = "the cluster changed since the plan was approved";
 
 interface ManifestInput {
   readonly namespace: string;
@@ -58,37 +97,39 @@ interface ManifestInput {
 
 /**
  * The checks every manifest tool makes before it touches a file or a process, in this order: size
- * in UTF-8 bytes, the namespaced-subset scan (manifest-scan.ts), and the hash of the exact bytes
- * kubectl will be handed. Throws a fixed message.
+ * in UTF-8 bytes, then the namespaced-subset scan (manifest-scan.ts). Throws a fixed message.
  */
-function checkedManifest(p: ManifestInput): {
-  bytes: Buffer;
-  sha256: string;
-  scanned: ScannedObject[];
-} {
+function checkedManifest(p: ManifestInput): { bytes: Buffer; scanned: ScannedObject[] } {
   const bytes = Buffer.from(p.manifest, "utf8");
   if (bytes.length > MANIFEST_MAX_BYTES) {
     throw new Error(`manifest is larger than ${String(MANIFEST_MAX_BYTES)} bytes`);
   }
-  const scanned = scanNamespacedManifest(p.manifest, p.namespace);
-  // The hash binds the namespace to the manifest, so an approved plan for one namespace cannot be
-  // replayed against another. The kube CONTEXT is owner environment (KUBE_CONTEXT), not caller
-  // input, and is deliberately not part of it.
-  const hashed = [PLAN_HASH_DOMAIN, p.namespace, p.manifest].join("\n");
-  const sha256 = createHash("sha256").update(hashed, "utf8").digest("hex");
-  return { bytes, sha256, scanned };
+  return { bytes, scanned: scanNamespacedManifest(p.manifest, p.namespace) };
 }
 
-/** {@link checkedManifest}, then the apply's own check: the manifest must hash to what was approved. */
-function approvedManifest(p: ManifestInput & { readonly planSha256: string }) {
-  const checked = checkedManifest(p);
-  const want = Buffer.from(p.planSha256, "hex");
-  const have = Buffer.from(checked.sha256, "hex");
-  // Equal length is checked first: timingSafeEqual throws on unequal buffers. The schema pins 64 hex.
-  if (want.length !== have.length || !timingSafeEqual(want, have)) {
+/**
+ * The plan hash (v2): sha256 of the domain, the EFFECTIVE context, the namespace and the exact
+ * manifest text, newline-separated. The context and namespace are in it, so an approved plan
+ * cannot be replayed on another cluster or in another namespace. v1 (no context) is retired.
+ */
+export function planHash(context: string, namespace: string, manifest: string): string {
+  return createHash("sha256")
+    .update([PLAN_HASH_DOMAIN, context, namespace, manifest].join("\n"), "utf8")
+    .digest("hex");
+}
+
+/** Constant-time equality of two lowercase-hex digests (equal length is checked first). */
+function sameHex(a: string, b: string): boolean {
+  const want = Buffer.from(a, "hex");
+  const have = Buffer.from(b, "hex");
+  return want.length === have.length && timingSafeEqual(want, have);
+}
+
+/** The apply's own check: the manifest must hash, under this context, to what was approved. */
+function assertApprovedHash(context: string, p: ManifestInput & { readonly planSha256: string }) {
+  if (!sameHex(p.planSha256, planHash(context, p.namespace, p.manifest))) {
     throw new Error(MISMATCH);
   }
-  return checked;
 }
 
 function refusalOf(check: () => unknown): string | undefined {
@@ -118,37 +159,6 @@ function kubectlFailure(
 
 /** What a plan's `diff` holds in place of kubectl's when the manifest holds a Secret. */
 export const SECRET_DIFF_WITHHELD = "(diff withheld: the manifest holds a Secret)";
-
-/** The `kubectl ... -o name` resource prefix of each allowlisted kind. */
-const RESOURCE_PREFIX: Readonly<Record<string, string>> = {
-  ConfigMap: "configmap",
-  Secret: "secret",
-  Service: "service",
-  Pod: "pod",
-  ServiceAccount: "serviceaccount",
-  PersistentVolumeClaim: "persistentvolumeclaim",
-  Deployment: "deployment.apps",
-  StatefulSet: "statefulset.apps",
-  DaemonSet: "daemonset.apps",
-  ReplicaSet: "replicaset.apps",
-  Job: "job.batch",
-  CronJob: "cronjob.batch",
-  Ingress: "ingress.networking.k8s.io",
-  NetworkPolicy: "networkpolicy.networking.k8s.io",
-  Role: "role.rbac.authorization.k8s.io",
-  RoleBinding: "rolebinding.rbac.authorization.k8s.io",
-  HorizontalPodAutoscaler: "horizontalpodautoscaler.autoscaling",
-  PodDisruptionBudget: "poddisruptionbudget.policy",
-};
-
-/**
- * Order by UTF-16 code unit, the same on every machine. Not `localeCompare`: collation can tie two
- * distinct strings, and these lists are compared element by element.
- */
-function compareCodeUnits(a: string, b: string): number {
-  if (a < b) return -1;
-  return a > b ? 1 : 0;
-}
 
 /** The sorted `<prefix>/<name>` list the scan expects kubectl to report. */
 function expectedNames(scanned: readonly ScannedObject[]): string[] {
@@ -184,16 +194,42 @@ async function writeManifestFile(dir: string, bytes: Buffer): Promise<string> {
   return file;
 }
 
-/** `kubectl apply --server-side --dry-run=server -o name`, cross-checked against the scan. */
-async function serverDryRun(
+/** Parse a kubectl `-o json` reply; an unparsable one is an error that never echoes the text (it may hold a Secret). */
+function parseKubeReply(stdout: string, what: string): unknown {
+  const trimmed = stdout.trim();
+  if (trimmed === "") return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    throw new Error(`kubectl ${what} returned invalid JSON`);
+  }
+}
+
+/** What the plan computes, and what the apply recomputes to compare. */
+interface Computed {
+  readonly objects: string[];
+  /** The diff as the reply shows it (withheld when the manifest holds a Secret). */
+  readonly diff: string;
+  readonly hasDifferences: boolean;
+  readonly diffSha256: string;
+}
+
+/**
+ * The plan: a server-side dry run (`-o json`, the objects as the API server would admit them,
+ * cross-checked against the scan), one `kubectl get` of the same objects as they are now
+ * (`--ignore-not-found`), and the built-in diff of the two (manifest-diff.ts). Changes nothing.
+ */
+async function computePlan(
   kube: { readonly KUBECONFIG: string },
+  context: string,
   ns: string,
   file: string,
   scanned: readonly ScannedObject[],
-): Promise<string[]> {
+): Promise<Computed> {
+  const base = kubectlBase(context);
   const dry = await runCliCode(
     [
-      ...kubectlBase(),
+      ...base,
       "apply",
       "--server-side",
       "--dry-run=server",
@@ -203,14 +239,43 @@ async function serverDryRun(
       "-f",
       file,
       "-o",
-      "name",
+      "json",
     ],
     kube,
   );
   if (dry.code !== 0) throw kubectlFailure("kubectl", dry.code, dry.stderr, scanned);
-  const objects = objectLines(dry.stdout);
+  const planned = unpackKubeJson(parseKubeReply(dry.stdout, "dry run"));
+  const objects = [...planned.keys()];
   assertSameObjects(objects, scanned, "dry run");
-  return objects;
+
+  const names = [...new Set(expectedNames(scanned))];
+  const get = await runCliCode(
+    [...base, "get", ...names, "-n", ns, "-o", "json", "--ignore-not-found"],
+    kube,
+  );
+  if (get.code !== 0) throw kubectlFailure("kubectl get", get.code, get.stderr, scanned);
+  const live = unpackKubeJson(parseKubeReply(get.stdout, "get"));
+
+  const full = planDiff(planned, live);
+  if (Buffer.byteLength(full, "utf8") > DIFF_MAX_BYTES) {
+    throw new Error(`diff too large (over ${String(DIFF_MAX_BYTES)} bytes)`);
+  }
+  // A Secret's plaintext can sit in either side of the diff, so with a Secret in the manifest its
+  // part of the diff is withheld: the reply's diff is a fixed marker line, then the diff of every
+  // object that is NOT a Secret. The hash covers that text, so the apply's re-diff still sees a
+  // change to any other object (stated bound: it cannot see a change to a Secret).
+  const holdsSecret = scanned.some((o) => o.kind === "Secret");
+  const diff = holdsSecret
+    ? `${SECRET_DIFF_WITHHELD}
+${planDiff(withoutSecrets(planned), withoutSecrets(live))}`
+    : full;
+  return { objects, diff, hasDifferences: full !== "", diffSha256: diffSha256(diff) };
+}
+
+/** `objects` without its Secrets (keyed `<RESOURCE_PREFIX.Secret>/<name>`). */
+function withoutSecrets<V>(objects: ReadonlyMap<string, V>): Map<string, V> {
+  const secret = `${RESOURCE_PREFIX["Secret"] ?? "secret"}/`;
+  return new Map([...objects].filter(([key]) => !key.startsWith(secret)));
 }
 
 function objectLines(stdout: string): string[] {
@@ -220,11 +285,14 @@ function objectLines(stdout: string): string[] {
     .filter((l) => l !== "");
 }
 
-const optionalNamespaceSchema = z.object({ namespace: cliArg.optional() });
+/** Reads: `context` is optional; when given it must be the effective one. */
+const readSchema = z.object({ context: cliArg.optional(), namespace: cliArg.optional() });
 
-async function k8sListNamespacedResource(p: { namespace?: string | undefined }, resource: string) {
-  const ns = p.namespace ?? "default";
-  const data = await kubectlJson(["get", resource, "-n", ns]);
+async function k8sListNamespacedResource(
+  p: { context?: string | undefined; namespace?: string | undefined },
+  resource: string,
+) {
+  const data = await kubectlJson(["get", resource, "-n", p.namespace ?? "default"], p.context);
   return jsonResult(data ?? {});
 }
 
@@ -269,21 +337,22 @@ export function registerKubernetesTools(
 
   reg(
     "k8s_pod_list",
-    "List pods in a namespace (default namespace: default).",
-    optionalNamespaceSchema,
+    "List pods in a namespace (default namespace: default). `context` is optional; when given it must be the configured context (`KUBE_CONTEXT`, else the kubeconfig's current one).",
+    readSchema,
     (p) => k8sListNamespacedResource(p, "pods"),
   );
 
   reg(
     "k8s_deployment_get",
-    "Get one deployment's state: {name, namespace, replicas, readyReplicas, generation, observedGeneration, restartedAt, images}. The before-state of a restart or a scale.",
-    z.object({ namespace: cliArg.optional(), name: cliArg }),
+    "Get one deployment's state: {name, namespace, replicas, readyReplicas, generation, observedGeneration, restartedAt, images}. The before-state of a restart or a scale. `context` is optional; when given it must be the configured context.",
+    z.object({ context: cliArg.optional(), namespace: cliArg.optional(), name: cliArg }),
     async (p) => {
       let data: unknown;
       try {
-        // kubectlJson builds on kubectlBase(), so the configured KUBE_CONTEXT applies as it does
-        // to every other call here.
-        data = await kubectlJson(["get", "deployment", p.name, "-n", p.namespace ?? "default"]);
+        data = await kubectlJson(
+          ["get", "deployment", p.name, "-n", p.namespace ?? "default"],
+          p.context,
+        );
       } catch (e) {
         // Exit code of a missing object is not documented, so NotFound is read from the message.
         if (e instanceof Error && isKubectlNotFound(e.message)) {
@@ -295,12 +364,18 @@ export function registerKubernetesTools(
     },
   );
 
-  reg("k8s_deployment_list", "List deployments in a namespace.", optionalNamespaceSchema, (p) =>
-    k8sListNamespacedResource(p, "deployments"),
+  reg(
+    "k8s_deployment_list",
+    "List deployments in a namespace. `context` is optional; when given it must be the configured context.",
+    readSchema,
+    (p) => k8sListNamespacedResource(p, "deployments"),
   );
 
-  reg("k8s_event_list", "List events in a namespace.", optionalNamespaceSchema, (p) =>
-    k8sListNamespacedResource(p, "events"),
+  reg(
+    "k8s_event_list",
+    "List events in a namespace. `context` is optional; when given it must be the configured context.",
+    readSchema,
+    (p) => k8sListNamespacedResource(p, "events"),
   );
 
   registerWriteTool(
@@ -308,18 +383,30 @@ export function registerKubernetesTools(
     {
       mutates: "kubernetes.rollout.restart",
       recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace ?? "default" }),
+      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
     },
-    "Restart a rollout (e.g. deployment).",
+    "Restart a rollout (e.g. deployment). `context` and `namespace` are required; `context` must be the configured context (`KUBE_CONTEXT`, else the kubeconfig's current one).",
     z.object({
-      namespace: cliArg.optional(),
+      context: cliArg,
+      namespace: cliArg,
       resourceType: cliArg,
       name: cliArg,
     }),
     async (p) => {
-      const ns = p.namespace ?? "default";
-      const cmd = [...kubectlBase(), "rollout", "restart", p.resourceType, p.name, "-n", ns];
-      await withKube((env) => runCliOkThrowing(cmd, env));
+      await withKube(p.context, (env, context) =>
+        runCliOkThrowing(
+          [
+            ...kubectlBase(context),
+            "rollout",
+            "restart",
+            p.resourceType,
+            p.name,
+            "-n",
+            p.namespace,
+          ],
+          env,
+        ),
+      );
       return jsonResult({ ok: true });
     },
   );
@@ -328,22 +415,25 @@ export function registerKubernetesTools(
     "k8s_pod_delete",
     {
       mutates: "kubernetes.pod.delete",
-      // A deleted pod is not restorable; its identity is all that remains to record — including
-      // the namespace the delete defaulted to, without which the record cannot say where it was.
+      // A deleted pod is not restorable; its identity is all that remains to record.
       recoverable: false,
       capturePreState: (p) =>
-        Promise.resolve({ namespace: p.namespace ?? "default", podName: p.podName }),
-      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace ?? "default" }),
+        Promise.resolve({ context: p.context, namespace: p.namespace, podName: p.podName }),
+      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
     },
-    "Delete a pod.",
+    "Delete a pod. `context` and `namespace` are required; `context` must be the configured context.",
     z.object({
-      namespace: cliArg.optional(),
+      context: cliArg,
+      namespace: cliArg,
       podName: cliArg,
     }),
     async (p) => {
-      const ns = p.namespace ?? "default";
-      const cmd = [...kubectlBase(), "delete", "pod", p.podName, "-n", ns];
-      await withKube((env) => runCliOkThrowing(cmd, env));
+      await withKube(p.context, (env, context) =>
+        runCliOkThrowing(
+          [...kubectlBase(context), "delete", "pod", p.podName, "-n", p.namespace],
+          env,
+        ),
+      );
       return jsonResult({ ok: true });
     },
   );
@@ -353,26 +443,30 @@ export function registerKubernetesTools(
     {
       mutates: "kubernetes.deployment.scale",
       recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace ?? "default" }),
+      scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
     },
-    "Scale a deployment.",
+    "Scale a deployment. `context` and `namespace` are required; `context` must be the configured context.",
     z.object({
-      namespace: cliArg.optional(),
+      context: cliArg,
+      namespace: cliArg,
       deploymentName: cliArg,
       replicas: z.number().int().min(0),
     }),
     async (p) => {
-      const ns = p.namespace ?? "default";
-      const cmd = [
-        ...kubectlBase(),
-        "scale",
-        "deployment",
-        p.deploymentName,
-        `-n`,
-        ns,
-        `--replicas=${String(p.replicas)}`,
-      ];
-      await withKube((env) => runCliOkThrowing(cmd, env));
+      await withKube(p.context, (env, context) =>
+        runCliOkThrowing(
+          [
+            ...kubectlBase(context),
+            "scale",
+            "deployment",
+            p.deploymentName,
+            "-n",
+            p.namespace,
+            `--replicas=${String(p.replicas)}`,
+          ],
+          env,
+        ),
+      );
       return jsonResult({ ok: true });
     },
   );
@@ -380,60 +474,26 @@ export function registerKubernetesTools(
   registerPrepareTool(
     "k8s_manifest_plan",
     { scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }) },
-    "Plan a k8s_manifest_apply: scan the manifest (namespaced kinds from an allowlist only, in the given namespace), then ask the API server for a server-side dry run and a server-side diff. Returns {planSha256, namespace, objects, scanned, diff, hasDifferences}; the apply must be given the same namespace, manifest and planSha256. Changes nothing.",
-    z.object({ namespace: cliArg, manifest: z.string().min(1).max(MANIFEST_MAX_BYTES) }),
+    "Plan a k8s_manifest_apply: scan the manifest (namespaced kinds from an allowlist only, in the given namespace), ask the API server for a server-side dry run, read the same objects as they are now, and diff the two in this connector (no `diff` program). Returns {planSha256, diffSha256, namespace, objects, scanned, diff, hasDifferences}; the apply must be given the same context, namespace, manifest, planSha256 and diffSha256. `context` must be the configured context (`KUBE_CONTEXT`, else the kubeconfig's current one) and is part of planSha256. Changes nothing.",
+    z.object({
+      context: cliArg,
+      namespace: cliArg,
+      manifest: z.string().min(1).max(MANIFEST_MAX_BYTES),
+    }),
     async (p) => {
-      const { bytes, sha256, scanned } = checkedManifest(p);
-      const ns = p.namespace;
+      const { bytes, scanned } = checkedManifest(p);
       const reply = await withScratchDir("nimbus-k8s-", async (dir) => {
         const file = await writeManifestFile(dir, bytes);
-        return withKube(async (kube) => {
-          // The dry run: the API server validates and admits the manifest and names each object,
-          // and the names must be the ones the scan read (see assertSameObjects).
-          const objects = await serverDryRun(kube, ns, file, scanned);
-
-          // kubectl diff runs the program KUBECTL_EXTERNAL_DIFF names (default `diff -u -N`). The
-          // variable is removed from the child whatever the owner's shell sets, so the diff is
-          // never produced by an arbitrary program. TMPDIR/TMP/TEMP point kubectl's own temp files
-          // (Go reads TMP and TEMP on Windows) into this call's private directory. Exit codes:
-          // https://kubernetes.io/docs/reference/kubectl/generated/kubectl_diff/ (0 no
-          // differences, 1 differences, >1 error). --force-conflicts is never passed.
-          const diff = await runCliCode(
-            [
-              ...kubectlBase(),
-              "diff",
-              "--server-side",
-              "--field-manager=nimbus",
-              "-n",
-              ns,
-              "-f",
-              file,
-            ],
-            {
-              KUBECONFIG: kube.KUBECONFIG,
-              KUBECTL_EXTERNAL_DIFF: undefined,
-              TMPDIR: dir,
-              TMP: dir,
-              TEMP: dir,
-            },
-          );
-          if (diff.code !== 0 && diff.code !== 1) {
-            throw kubectlFailure("kubectl diff", diff.code, diff.stderr, scanned);
-          }
-          if (Buffer.byteLength(diff.stdout, "utf8") > DIFF_MAX_BYTES) {
-            throw new Error(`diff too large (over ${String(DIFF_MAX_BYTES)} bytes)`);
-          }
-          // kubectl masks a Secret's `data`, but the diff's context lines can still carry its
-          // plaintext (a `last-applied-configuration` annotation, `stringData`), so with a Secret
-          // in the manifest only the fact of a difference is returned, never the body.
-          const holdsSecret = scanned.some((o) => o.kind === "Secret");
+        return withKube(p.context, async (kube, context) => {
+          const plan = await computePlan(kube, context, p.namespace, file, scanned);
           return {
-            planSha256: sha256,
-            namespace: ns,
-            objects,
+            planSha256: planHash(context, p.namespace, p.manifest),
+            diffSha256: plan.diffSha256,
+            namespace: p.namespace,
+            objects: plan.objects,
             scanned,
-            diff: holdsSecret ? SECRET_DIFF_WITHHELD : diff.stdout,
-            hasDifferences: diff.code === 1,
+            diff: plan.diff,
+            hasDifferences: plan.hasDifferences,
           };
         });
       });
@@ -452,37 +512,57 @@ export function registerKubernetesTools(
       recoverable: false,
       capturePreState: (p) =>
         Promise.resolve({
+          context: p.context,
           namespace: p.namespace,
           planSha256: p.planSha256,
+          diffSha256: p.diffSha256,
           objects: checkedManifest(p).scanned,
         }),
       scopeTargetOf: (p) => ({ kind: "namespace", value: p.namespace }),
       // Standalone only: a manifest no consent could make safe is refused before any prompt. The
-      // handler repeats the same checks, because gateway mode registers the raw handler.
-      refuseBefore: (p) => refusalOf(() => approvedManifest(p)),
+      // handler repeats the same checks, because gateway mode registers the raw handler. The hash
+      // needs the effective context, which may take a kubectl call, so it is checked here only when
+      // KUBE_CONTEXT names it; the handler always checks it.
+      refuseBefore: (p) =>
+        refusalOf(() => {
+          checkedManifest(p);
+          const configured = process.env["KUBE_CONTEXT"]?.trim();
+          if (configured === undefined || configured === "") return;
+          if (p.context !== configured) throw new Error(CONTEXT_MISMATCH);
+          assertApprovedHash(configured, p);
+        }),
     },
-    "Apply a manifest with a server-side apply, in the given namespace. The namespace and manifest must be the ones k8s_manifest_plan planned (planSha256) and the manifest must hold namespaced objects of allowlisted kinds only. Runs a server-side dry run first and applies only if kubectl reports the objects the scan read.",
+    "Apply a manifest with a server-side apply, in the given context and namespace. The context, namespace and manifest must be the ones k8s_manifest_plan planned (planSha256), and diffSha256 must be the plan's: the apply first recomputes the plan against the cluster and applies only if the diff is the one that was approved, else it throws 'the cluster changed since the plan was approved' and applies nothing. The manifest must hold namespaced objects of allowlisted kinds only. `context` must be the configured context.",
     z.object({
+      context: cliArg,
       namespace: cliArg,
       manifest: z.string().min(1).max(MANIFEST_MAX_BYTES),
       planSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      diffSha256: z.string().regex(/^[0-9a-f]{64}$/),
     }),
     async (p) => {
-      const { bytes, scanned } = approvedManifest(p);
+      const { bytes, scanned } = checkedManifest(p);
       return withScratchDir("nimbus-k8s-", async (dir) => {
         const file = await writeManifestFile(dir, bytes);
-        return withKube(async (kube) => {
-          // Dry run and cross-check FIRST, so an object kubectl would apply that the scan did not
-          // read stops the call before anything changes.
-          await serverDryRun(kube, p.namespace, file, scanned);
-          // The file the real apply reads must still hold the approved bytes: the dry run was a
-          // child process with the same file, and on Windows the 0600 mode is not enforced.
+        return withKube(p.context, async (kube, context) => {
+          assertApprovedHash(context, p);
+          // The re-diff: exactly the plan's dry run, get and diff, again, now. Any failure of it, or
+          // a diff that is not the approved one, means the cluster is not what the owner saw.
+          let again: Computed;
+          try {
+            again = await computePlan(kube, context, p.namespace, file, scanned);
+          } catch (e) {
+            throw new Error(CLUSTER_CHANGED, { cause: e });
+          }
+          if (!sameHex(again.diffSha256, p.diffSha256)) throw new Error(CLUSTER_CHANGED);
+          // The file the real apply reads must still hold the approved bytes: the re-diff ran
+          // child processes on the same file, and on Windows the 0600 mode is not enforced.
           if (!bytes.equals(await readFile(file))) {
             throw new Error("the manifest file changed before the apply");
           }
           const applied = await runCliCode(
             [
-              ...kubectlBase(),
+              ...kubectlBase(context),
               "apply",
               "--server-side",
               "--field-manager=nimbus",

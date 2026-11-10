@@ -131,11 +131,13 @@ const IAC_DEPLOY_ARN = `arn:aws:cloudformation:us-east-1:123456789012:changeSet/
 
 /**
  * A one-object manifest `k8s_manifest_apply` accepts in namespace `shop`, and its plan hash: the
- * namespace is bound into it (`nimbus-k8s-manifest-v1`, LF, namespace, LF, manifest).
+ * context and namespace are bound into it (`nimbus-k8s-manifest-v2`, LF, context, LF, namespace, LF,
+ * manifest).
  */
+const K8S_CONTEXT = "scope-test";
 const K8S_MANIFEST = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n  namespace: shop\n";
 const K8S_PLAN_SHA256 = createHash("sha256")
-  .update(`nimbus-k8s-manifest-v1\nshop\n${K8S_MANIFEST}`, "utf8")
+  .update(`nimbus-k8s-manifest-v2\n${K8S_CONTEXT}\nshop\n${K8S_MANIFEST}`, "utf8")
   .digest("hex");
 
 /** Write tools no consent can unlock, and the refusal they answer with in standalone mode. */
@@ -535,20 +537,33 @@ const WRITES: Readonly<
       [
         "k8s_deployment_scale",
         "kubernetes.deployment.scale",
-        { namespace: "web" },
+        { context: K8S_CONTEXT, namespace: "web" },
         "namespace:web",
       ],
-      ["k8s_deployment_scale", "kubernetes.deployment.scale", {}, "namespace:default"],
-      ["k8s_pod_delete", "kubernetes.pod.delete", { namespace: "web" }, "namespace:web"],
-      ["k8s_pod_delete", "kubernetes.pod.delete", {}, "namespace:default"],
-      ["k8s_rollout_restart", "kubernetes.rollout.restart", { namespace: "web" }, "namespace:web"],
-      ["k8s_rollout_restart", "kubernetes.rollout.restart", {}, "namespace:default"],
+      [
+        "k8s_pod_delete",
+        "kubernetes.pod.delete",
+        { context: K8S_CONTEXT, namespace: "web" },
+        "namespace:web",
+      ],
+      [
+        "k8s_rollout_restart",
+        "kubernetes.rollout.restart",
+        { context: K8S_CONTEXT, namespace: "web" },
+        "namespace:web",
+      ],
       [
         "k8s_manifest_apply",
         "kubernetes.manifest.apply",
         // A manifest the namespaced-kind scanner accepts, with its real hash: refuseBefore would
         // otherwise refuse it before the scope check this case is about.
-        { namespace: "shop", manifest: K8S_MANIFEST, planSha256: K8S_PLAN_SHA256 },
+        {
+          context: K8S_CONTEXT,
+          namespace: "shop",
+          manifest: K8S_MANIFEST,
+          planSha256: K8S_PLAN_SHA256,
+          diffSha256: "a".repeat(64),
+        },
         "namespace:shop",
       ],
     ],
