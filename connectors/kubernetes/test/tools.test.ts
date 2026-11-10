@@ -781,10 +781,29 @@ describe("k8s_manifest_plan and k8s_manifest_apply", () => {
       world.live = secretObj("b2xk");
       kubectl();
       const out = await plan({ ...PLAN_ARGS, manifest: SECRET });
-      expect(out["diff"]).toBe(SECRET_DIFF_WITHHELD);
+      expect(out["diff"]).toBe(`${SECRET_DIFF_WITHHELD}\n`);
       expect(out["hasDifferences"]).toBe(true);
-      expect(out["diffSha256"]).toBe(diffSha256(SECRET_DIFF_WITHHELD));
+      expect(out["diffSha256"]).toBe(diffSha256(`${SECRET_DIFF_WITHHELD}\n`));
       expect(JSON.stringify(out)).not.toContain("dG9wc2VjcmV0");
+    });
+
+    it("with a Secret beside another object, shows and hashes that object's diff only", async () => {
+      const both = `${SECRET}---\n${MANIFEST}`;
+      world.planned = { kind: "List", items: [secretObj("dG9wc2VjcmV0"), dep(3)] };
+      world.live = { kind: "List", items: [secretObj("b2xk"), dep(2, "api", SERVER_FIELDS)] };
+      kubectl();
+      const out = await plan({ ...PLAN_ARGS, manifest: both });
+      const diff = String(out["diff"]);
+      expect(diff.startsWith(`${SECRET_DIFF_WITHHELD}\n`)).toBe(true);
+      expect(diff).toContain("planned deployment.apps/api");
+      expect(diff).not.toContain("secret/s");
+      expect(JSON.stringify(out)).not.toContain("dG9wc2VjcmV0");
+      expect(JSON.stringify(out)).not.toContain("b2xk");
+      expect(out["diffSha256"]).toBe(diffSha256(diff));
+      // A live change to the Deployment alone changes the hash the apply re-plan compares.
+      world.live = { kind: "List", items: [secretObj("b2xk"), dep(1, "api", SERVER_FIELDS)] };
+      const again = await plan({ ...PLAN_ARGS, manifest: both });
+      expect(again["diffSha256"]).not.toBe(out["diffSha256"]);
     });
 
     it("the plan hash binds the namespace and the context", async () => {

@@ -106,6 +106,48 @@ const DROPPED_METADATA = [
 ] as const;
 const LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration";
 
+/**
+ * The name the ServiceAccount admission plugin gives the token volume it injects into a Pod
+ * (`kube-api-access-` and five random characters). A new Pod's dry run gets a fresh one each time,
+ * so it would change the diff hash between the plan and the apply's re-plan.
+ */
+const GENERATED_TOKEN_VOLUME = /^kube-api-access-[a-z0-9]{5}$/;
+
+/** True for a volume the ServiceAccount admission plugin generated: the name and a projected token. */
+function isGeneratedTokenVolume(v: unknown): boolean {
+  if (!isObj(v) || typeof v["name"] !== "string" || !GENERATED_TOKEN_VOLUME.test(v["name"])) {
+    return false;
+  }
+  const projected = v["projected"];
+  const sources = isObj(projected) ? projected["sources"] : undefined;
+  return Array.isArray(sources) && sources.some((s) => isObj(s) && isObj(s["serviceAccountToken"]));
+}
+
+/** Drops, from a Pod's spec, the generated token volume and every container's mount of it. */
+function dropGeneratedTokenVolume(spec: Obj): void {
+  const volumes = spec["volumes"];
+  if (!Array.isArray(volumes)) return;
+  const generated = new Set(
+    volumes.filter(isGeneratedTokenVolume).map((v) => (v as Obj)["name"] as string),
+  );
+  if (generated.size === 0) return;
+  const kept = volumes.filter((v) => !isGeneratedTokenVolume(v));
+  if (kept.length === 0) delete spec["volumes"];
+  else spec["volumes"] = kept;
+  for (const list of ["containers", "initContainers", "ephemeralContainers"]) {
+    const containers = spec[list];
+    if (!Array.isArray(containers)) continue;
+    for (const c of containers) {
+      if (!isObj(c) || !Array.isArray(c["volumeMounts"])) continue;
+      const mounts = (c["volumeMounts"] as unknown[]).filter(
+        (m) => !(isObj(m) && typeof m["name"] === "string" && generated.has(m["name"])),
+      );
+      if (mounts.length === 0) delete c["volumeMounts"];
+      else c["volumeMounts"] = mounts;
+    }
+  }
+}
+
 /** `v` with every object's keys in code-unit order (arrays keep their order). */
 function sortKeys(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(sortKeys);
@@ -121,12 +163,15 @@ function sortKeys(v: unknown): unknown {
  * One object as the lines that are diffed. Dropped, and nothing else: `metadata.managedFields`,
  * `resourceVersion`, `uid`, `generation`, `creationTimestamp`, `selfLink`, the top-level `status`,
  * and the annotation `kubectl.kubernetes.io/last-applied-configuration` (an `annotations` map that
- * held only that one is then empty and is dropped with it). Keys sorted by code unit, rendered as
+ * held only that one is then empty and is dropped with it), and, in a Pod, the token volume the
+ * ServiceAccount admission plugin generated (a `kube-api-access-xxxxx` projected
+ * `serviceAccountToken` volume) with every container's mount of it. Keys sorted by code unit, rendered as
  * 2-space-indented JSON, so a scalar is a line of its own. The input is not changed.
  */
 export function normaliseForDiff(obj: Obj): string[] {
   const copy = structuredClone(obj);
   delete copy["status"];
+  if (copy["kind"] === "Pod" && isObj(copy["spec"])) dropGeneratedTokenVolume(copy["spec"]);
   const meta = copy["metadata"];
   if (isObj(meta)) {
     for (const key of DROPPED_METADATA) delete meta[key];

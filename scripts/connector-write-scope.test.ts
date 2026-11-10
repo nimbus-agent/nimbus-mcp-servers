@@ -137,7 +137,7 @@ const IAC_DEPLOY_ARN = `arn:aws:cloudformation:us-east-1:123456789012:changeSet/
 const K8S_CONTEXT = "scope-test";
 const K8S_MANIFEST = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: web\n  namespace: shop\n";
 const K8S_PLAN_SHA256 = createHash("sha256")
-  .update(`nimbus-k8s-manifest-v1\nshop\n${K8S_MANIFEST}`, "utf8")
+  .update(`nimbus-k8s-manifest-v2\n${K8S_CONTEXT}\nshop\n${K8S_MANIFEST}`, "utf8")
   .digest("hex");
 
 /** Write tools no consent can unlock, and the refusal they answer with in standalone mode. */

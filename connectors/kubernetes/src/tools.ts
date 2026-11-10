@@ -260,12 +260,22 @@ async function computePlan(
   if (Buffer.byteLength(full, "utf8") > DIFF_MAX_BYTES) {
     throw new Error(`diff too large (over ${String(DIFF_MAX_BYTES)} bytes)`);
   }
-  // A Secret's plaintext can sit in either side of the diff, so with a Secret in the manifest only
-  // the fact of a difference is returned, never the body. (Stated bound: the diff hash then covers
-  // the withheld text, so the apply's re-diff cannot see a Secret's change.)
+  // A Secret's plaintext can sit in either side of the diff, so with a Secret in the manifest its
+  // part of the diff is withheld: the reply's diff is a fixed marker line, then the diff of every
+  // object that is NOT a Secret. The hash covers that text, so the apply's re-diff still sees a
+  // change to any other object (stated bound: it cannot see a change to a Secret).
   const holdsSecret = scanned.some((o) => o.kind === "Secret");
-  const diff = holdsSecret ? SECRET_DIFF_WITHHELD : full;
+  const diff = holdsSecret
+    ? `${SECRET_DIFF_WITHHELD}
+${planDiff(withoutSecrets(planned), withoutSecrets(live))}`
+    : full;
   return { objects, diff, hasDifferences: full !== "", diffSha256: diffSha256(diff) };
+}
+
+/** `objects` without its Secrets (keyed `<RESOURCE_PREFIX.Secret>/<name>`). */
+function withoutSecrets<V>(objects: ReadonlyMap<string, V>): Map<string, V> {
+  const secret = `${RESOURCE_PREFIX["Secret"] ?? "secret"}/`;
+  return new Map([...objects].filter(([key]) => !key.startsWith(secret)));
 }
 
 function objectLines(stdout: string): string[] {

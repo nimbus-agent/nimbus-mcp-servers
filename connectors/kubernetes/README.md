@@ -53,7 +53,8 @@ nimbus ask "Summarize my recent activity in Kubernetes"
   cluster or in another namespace (v1, which had no context, is retired). `diffSha256` = sha256 of
   UTF-8 `"nimbus-k8s-diff-v1\n" + diff`, of the `diff` text exactly as the reply carries it.
 - **The apply re-diffs.** It takes the same context, namespace and manifest and BOTH hashes,
-  re-runs every check, refuses a different `planSha256` before any process starts, then recomputes
+  re-runs every check, refuses a different `planSha256` before any process starts when
+  `KUBE_CONTEXT` is set (else after the one `kubectl config current-context` call), then recomputes
   the plan (dry run, get, diff) on the same file. A different `diffSha256`, or any failure of that
   recomputation, throws exactly `the cluster changed since the plan was approved` and applies
   nothing; otherwise it runs `kubectl apply --server-side --field-manager=nimbus`. `--force-conflicts`
@@ -110,11 +111,12 @@ nimbus ask "Summarize my recent activity in Kubernetes"
 
 ## Further bounds (security review, round 2)
 
-- **A Secret withholds the diff body.** When the manifest holds a `Secret`, the plan's `diff` is
-  `(diff withheld: the manifest holds a Secret)` and only `hasDifferences` tells whether anything
-  would change: either side of the diff can carry plaintext. The plan reads live cluster state for
-  every object it names. `diffSha256` then covers the withheld text, so the apply's re-diff cannot
-  see a change to a Secret (stated bound; the gateway refuses Secrets).
+- **A Secret withholds its part of the diff.** When the manifest holds a `Secret`, the plan's
+  `diff` is the line `(diff withheld: the manifest holds a Secret)` followed by the diff of every
+  object that is not a Secret; `hasDifferences` still covers all of them. Either side of a Secret's
+  diff can carry plaintext. The plan reads live cluster state for every object it names.
+  `diffSha256` covers that text, so the apply's re-diff sees a change to any other object but
+  cannot see a change to a Secret (stated bound; the gateway refuses Secrets).
 - **`planSha256` is an integrity check, not a capability.** It proves the apply carries the very
   context, namespace and manifest that were planned; a standalone client can compute it without running the
   plan. Under the gateway it is bound from the plan's own reply. A standalone prompt shows the

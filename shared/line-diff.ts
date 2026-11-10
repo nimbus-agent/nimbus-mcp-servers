@@ -11,7 +11,12 @@
  * (the caller refuses, it never cuts), so a pathological input cannot hold memory or the event loop.
  */
 
-export const MAX_EDIT_DISTANCE = 5000;
+export const MAX_EDIT_DISTANCE = 2000;
+
+/** `V[j]` from a trace window that holds `V[-d..d]` (index `j + d`); 0 outside it. */
+function at(window: Int32Array, d: number, j: number): number {
+  return j < -d || j > d ? 0 : (window[j + d] ?? 0);
+}
 
 export class LineDiffTooLargeError extends Error {
   constructor() {
@@ -45,11 +50,13 @@ function myers(a: readonly string[], b: readonly string[]): Op[] {
   const max = Math.min(n + m, MAX_EDIT_DISTANCE);
   const offset = max + 1;
   const v = new Int32Array(2 * max + 3);
-  // trace[d] is V as it stood BEFORE step d, which is what the walk back needs.
+  // trace[d] is V[-d..d] as it stood BEFORE step d (index k + d), all the walk back reads. Storing
+  // the whole V at every step would hold (max + 1) * (2 * max + 3) values; the window holds about
+  // max * max, 16 MB at the bound.
   const trace: Int32Array[] = [];
   let found = -1;
   for (let d = 0; d <= max && found < 0; d += 1) {
-    trace.push(v.slice());
+    trace.push(v.slice(offset - d, offset + d + 1));
     for (let k = -d; k <= d; k += 2) {
       const down = k === -d || (k !== d && (v[offset + k - 1] ?? 0) < (v[offset + k + 1] ?? 0));
       let x = down ? (v[offset + k + 1] ?? 0) : (v[offset + k - 1] ?? 0) + 1;
@@ -73,9 +80,9 @@ function myers(a: readonly string[], b: readonly string[]): Op[] {
     const prev = trace[d];
     if (prev === undefined) throw new LineDiffTooLargeError();
     const k = x - y;
-    const down = k === -d || (k !== d && (prev[offset + k - 1] ?? 0) < (prev[offset + k + 1] ?? 0));
+    const down = k === -d || (k !== d && at(prev, d, k - 1) < at(prev, d, k + 1));
     const prevK = down ? k + 1 : k - 1;
-    const prevX = prev[offset + prevK] ?? 0;
+    const prevX = at(prev, d, prevK);
     const prevY = prevX - prevK;
     while (x > prevX && y > prevY) {
       x -= 1;

@@ -113,6 +113,61 @@ describe("normaliseForDiff", () => {
     expect(normaliseForDiff(o).join("\n")).not.toContain("annotations");
   });
 
+  it("drops a Pod's generated token volume and its mounts, so two dry runs diff the same", () => {
+    const pod = (generated: string) => ({
+      apiVersion: "v1",
+      kind: "Pod",
+      metadata: { name: "p" },
+      spec: {
+        containers: [
+          {
+            name: "c",
+            image: "nginx",
+            volumeMounts: [
+              { name: "data", mountPath: "/data" },
+              { name: generated, mountPath: "/var/run/secrets/kubernetes.io/serviceaccount" },
+            ],
+          },
+        ],
+        initContainers: [
+          { name: "i", image: "busybox", volumeMounts: [{ name: generated, mountPath: "/t" }] },
+        ],
+        volumes: [
+          { name: "data", emptyDir: {} },
+          { name: generated, projected: { sources: [{ serviceAccountToken: { path: "token" } }] } },
+        ],
+      },
+    });
+    const a = normaliseForDiff(pod("kube-api-access-abc12"));
+    expect(a).toEqual(normaliseForDiff(pod("kube-api-access-zz9x8")));
+    const text = a.join("\n");
+    expect(text).not.toContain("kube-api-access");
+    expect(text).toContain('"/data"');
+    expect(text).not.toContain('"/t"');
+  });
+
+  it("keeps a token-named volume that is not a projected token, and any non-Pod's volumes", () => {
+    const vol = { name: "kube-api-access-abc12", emptyDir: {} };
+    const pod = { kind: "Pod", metadata: { name: "p" }, spec: { volumes: [vol] } };
+    expect(normaliseForDiff(pod).join("\n")).toContain("kube-api-access-abc12");
+    const projected = {
+      name: "kube-api-access-abc12",
+      projected: { sources: [{ serviceAccountToken: { path: "token" } }] },
+    };
+    const dep = {
+      kind: "Deployment",
+      metadata: { name: "d" },
+      spec: { template: { spec: { volumes: [projected] } } },
+    };
+    expect(normaliseForDiff(dep).join("\n")).toContain("kube-api-access-abc12");
+    const longName = {
+      kind: "Pod",
+      metadata: { name: "p" },
+      spec: { volumes: [{ ...projected, name: "kube-api-access-abc123" }] },
+    };
+    expect(normaliseForDiff(longName).join("\n")).toContain("kube-api-access-abc123");
+  });
+
   it("orders keys by UTF-16 code unit, upper case before lower", () => {
     expect(normaliseForDiff({ b: 1, B: 2, a: 3 })).toEqual([
       "{",

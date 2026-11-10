@@ -71,4 +71,17 @@ describe("unifiedLineDiff", () => {
     const b = Array.from({ length: 6000 }, (_, i) => `b${String(i)}`);
     expect(() => diff(a, b)).toThrow(LineDiffTooLargeError);
   });
+
+  it("diffs a script just inside the bound, and rebuilds both sides from it", () => {
+    // 1,000 lines replaced is an edit distance of 2,000: the bound itself.
+    const a = Array.from({ length: 1000 }, (_, i) => `a${String(i)}`);
+    const b = Array.from({ length: 1000 }, (_, i) => `b${String(i)}`);
+    const lines = diff(a, b)
+      .split("\n")
+      .slice(2)
+      .filter((l) => l !== "" && !l.startsWith("@@"));
+    expect(lines.filter((l) => l[0] !== "+").map((l) => l.slice(1))).toEqual(a);
+    expect(lines.filter((l) => l[0] !== "-").map((l) => l.slice(1))).toEqual(b);
+    expect(() => diff([...a, "x"], b)).toThrow(LineDiffTooLargeError);
+  });
 });
