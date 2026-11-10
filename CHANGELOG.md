@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.9.0...connectors-v0.10.0) (2026-11-09)
+
+
+### Features
+
+* **connectors:** vercel, netlify, bitrise, codemagic, testflight and firebase distribution writes ([#77](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/77)) ([7d7797c](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/7d7797cd47667cb1fa1bd10e8f71cd6d4788c015))
+
 ## [0.9.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.8.0...connectors-v0.9.0) (2026-11-08)
 
 
