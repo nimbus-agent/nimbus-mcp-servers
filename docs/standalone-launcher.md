@@ -25,7 +25,7 @@ an arbitrary module.
 The launcher refuses a connector that declares write or delete tools which have not been routed
 through the consent kit, exiting `3` rather than starting it ungated.
 
-Today **all 94 are eligible** — 49 declare no mutating tools, and the other 45 have had their writes
+Today **all 95 are eligible** — 50 declare no mutating tools, and the other 45 have had their writes
 routed through the consent kit.
 
 That verdict is derived from each connector's own manifest and sources, never hand-maintained. A

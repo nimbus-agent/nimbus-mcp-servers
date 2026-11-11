@@ -68,6 +68,7 @@
     "./github-actions": "./connectors/github-actions/src/server.ts",
     "./gitlab": "./connectors/gitlab/src/server.ts",
     "./gmail": "./connectors/gmail/src/server.ts",
+    "./google-calendar": "./connectors/google-calendar/src/server.ts",
     "./google-drive": "./connectors/google-drive/src/server.ts",
     "./google-meet": "./connectors/google-meet/src/server.ts",
     "./google-photos": "./connectors/google-photos/src/server.ts",

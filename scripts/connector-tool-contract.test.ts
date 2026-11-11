@@ -142,6 +142,8 @@ const NEEDS_COLLABORATORS = new Map<string, string>([
  * the assertions for everyone.
  */
 const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
+  // Google Calendar's event window is two RFC 3339 times with an offset, the second after the first.
+  ["google-calendar", { timeMin: "2026-11-11T00:00:00Z", timeMax: "2026-11-12T00:00:00Z" }],
   // Jira's transition id is a numeric string (`/^\d+$/`), which no generic string satisfies.
   ["jira", { transitionId: "31" }],
   // Discord channel ids are snowflakes (17-20 digits).

@@ -136,8 +136,8 @@ though, so a temp directory whose path holds one of these characters is refused 
 
 Four connectors need libraries the other 90 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
 `imap` and `protonmail` (`imapflow`, `nodemailer`), and `dataprofile` (`hyparquet`). They are
-declared as **optional** dependencies, so a normal install fetches them and all 94 connectors work
-out of the box, while a platform that cannot build one does not break the other 93.
+declared as **optional** dependencies, so a normal install fetches them and all 95 connectors work
+out of the box, while a platform that cannot build one does not break the other 94.
 
 If you install with optional dependencies disabled, those four fail at startup with a
 module-not-found error. The rest are unaffected.
