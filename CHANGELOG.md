@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.12.0...connectors-v0.13.0) (2026-11-11)
+
+
+### Features
+
+* **google-calendar:** read-only Google Calendar connector (calendar list, event list, event get) ([#83](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/83)) ([1dcf7bc](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/1dcf7bc9cb8a1839fd8e5a467d4007bff954fe62))
+
 ## [0.12.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.11.0...connectors-v0.12.0) (2026-11-10)
 
 
