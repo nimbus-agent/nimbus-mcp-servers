@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-The **94 first-party Nimbus MCP connectors**, extracted from the
+The **95 first-party Nimbus MCP connectors**, extracted from the
 [Nimbus monorepo](https://github.com/nimbus-agent/Nimbus) and published as a single npm package,
 **`@nimbus-dev/connectors`**. Each connector is an MCP server over stdio, runnable by any MCP client
 without a Nimbus gateway.
@@ -85,7 +85,7 @@ on). The procedure, and the traps it has to avoid, are in
 ## Traps that have already cost time here
 
 - **A green audit can mean an empty scan.** `audit:connector-consent` reports `ok` both when nothing
-  is wrong and when it discovered zero connectors, and it prints no count. The count is pinned at 94
+  is wrong and when it discovered zero connectors, and it prints no count. The count is pinned at 95
   by `scripts/connector-gates.test.ts`, so `bun test` is the proof — never the `ok` — and adding a
   connector means raising that number on purpose. The same trap has a second form in tests: the
   connector contract test asserts it discovered more than 40 surfaces, and a per-connector

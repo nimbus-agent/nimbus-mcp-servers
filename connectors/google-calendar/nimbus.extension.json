@@ -1,0 +1,15 @@
+{
+  "id": "com.nimbus.google-calendar",
+  "displayName": "Google Calendar",
+  "version": "0.1.0",
+  "description": "Google Calendar API v3 connector (calendars and events). Read-only.",
+  "author": "Nimbus",
+  "entrypoint": "dist/server.js",
+  "runtime": "bun",
+  "permissions": {
+    "network": ["www.googleapis.com"]
+  },
+  "hitlRequired": [],
+  "syncInterval": 900,
+  "minNimbusVersion": "0.2.0"
+}
