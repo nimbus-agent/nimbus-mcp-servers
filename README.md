@@ -84,6 +84,7 @@ use that tool's own credentials and configuration instead.
 | [Standalone launcher](./docs/standalone-launcher.md) | You want `nimbus-connector`: eligibility, exit codes, refusals. |
 | [Adding a connector](./docs/adding-a-connector.md) | You are writing or changing a connector. |
 | [Publishing](./docs/publishing.md) | You are cutting a release. |
+| [Roadmap](./ROADMAP.md) | You want to know what is planned for the connectors. |
 
 ## Development
 
