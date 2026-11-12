@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. This repository holds the **95 first-party Nimbus MCP connectors**, published as
+Thanks for helping. This repository holds the **96 first-party Nimbus MCP connectors**, published as
 one package, `@nimbus-dev/connectors`.
 
 Read [`docs/adding-a-connector.md`](./docs/adding-a-connector.md) before writing a connector, and
@@ -100,7 +100,7 @@ detail is in [Publishing](./docs/publishing.md).
 
 - **A green audit can mean an empty scan.** `audit:connector-consent` prints `ok` both when nothing
   is wrong and when it discovered zero connectors, and it prints no count. `bun test` is the proof:
-  `scripts/connector-gates.test.ts` pins the discovered count at 95, so a new connector raises it.
+  `scripts/connector-gates.test.ts` pins the discovered count at 96, so a new connector raises it.
 - **Line endings are load-bearing.** `.gitattributes` normalises to LF. The consent audit's
   write-registration check is an exact string match, and a CRLF checkout defeated it.
 

@@ -134,10 +134,10 @@ though, so a temp directory whose path holds one of these characters is refused 
 
 ## Optional dependencies
 
-Four connectors need libraries the other 90 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
+Four connectors need libraries the other 92 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
 `imap` and `protonmail` (`imapflow`, `nodemailer`), and `dataprofile` (`hyparquet`). They are
-declared as **optional** dependencies, so a normal install fetches them and all 95 connectors work
-out of the box, while a platform that cannot build one does not break the other 94.
+declared as **optional** dependencies, so a normal install fetches them and all 96 connectors work
+out of the box, while a platform that cannot build one does not break the other 95.
 
 If you install with optional dependencies disabled, those four fail at startup with a
 module-not-found error. The rest are unaffected.

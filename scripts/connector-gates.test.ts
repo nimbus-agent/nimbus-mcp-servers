@@ -40,8 +40,8 @@ function fixture(opts: {
 
 describe("check-connector-deps", () => {
   // A gate that reports "ok" because it scanned nothing looks identical to one that passed.
-  test("actually sees this repo's 95 connectors", () => {
-    expect(connectorDirs(ROOT)).toHaveLength(95);
+  test("actually sees this repo's 96 connectors", () => {
+    expect(connectorDirs(ROOT)).toHaveLength(96);
     expect(checkConnectorDeps()).toEqual([]);
   });
 

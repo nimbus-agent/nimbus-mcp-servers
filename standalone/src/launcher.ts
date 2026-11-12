@@ -50,7 +50,7 @@ export function registersWriteTool(src: string): boolean {
 }
 
 /**
- * The directory holding the 95 connector packages.
+ * The directory holding the 96 connector packages.
  *
  * `standalone/src/` -> repo root -> `connectors/`. This used to be just `../..`, back when the
  * connectors sat directly at the repo root alongside `shared/` and `standalone/` — 97 top-level

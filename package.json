@@ -122,6 +122,7 @@
     "./tableau": "./connectors/tableau/src/server.ts",
     "./teams": "./connectors/teams/src/server.ts",
     "./testflight": "./connectors/testflight/src/server.ts",
+    "./vantage": "./connectors/vantage/src/server.ts",
     "./vercel": "./connectors/vercel/src/server.ts",
     "./vertex-ai": "./connectors/vertex-ai/src/server.ts",
     "./wiz": "./connectors/wiz/src/server.ts",

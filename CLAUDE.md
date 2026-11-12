@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-The **95 first-party Nimbus MCP connectors**, extracted from the
+The **96 first-party Nimbus MCP connectors**, extracted from the
 [Nimbus monorepo](https://github.com/nimbus-agent/Nimbus) and published as a single npm package,
 **`@nimbus-dev/connectors`**. Each connector is an MCP server over stdio, runnable by any MCP client
 without a Nimbus gateway.
@@ -76,7 +76,7 @@ value from a file), `imapflow-adapter.ts` (IMAP/SMTP). The full set is listed in
 | `bun run sync:tool-names` | Rewrites the stale ones. Run after adding or renaming a tool. |
 | `bun test` | Full suite (3600+ tests). |
 | `bun run test:coverage` | The suite plus `coverage/lcov.info`, which the SonarQube Cloud workflow uploads. |
-| `bun run test:sandbox` | Opt-in, in neither `check` nor CI: the 79 connector sandbox tests, which open **real** connections to vendor hosts. |
+| `bun run test:sandbox` | Opt-in, in neither `check` nor CI: the 81 connector sandbox tests, which open **real** connections to vendor hosts. |
 
 Dependencies are updated by hand, in periodic bulk PRs; Dependabot opens none here (its alerts stay
 on). The procedure, and the traps it has to avoid, are in
@@ -85,7 +85,7 @@ on). The procedure, and the traps it has to avoid, are in
 ## Traps that have already cost time here
 
 - **A green audit can mean an empty scan.** `audit:connector-consent` reports `ok` both when nothing
-  is wrong and when it discovered zero connectors, and it prints no count. The count is pinned at 95
+  is wrong and when it discovered zero connectors, and it prints no count. The count is pinned at 96
   by `scripts/connector-gates.test.ts`, so `bun test` is the proof — never the `ok` — and adding a
   connector means raising that number on purpose. The same trap has a second form in tests: the
   connector contract test asserts it discovered more than 40 surfaces, and a per-connector

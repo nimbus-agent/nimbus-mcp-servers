@@ -1,0 +1,16 @@
+{
+  "id": "com.nimbus.vantage",
+  "displayName": "Vantage",
+  "version": "0.1.0",
+  "description": "Vantage FinOps connector (read-only). Reads cloud and SaaS cost data and active cost-saving recommendations from the Vantage API v2 at `api.vantage.sh`, authenticating with `Authorization: Bearer <token>` from VANTAGE_API_TOKEN (create a Read-only Vantage API token). Four tools: `vantage_cost_list` (GET /costs, day-binned, paged), `vantage_recommendation_list` (GET /recommendations, active only), `vantage_cost_get` (GET /cost_reports/{token}) and `vantage_search` (substring search over active recommendations). Optional env: VANTAGE_COST_REPORT_TOKEN, VANTAGE_WORKSPACE_TOKEN and VANTAGE_GROUP_BY. Cost requests are paced at one per 1.2 s and stop at the first 429. No write tool; GET only.",
+  "author": "Nimbus",
+  "entrypoint": "dist/server.js",
+  "runtime": "bun",
+  "permissions": {
+    "network": ["api.vantage.sh"],
+    "filesystem": { "read": [], "write": [] }
+  },
+  "hitlRequired": [],
+  "syncInterval": 21600,
+  "minNimbusVersion": "0.2.0"
+}

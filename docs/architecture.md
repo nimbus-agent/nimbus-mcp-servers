@@ -11,7 +11,7 @@
 ├── biome.json              formatter + linter
 ├── tsconfig.base.json      strict compiler options, shared by every tsconfig
 ├── tsconfig.json           one typecheck pass over the whole repo
-├── connectors/             95 connectors, one directory each
+├── connectors/             96 connectors, one directory each
 │   └── <id>/
 │       ├── README.md               that connector's tools, credentials, scopes
 │       ├── nimbus.extension.json   manifest: permissions, hitlRequired, sync interval
@@ -31,10 +31,10 @@ The connectors sit under `connectors/` rather than at the root. They were at the
 was first extracted from the Nimbus monorepo, which put **107 entries** at the top level and buried
 `README.md`, `package.json` and `scripts/` among them.
 
-### One package, not 95
+### One package, not 96
 
 Everything here publishes as a single npm package, `@nimbus-dev/connectors`. The alternative — a
-package per connector — was rejected because it means 95 releases per change to `shared/`, and it
+package per connector — was rejected because it means 96 releases per change to `shared/`, and it
 forces `shared/` to become a versioned dependency that 212 shipped connector source files currently
 import by relative path.
 
@@ -163,7 +163,7 @@ All run by CI on Ubuntu, macOS and Windows:
 | Command | What it establishes |
 | --- | --- |
 | `bun run lint` | Biome formatting and lint rules, including `noExplicitAny`. |
-| `bun run typecheck` | One `tsc` pass over all 95 connectors (their `src/` and any `scripts/`) plus `shared/`, `standalone/` and `scripts/`. Test files (`*.test.ts`) are excluded, so no gate type-checks them. |
+| `bun run typecheck` | One `tsc` pass over all 96 connectors (their `src/` and any `scripts/`) plus `shared/`, `standalone/` and `scripts/`. Test files (`*.test.ts`) are excluded, so no gate type-checks them. |
 | `bun run audit:connector-consent` | No connector declares a mutating tool without routing it through the consent kit, and nothing outside `shared/connector-mode.ts` names the mode setter. |
 | `bun run audit:connector-deps` | No connector pulls in a dependency the bundled gateway binary cannot carry. |
 | `bun run audit:connector-entrypoints` | Every `server.ts` that guards its startup with `import.meta.main` exports `startConnector()`, so the bundled registry can start it. |
@@ -172,7 +172,7 @@ All run by CI on Ubuntu, macOS and Windows:
 
 `bun run check` runs them all in order.
 
-`bun run test:sandbox` is deliberately not among them. It runs the 79 per-connector
+`bun run test:sandbox` is deliberately not among them. It runs the 81 per-connector
 `test/sandbox.test.ts` files, which open real connections to each connector's first declared
 network host, so it is an explicit opt-in and runs in no workflow.
 
