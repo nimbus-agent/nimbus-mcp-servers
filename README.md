@@ -3,7 +3,7 @@
 Standalone, MCP-standard [**Nimbus**](https://github.com/nimbus-agent/Nimbus) connectors — usable by
 **any** MCP client (Claude Code, Cursor, Claude Desktop, …), not just the Nimbus gateway.
 
-All **95** connectors ship in one package, `@nimbus-dev/connectors`, each runnable standalone over
+All **96** connectors ship in one package, `@nimbus-dev/connectors`, each runnable standalone over
 stdio with credentials supplied from the environment.
 
 ```bash
@@ -116,7 +116,7 @@ This repo was a scaffold from 2026-06-18 until the connectors landed. Its origin
 "decisions to make first" — share-vs-vendor-vs-fork, the credential model outside the Vault, and the
 AGPL implications for downstream clients. All three were answered before the move: the connectors are
 consent-gated standalone, credentials come from the environment, and `NOTICE` states the tiering. It
-also proposed a package per connector; one package was chosen instead, because 95 packages means 95
+also proposed a package per connector; one package was chosen instead, because 96 packages means 96
 releases and forces `shared/` to become a versioned dependency that 212 shipped connector source
 files import by relative path.
 

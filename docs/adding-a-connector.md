@@ -24,7 +24,7 @@ Two edits outside the directory make it part of the package:
 - an `exports` entry in the root `package.json`, `"./<id>": "./connectors/<id>/src/server.ts"` —
   the gateway imports each connector by that specifier, and `scripts/exports-map.test.ts` fails
   without it;
-- the connector count `scripts/connector-gates.test.ts` pins (95 today), raised by one. It exists
+- the connector count `scripts/connector-gates.test.ts` pins (96 today), raised by one. It exists
   so that a discovery change which finds nothing cannot pass as a clean audit.
 
 **Keep `server.ts` a bootstrap.** It reads the environment, builds the clients, calls
@@ -138,7 +138,7 @@ given, which would have sent the username and app password to whatever host it n
 The real dependency set is declared once, in the **root** `package.json`. A per-connector
 `package.json` is metadata only and is not installed from.
 
-If your connector needs a library the other 94 do not, add it to the root `optionalDependencies` so
+If your connector needs a library the other 95 do not, add it to the root `optionalDependencies` so
 a platform that cannot build it does not break every other connector, and document the requirement
 in [Configuration](./configuration.md). It must also be pure JavaScript and be added to
 `ALLOWED_CONNECTOR_DEPS` in `scripts/check-connector-deps.ts`: the gateway bundles every connector
@@ -156,7 +156,7 @@ That is lint, typecheck, every audit and the full suite. CI runs the same on Ubu
 Windows.
 
 A new connector is picked up automatically by `scripts/connector-tool-contract.test.ts`, which will
-hold it to the same properties as the other 94 — including that every tool refuses by name before
+hold it to the same properties as the other 95 — including that every tool refuses by name before
 sending anything when its credential is missing. It needs no registration; if your connector cannot
 satisfy a property for a real reason, add it to the annotated exclusion map in that file with the
 reason, rather than loosening the property for everyone.
