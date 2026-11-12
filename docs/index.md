@@ -12,9 +12,11 @@ pages are the detail behind it.
 | [Adding a connector](./adding-a-connector.md) | You are writing a new connector or changing an existing one. |
 | [Publishing](./publishing.md) | You are cutting a release of `@nimbus-dev/connectors`, or publishing the Readwise extension to the official Nimbus registry. |
 
-Four files at the repository root are documentation in their own right and are deliberately not
+Five files at the repository root are documentation in their own right and are deliberately not
 duplicated here:
 
+- [`ROADMAP.md`](../ROADMAP.md) — what is planned for the connectors themselves. The build order is
+  the gateway's.
 - [`NOTICE`](../NOTICE) — the security tiering, and what running standalone does **not** give you.
   The licence asks that it be preserved.
 - [`LICENSE`](../LICENSE) — AGPL-3.0-only.
