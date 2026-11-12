@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.13.0...connectors-v0.14.0) (2026-11-12)
+
+
+### Features
+
+* **vantage:** read-only Vantage cloud-cost connector (FinOps FO1) ([#85](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/85)) ([ee1d803](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/ee1d803cb3c5ac7ba20ed7db89c46180083f214f))
+
 ## [0.13.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.12.0...connectors-v0.13.0) (2026-11-11)
 
 
