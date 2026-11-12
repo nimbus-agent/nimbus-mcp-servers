@@ -20,6 +20,7 @@ import { filterVantageRecommendations } from "./search-filter.ts";
  * docs page; the OpenAPI file declares only an `oauth2` scheme (UNVERIFIED against a live account).
  */
 const API_BASE = "https://api.vantage.sh/v2";
+const COSTS_PATH = "/v2/costs";
 
 /** The documented maximum page size of GET /costs and GET /recommendations. */
 const COSTS_PAGE_LIMIT = 5000;
@@ -112,9 +113,48 @@ const costListSchema = z.object({
   untilMs: z.number().int().min(0).max(MAX_EPOCH_MS).optional(),
 });
 
-/** The transport handed to the JSON getter. */
-function vantageFetch(_deps: VantageDeps): JsonFetch {
-  return (url, init) => fetchWithTimeout(url, init);
+/**
+ * Minimum gap between two GET /costs requests. The docs give the Cost Report endpoints 5 requests
+ * per 5 s (and 1,000 per hour overall); whether /costs counts toward the first is UNVERIFIED, so
+ * the connector paces it regardless.
+ */
+const COSTS_MIN_GAP_MS = 1200;
+
+/** The reply to a 429 as an error: names the reset time from `x-rate-limit-reset` (unix seconds). */
+function rateLimitError(reset: string | null): Error {
+  const seconds = reset === null || reset.trim() === "" ? Number.NaN : Number(reset);
+  const known = Number.isFinite(seconds) && seconds > 0 && seconds < MAX_EPOCH_MS / 1000;
+  return new Error(
+    known
+      ? `Vantage 429: rate limited; the limit resets at ${new Date(seconds * 1000).toISOString()}`
+      : "Vantage 429: rate limited; the reset time is unknown",
+  );
+}
+
+/**
+ * The transport handed to the JSON getter. It spaces GET /costs requests at least
+ * {@link COSTS_MIN_GAP_MS} apart (the slot is reserved before the wait, so concurrent calls queue),
+ * and turns the first 429 on any endpoint into an error naming the reset time. A 429 is never
+ * retried and its body is never read, so nothing the server echoes reaches the caller.
+ * `x-rate-limit-reset` is from Vantage's rate-limiting docs page, not the OpenAPI file (UNVERIFIED).
+ */
+function vantageFetch(deps: VantageDeps): JsonFetch {
+  let nextCostSlot = Number.NEGATIVE_INFINITY;
+  return async (url, init) => {
+    if (new URL(url).pathname === COSTS_PATH) {
+      const now = deps.now();
+      const slot = Math.max(now, nextCostSlot);
+      nextCostSlot = slot + COSTS_MIN_GAP_MS;
+      if (slot > now) {
+        await deps.sleep(slot - now);
+      }
+    }
+    const res = await fetchWithTimeout(url, init);
+    if (res.status === 429) {
+      throw rateLimitError(res.headers.get("x-rate-limit-reset"));
+    }
+    return res;
+  };
 }
 
 export function registerVantageTools(reg: ZodToolRegistrar): void {
