@@ -7,8 +7,10 @@ import {
   type JsonFetch,
   optionalEnv,
 } from "../../../shared/env-json-api.ts";
+import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
+import { filterVantageRecommendations } from "./search-filter.ts";
 
 /**
  * Vantage API v2 (https://api.vantage.sh/v2, OpenAPI 3.0.1). Read-only: every request is a GET.
@@ -21,6 +23,7 @@ const API_BASE = "https://api.vantage.sh/v2";
 
 /** The documented maximum page size of GET /costs and GET /recommendations. */
 const COSTS_PAGE_LIMIT = 5000;
+const RECOMMENDATIONS_PAGE_LIMIT = 1000;
 
 /** The grouping applied when neither a saved report nor VANTAGE_GROUP_BY names one. */
 const DEFAULT_GROUPINGS = "provider,service,account_id";
@@ -102,7 +105,9 @@ function groupingsFor(reportToken: string): string | undefined {
   return reportToken === "" ? DEFAULT_GROUPINGS : undefined;
 }
 
-const costListSchema = cursorListInputSchema(COSTS_PAGE_LIMIT).extend({
+const costListSchema = z.object({
+  cursor: z.string().nullable().optional(),
+  limit: z.number().int().min(1).max(COSTS_PAGE_LIMIT).optional(),
   sinceMs: z.number().int().min(0).max(MAX_EPOCH_MS).optional(),
   untilMs: z.number().int().min(0).max(MAX_EPOCH_MS).optional(),
 });
@@ -152,6 +157,53 @@ export function registerVantageToolsWith(reg: ZodToolRegistrar, deps: VantageDep
       search.set("limit", String(p.limit ?? COSTS_PAGE_LIMIT));
       search.set("page", String(page));
       return pageResult(await vantageGet(`/costs?${search.toString()}`), "costs", page);
+    },
+  );
+
+  /** The recommendations query: active only, in this workspace when VANTAGE_WORKSPACE_TOKEN is set. */
+  const recommendationQuery = (limit: number, page?: number): string => {
+    const search = new URLSearchParams({ status: "active", limit: String(limit) });
+    const workspaceToken = optionalEnv("VANTAGE_WORKSPACE_TOKEN", "");
+    if (workspaceToken !== "") {
+      search.set("workspace_token", workspaceToken);
+    }
+    if (page !== undefined) {
+      search.set("page", String(page));
+    }
+    return search.toString();
+  };
+
+  reg(
+    "vantage_recommendation_list",
+    "List Vantage's ACTIVE cost-saving recommendations (`GET /recommendations?status=active`), one page per call. Returns `{ items, nextCursor }`: pass `nextCursor` back as `cursor` for the next page; it is null on the last page. `potential_savings` is a monthly figure in the workspace's currency.",
+    cursorListInputSchema(RECOMMENDATIONS_PAGE_LIMIT),
+    async (p) => {
+      const page = pageFromCursor(p.cursor);
+      const query = recommendationQuery(p.limit ?? RECOMMENDATIONS_PAGE_LIMIT, page);
+      return pageResult(await vantageGet(`/recommendations?${query}`), "recommendations", page);
+    },
+  );
+
+  reg(
+    "vantage_cost_get",
+    "Fetch one Vantage cost report definition by token (`GET /cost_reports/{id}`): its title, workspace, saved groupings, filter and date range. Returns the raw Vantage body. Throws when no such report exists.",
+    z.object({ id: z.string().min(1) }),
+    async (p) => jsonResult(await vantageGet(`/cost_reports/${encodeURIComponent(p.id)}`)),
+  );
+
+  reg(
+    "vantage_search",
+    "Substring search across Vantage's first 1000 active recommendations. Matches the query against description, type, service, provider and category (case-insensitive). Returns a `{ matches: [...] }` envelope.",
+    searchToolInputSchema(200),
+    async (p) => {
+      const root = await vantageGet(
+        `/recommendations?${recommendationQuery(RECOMMENDATIONS_PAGE_LIMIT)}`,
+      );
+      const rows =
+        root !== null && typeof root === "object"
+          ? (root as Record<string, unknown>)["recommendations"]
+          : undefined;
+      return matchesResult(rows, filterVantageRecommendations, p);
     },
   );
 }
