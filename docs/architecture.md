@@ -95,6 +95,31 @@ enforces consent, the write-scope allow-list and the mutation budget, and it is 
 hold regardless of how a connector is written. `shared/write-scope.ts`, `shared/write-budget.ts` and
 `shared/audit-chain.ts` back it.
 
+**`shared/connector-server.ts` — the one place a server is built.** A connector's entry point calls
+`createConnectorServer(info)` (directly, or through `runReadOnlyMcpConnector`) and never constructs a
+server itself. Which server it gets depends on who started the process. For the Nimbus gateway it is
+the upstream MCP SDK's server on the `initialize` handshake, unchanged: the gateway is the only client
+and approves writes itself. Standalone it is the layer server (`shared/layer-server.ts`), built on
+the MCP server layer of `@nimbus-dev/sdk`, which answers a client of MCP revision 2026-07-28 and a
+client that opens with `initialize` from one process. The layer server offers the registration
+surface connectors already used, checks arguments against each tool's zod shape before the tool
+runs, and passes a tool's own error text on to the client as the upstream server did.
+`scripts/connector-server-chokepoint.test.ts` fails any other shipped file that imports an upstream
+server module or constructs either server.
+
+**Standalone consent, step by step.** A write tool is listed only to a client that declared it can
+prompt a person, and only while write budget is left; it is always callable, so a call from a client
+that was never listed it is refused and recorded rather than answered as an unknown tool. A first
+call runs the refusals no consent can lift (`refuseBefore`, scope, the client's capability, the
+budget), records `requested`, and asks: an input request carrying the verbatim operation, plus a
+state sealed under a per-process key over a single-use nonce, the tool name, a digest of the exact
+arguments and a five-minute expiry. The retry is believed only once that state has opened and its
+nonce has been taken, in one synchronous step; a state that does not open is a protocol error that
+runs nothing and records nothing. Then the answer, the budget again (spent in the same step it is
+checked), the pre-state capture and the write. A client that opens with `initialize` reaches the
+same code: the layer sends it the older `elicitation/create` request and runs the handler again
+with its answer, and a cancelled or unanswered prompt arrives as a cancel answer.
+
 **The prepare class.** A write bound to state the owner approves is preceded by a prepare tool the
 gateway calls before the approval prompt: a commit is bound to the branch head it was prepared
 against (`github_commit_prepare`, `gitlab_commit_prepare`), a Terraform apply or destroy to the

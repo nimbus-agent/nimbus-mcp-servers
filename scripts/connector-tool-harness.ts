@@ -19,12 +19,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ClientCapabilities, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { type AuditEntry, verifyAuditChain } from "../shared/audit-chain.ts";
-import type { McpListResult } from "../shared/mcp-tool-kit.ts";
+import { createLayerServer, type LayerServer } from "../shared/layer-server.ts";
+import {
+  createRegisterSimpleTool,
+  createZodToolRegistrar,
+  type McpListResult,
+} from "../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../shared/run-read-only-mcp-connector.ts";
 
 /**
@@ -146,7 +152,12 @@ export type ConnectorRegistrar =
 
 /** Did this failure come from handing the registrar where a server was wanted? */
 function isWrongArgumentShape(err: unknown): boolean {
-  return err instanceof Error && err.message.includes("expected MCP server with .tool");
+  if (!(err instanceof Error)) return false;
+  return (
+    err.message.includes("expected MCP server with .tool") ||
+    // The registrar, handed where a server was wanted, called as one.
+    err instanceof TypeError
+  );
 }
 
 /** The recording pair a capture attempt drives a connector's registrar with. */
@@ -303,20 +314,149 @@ function captureWith(
 
 /** What {@link captureStandaloneTools} saw. */
 export interface StandaloneCapture {
-  /** Every tool registered once the handshake ran: the reads, plus the writes if they were offered. */
+  /** The tools this client is LISTED: the reads, plus the writes if it can be asked for consent. */
   readonly tools: CapturedTools;
   /** The message of every consent prompt the connector raised, in order. */
   readonly prompts: string[];
 }
 
+/** The answer to one JSON-RPC request the stand-in client sent. */
+type Answered = {
+  readonly result?: McpListResult & { isError?: boolean };
+  readonly error?: { code: number; message: string };
+};
+
+/**
+ * A client of the standalone layer server (`shared/layer-server.ts`), on a real connection of the
+ * MCP layer: it opens with `initialize` (the legacy era, as the upstream client does), calls tools
+ * with `tools/call`, and answers the `elicitation/create` request a write tool's consent raises.
+ * Nothing of the server is stubbed: the layer, the argument check and the consent kit are the
+ * production ones.
+ */
+class StandaloneClient {
+  private readonly waiting = new Map<number, (answer: Answered) => void>();
+  private readonly connection: ReturnType<LayerServer["layer"]["connect"]>;
+  private opened: Promise<void> | undefined;
+  private nextId = 1;
+
+  constructor(
+    private readonly server: LayerServer,
+    private readonly capabilities: Record<string, unknown>,
+    private readonly answer: ConsentAnswer,
+    private readonly prompts: string[],
+  ) {
+    this.connection = server.layer.connect((message) => {
+      this.onMessage(message as unknown as Record<string, unknown>);
+    });
+  }
+
+  private onMessage(message: Record<string, unknown>): void {
+    if (typeof message["method"] === "string") {
+      // The server asking the client: a consent prompt. Answered at once, as a client would.
+      const params = message["params"] as { message?: unknown } | undefined;
+      this.prompts.push(typeof params?.message === "string" ? params.message : "");
+      void this.connection.receive({ jsonrpc: "2.0", id: message["id"], result: this.answer });
+      return;
+    }
+    const id = message["id"];
+    if (typeof id !== "number") return;
+    this.waiting.get(id)?.(message as Answered);
+    this.waiting.delete(id);
+  }
+
+  private request(method: string, params: Record<string, unknown>): Promise<Answered> {
+    const id = this.nextId;
+    this.nextId += 1;
+    return new Promise((resolve, reject) => {
+      this.waiting.set(id, resolve);
+      this.connection.receive({ jsonrpc: "2.0", id, method, params }).catch(reject);
+    });
+  }
+
+  /** Names the server lists to this client, in registration order. Synchronous: no request. */
+  listed(): string[] {
+    return this.server
+      .toolsFor("list", { clientCapabilities: this.capabilities })
+      .map((t) => t.name);
+  }
+
+  /** Every registered tool's name, listed to this client or not. */
+  registered(): string[] {
+    return this.server
+      .toolsFor("call", { clientCapabilities: this.capabilities })
+      .map((t) => t.name);
+  }
+
+  describe(name: string): string | undefined {
+    return this.server
+      .toolsFor("call", { clientCapabilities: this.capabilities })
+      .find((t) => t.name === name)?.description;
+  }
+
+  /**
+   * Calls a tool. A tool error (a refusal the tool threw, arguments its schema rejects) and a
+   * protocol error both REJECT with the server's own text, which is what a test asserts on.
+   */
+  async call(name: string, args: unknown): Promise<McpListResult> {
+    this.opened ??= this.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: this.capabilities,
+      clientInfo: { name: "nimbus-connector-harness", version: "0.0.0" },
+    }).then(() => undefined);
+    await this.opened;
+    const answered = await this.request("tools/call", { name, arguments: args });
+    if (answered.error !== undefined) {
+      throw new Error(`MCP error ${String(answered.error.code)}: ${answered.error.message}`);
+    }
+    const result = answered.result;
+    if (result === undefined) throw new Error(`tool "${name}" was not answered`);
+    if (result.isError === true) {
+      const first = result.content[0];
+      throw new Error(first?.type === "text" ? first.text : `tool "${name}" failed`);
+    }
+    return result;
+  }
+}
+
+/** {@link CapturedTools} over a {@link StandaloneClient}: what is listed, called for real. */
+class StandaloneTools extends CapturedTools {
+  constructor(
+    private readonly client: StandaloneClient,
+    private readonly schemas: ReadonlyMap<string, unknown>,
+  ) {
+    super();
+  }
+
+  override names(): string[] {
+    return this.registrationOrder().sort(byToolName);
+  }
+
+  override registrationOrder(): string[] {
+    return this.client.listed();
+  }
+
+  override get(name: string): CapturedTool {
+    // Registered, not listed: a write tool this client is not listed (it cannot prompt, or the
+    // budget is spent) is still callable, and a test calls it to see the recorded refusal.
+    if (!this.client.registered().includes(name)) {
+      throw new Error(`tool "${name}" was not registered (have: ${this.names().join(", ")})`);
+    }
+    return {
+      name,
+      description: this.client.describe(name) ?? "",
+      schema: this.schemas.get(name),
+      handler: (args: unknown) => this.client.call(name, args),
+    };
+  }
+}
+
 /**
  * {@link captureTools} in STANDALONE mode, where the connector's own consent kit is the gate.
  *
- * The kit queues write tools until the client's `initialize`, because only then are its
- * capabilities knowable, and registers them only for a client that can prompt a human. This
- * stand-in client completes that handshake as soon as registration returns, advertising
- * elicitation when `elicitation` is true, and answers every consent prompt with `answer`
- * (approval when omitted).
+ * The connector registers on the real standalone server. The stand-in client advertises
+ * elicitation when `elicitation` is true, is listed the write tools only then, and answers every
+ * consent prompt with `answer` (approval when omitted). A call goes over a real connection of the
+ * MCP layer, so a write runs the whole consent flow: the prompt, the sealed state, the nonce.
  *
  * The caller locks the mode first (`setConnectorMode("standalone")`) and sets the connector's
  * `NIMBUS_MCP_<SERVICE>_WRITE_SCOPE`, which the kit reads when its registrar is built.
@@ -324,30 +464,81 @@ export interface StandaloneCapture {
 export function captureStandaloneTools(
   register: ConnectorRegistrar,
   opts: { readonly elicitation: boolean; readonly answer?: ConsentAnswer },
-): StandaloneCapture {
+): StandaloneCapture & { readonly tools: StandaloneTools } {
   const prompts: string[] = [];
-  const tools = captureWith(register, (captured) => {
-    let initialized = false;
-    const client: ClientSurface = {
-      getClientCapabilities: () => {
-        if (!initialized) return undefined;
-        return opts.elicitation ? { elicitation: {} } : {};
+  const failures: unknown[] = [];
+  for (const serverFirst of [false, true]) {
+    const real = createLayerServer({ name: "nimbus-harness", version: "0.0.0" });
+    // The real server, with one addition: each tool's Zod schema is kept, because the server
+    // itself holds only the JSON Schema it lists and a test reads the Zod one.
+    const schemas = new Map<string, unknown>();
+    const server: LayerServer = {
+      ...real,
+      registerTool: (name, config, cb) => {
+        schemas.set(name, z.object((config.inputSchema ?? {}) as z.ZodRawShape));
+        return real.registerTool(name, config, cb);
       },
-      oninitialized: undefined,
-      elicitInput: (params) => {
-        prompts.push(params.message);
-        return Promise.resolve(opts.answer ?? APPROVE);
-      },
-    };
-    return {
-      recorders: makeRecorders(captured, client),
-      settle: () => {
-        initialized = true;
-        client.oninitialized?.();
+      tool: (name, description, shape, handler) => {
+        schemas.set(name, z.object(shape as z.ZodRawShape));
+        return real.tool(name, description, shape, handler);
       },
     };
+    const reg = createZodToolRegistrar(createRegisterSimpleTool(server)) as ZodToolRegistrar;
+    try {
+      const call = register as (a: unknown, b: unknown) => void;
+      if (serverFirst) {
+        call(server, server);
+      } else {
+        call(reg, server);
+      }
+      const client = new StandaloneClient(
+        server,
+        opts.elicitation ? { elicitation: {} } : {},
+        opts.answer ?? APPROVE,
+        prompts,
+      );
+      // Counted over what is REGISTERED, not what this client is listed: a connector with only
+      // write tools registers them for a client that cannot prompt and lists it none.
+      if (server.toolsFor("call", { clientCapabilities: {} }).length > 0) {
+        return { tools: new StandaloneTools(client, schemas), prompts };
+      }
+    } catch (err) {
+      failures.push(err);
+    }
+  }
+  const real = failures.find((e) => !isWrongArgumentShape(e));
+  if (real !== undefined) throw real;
+  if (failures.length > 0) throw failures[0];
+  throw new Error("register…Tools registered no tools");
+}
+
+/**
+ * Connects the UPSTREAM MCP SDK's client to a standalone layer server, in memory. The upstream
+ * client opens with `initialize`, so this is the legacy era driven by an implementation that is
+ * not ours: what an MCP client that has not moved to revision 2026-07-28 does. `capabilities` is
+ * what the client declares; a client that declares `elicitation` must set a handler for it.
+ */
+export async function connectUpstreamClient(
+  server: LayerServer,
+  capabilities: ClientCapabilities = {},
+): Promise<Client> {
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  const connection = server.layer.connect((message) => {
+    void serverSide.send(message as JSONRPCMessage);
   });
-  return { tools, prompts };
+  serverSide.onmessage = (message) => {
+    void connection.receive(message);
+  };
+  serverSide.onclose = () => {
+    connection.close();
+  };
+  await serverSide.start();
+  const client = new Client(
+    { name: "nimbus-connector-harness", version: "0.0.0" },
+    { capabilities },
+  );
+  await client.connect(clientSide);
+  return client;
 }
 
 /** One request the stub saw. */

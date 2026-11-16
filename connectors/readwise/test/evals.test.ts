@@ -11,10 +11,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { withEnv } from "../../../scripts/connector-tool-harness.ts";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { connectUpstreamClient, withEnv } from "../../../scripts/connector-tool-harness.ts";
+import type { LayerServer } from "../../../shared/layer-server.ts";
 import { buildReadOnlyMcpConnector } from "../../../shared/run-read-only-mcp-connector.ts";
 import { registerReadwiseSyncTool } from "../src/sync-tool.ts";
 import { registerReadwiseTools } from "../src/tools.ts";
@@ -46,21 +45,17 @@ function loadCases(): { file: string; cases: EvalCase[] }[] {
 
 describe("readwise evals match the server's replies", () => {
   let client: Client;
-  let server: McpServer;
-
   beforeAll(async () => {
-    server = buildReadOnlyMcpConnector("nimbus-readwise", (reg) => {
+    // The standalone server, driven by the upstream MCP client: the server an eval runs against.
+    const server = buildReadOnlyMcpConnector("nimbus-readwise", (reg) => {
       registerReadwiseTools(reg);
       registerReadwiseSyncTool(reg);
-    }) as McpServer;
-    const [a, b] = InMemoryTransport.createLinkedPair();
-    client = new Client({ name: "evals-test", version: "0.0.0" });
-    await Promise.all([server.connect(a), client.connect(b)]);
+    }) as LayerServer;
+    client = await connectUpstreamClient(server);
   });
 
   afterAll(async () => {
     await client.close();
-    await server.close();
   });
 
   const files = loadCases();

@@ -1,49 +1,34 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import type { McpListResult, ZodObjectSchema } from "@nimbus-dev/sdk/connector-kit";
+import {
+  inputRequired,
+  type McpInputRequired,
+  type McpJsonObject,
+  McpStateError,
+  type McpToolContext,
+  openState,
+  requestDigest,
+  sealState,
+} from "@nimbus-dev/sdk/mcp-server";
 
 import { type AuditOutcome, appendAuditEntry } from "./audit-chain.ts";
 import { getConnectorMode } from "./connector-mode.ts";
+import type { LayerServer } from "./layer-server.ts";
 import { isPrepareToolId } from "./prepare-tool-ids.ts";
 import { createWriteBudget, parseWriteBudget, WRITE_BUDGET_ENV } from "./write-budget.ts";
 import { parseWriteScope, type ScopeTerm, scopeAllows } from "./write-scope.ts";
 
-/** The subset of the SDK's `RegisteredTool` this kit needs. */
+/** The subset of a registered tool's handle this kit needs. */
 export type ToolHandle = { disable(): void };
 
 /**
- * The structural subset of `McpServer` the consent kit uses.
+ * The structural subset of the upstream `McpServer` the kit uses in GATEWAY mode.
  *
  * Narrowed deliberately so tests can supply a fake without a transport, and so the kit's real
- * dependencies are visible in one place.
+ * dependencies are visible in one place. In gateway mode the kit registers the raw handler and
+ * asks no one: the gateway's executor is the gate there.
  */
-export type ConsentServer = {
-  readonly server: {
-    getClientCapabilities(): { elicitation?: unknown } | undefined;
-    /** Fired after the client's `initialize` — the FIRST moment capabilities are knowable. */
-    oninitialized?: (() => void) | undefined;
-    /**
-     * `requestedSchema` is typed to the restricted JSON-Schema subset the MCP spec allows, not
-     * `Record<string, unknown>`. The loose form does not satisfy the real `McpServer.elicitInput`,
-     * which is only discoverable by passing a real server — a hand-written fake accepts anything.
-     */
-    elicitInput(
-      params: {
-        mode: "form";
-        message: string;
-        requestedSchema: {
-          type: "object";
-          properties: Record<
-            string,
-            { type: "boolean"; title?: string; description?: string; default?: boolean }
-          >;
-          required?: string[];
-        };
-      },
-      options?: { timeout?: number },
-    ): Promise<{
-      action: "accept" | "decline" | "cancel";
-      content?: Record<string, unknown> | undefined;
-    }>;
-  };
+export type GatewayConsentServer = {
   /**
    * `inputSchema` is `unknown` on purpose. The real signature wants the SDK's
    * `ZodRawShapeCompat | AnySchema`, and the connector kit's `ZodObjectSchema["shape"]` is
@@ -56,20 +41,32 @@ export type ConsentServer = {
     config: { description?: string; inputSchema?: unknown },
     cb: (args: unknown) => Promise<McpListResult>,
   ): ToolHandle;
-  sendToolListChanged(): void;
   sendLoggingMessage(params: { level: "info" | "warning"; data: unknown }): Promise<void>;
+  /** The four-argument registration every read tool goes through (`createRegisterSimpleTool`). */
+  tool: (...args: never) => unknown;
 };
 
 /**
- * What a connector with write tools constructs its `McpServer` with:
- * `new McpServer(info, { capabilities: CONSENT_SERVER_CAPABILITIES })`.
+ * What a connector hands the kit: the server `createConnectorServer` built. In gateway mode that
+ * is the upstream `McpServer`; in standalone mode it is the layer server
+ * (`shared/layer-server.ts`), through which a write tool asks the client for consent.
+ */
+export type ConsentServer = GatewayConsentServer | LayerServer;
+
+function isLayerServer(server: ConsentServer): server is LayerServer {
+  return "layer" in server;
+}
+
+/**
+ * What the upstream server of a GATEWAY-mode connector is constructed with:
+ * `new McpServer(info, { capabilities: CONSENT_SERVER_CAPABILITIES })`. Only
+ * `shared/connector-server.ts` constructs one.
  *
- * The kit tells the client about every gated outcome with `notifications/message`, and the SDK
- * sends that only for a server that declared the MCP `logging` capability. No connector did, so
- * each notification was dropped without a word. It must be declared at construction: that is the
- * only moment the SDK installs its `logging/setLevel` handler, and a server that declared the
- * capability later would refuse a client setting the level. `scripts/connector-boot.test.ts`
- * fails a connector whose manifest declares a write and whose booted server does not declare it.
+ * In gateway mode the kit tells the client about every record with `notifications/message`, and
+ * the upstream SDK sends that only for a server that declared the MCP `logging` capability. It
+ * must be declared at construction: that is the only moment the SDK installs its
+ * `logging/setLevel` handler. A standalone connector declares nothing: it runs on the layer
+ * server, which sends no notifications, and writes each record to stderr instead.
  */
 export const CONSENT_SERVER_CAPABILITIES = { logging: {} };
 
@@ -109,62 +106,87 @@ function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** How long an approval prompt may stay open before its state stops opening. */
+export const CONSENT_TTL_MS = 300_000;
+
 /**
- * Ask the human, through the client, and report whether they said yes.
- *
- * The prompt carries the VERBATIM operation and resolved parameters, never a digest — a digest is
- * a rubber stamp with extra steps, and the human is the entire trust boundary here.
+ * How many approval prompts one process keeps open at once. A stdio server has one peer, so a full
+ * set is that peer's own doing. When it is full a NEW call is refused; an open prompt is never
+ * dropped to make room, since that would let a flood of calls cancel a prompt a person is reading.
  */
-async function consented(
-  server: ConsentServer,
-  mutates: string,
-  params: unknown,
-): Promise<boolean> {
-  let res: { action: string; content?: Record<string, unknown> | undefined };
-  try {
-    res = await server.server.elicitInput({
-      mode: "form",
-      message:
-        `Nimbus is about to perform ${mutates} with:\n` +
-        `${JSON.stringify(params, null, 2)}\n\nApprove?`,
-      requestedSchema: {
-        type: "object",
-        properties: {
-          confirm: { type: "boolean", title: "Approve this action", description: mutates },
-        },
-        required: ["confirm"],
-      },
-    });
-  } catch {
-    // Timeout, transport failure, or a client that rejects the request: fail CLOSED.
+export const MAX_PENDING_CONSENTS = 256;
+
+/**
+ * Who a sealed consent state is issued to. A stdio server has exactly one peer, the process on the
+ * other end of the pipe; the name a client declares is its own claim, so it is not a principal.
+ */
+const CONSENT_PRINCIPAL = "stdio";
+
+/**
+ * Whether the client behind a request declared that it can show a form to a person. An EMPTY
+ * `elicitation` object is how the revisions before 2025-11-25 declared form support.
+ */
+export function clientCanPrompt(clientCapabilities: McpJsonObject): boolean {
+  const elicitation = clientCapabilities["elicitation"];
+  if (typeof elicitation !== "object" || elicitation === null || Array.isArray(elicitation)) {
     return false;
   }
-  // `action: "accept"` alone is not consent — the form's own answer must also be true, so a client
-  // that auto-accepts without answering the question does not clear the gate.
-  return res.action === "accept" && res.content?.["confirm"] === true;
+  return "form" in elicitation || Object.keys(elicitation).length === 0;
 }
 
-function registerOn<T>(
-  server: ConsentServer,
+/**
+ * The question put to the human, through the client.
+ *
+ * It carries the VERBATIM operation and resolved parameters, never a digest — a digest is a rubber
+ * stamp with extra steps, and the human is the entire trust boundary here.
+ */
+function consentQuestion(mutates: string, params: unknown) {
+  return inputRequired.elicit({
+    message:
+      `Nimbus is about to perform ${mutates} with:\n` +
+      `${JSON.stringify(params, null, 2)}\n\nApprove?`,
+    requestedSchema: {
+      type: "object",
+      properties: {
+        confirm: { type: "boolean", title: "Approve this action", description: mutates },
+      },
+      required: ["confirm"],
+    },
+  });
+}
+
+/**
+ * Whether an answer is consent. `action: "accept"` alone is not — the form's own answer must also
+ * be true, so a client that auto-accepts without answering the question does not clear the gate.
+ */
+function isConsent(answer: unknown): boolean {
+  if (typeof answer !== "object" || answer === null) return false;
+  const a = answer as { action?: unknown; content?: unknown };
+  if (a.action !== "accept" || typeof a.content !== "object" || a.content === null) return false;
+  return (a.content as Record<string, unknown>)["confirm"] === true;
+}
+
+function parseWith<T>(schema: ZodObjectSchema<T>, args: unknown): T {
+  const parsed = schema.safeParse(args);
+  if (!parsed.success) {
+    throw new Error(parsed.error.message);
+  }
+  return parsed.data;
+}
+
+/** Registers the raw handler on the upstream server (gateway mode). */
+function registerOnGateway<T>(
+  server: GatewayConsentServer,
   name: string,
   description: string,
   schema: ZodObjectSchema<T>,
   handler: (args: T) => Promise<McpListResult>,
-  handles: ToolHandle[],
 ): void {
-  const handle = server.registerTool(
+  server.registerTool(
     name,
     { description, inputSchema: schema.shape },
-    async (args: unknown): Promise<McpListResult> => {
-      const parsed = schema.safeParse(args);
-      if (!parsed.success) {
-        throw new Error(parsed.error.message);
-      }
-      return handler(parsed.data);
-    },
+    async (args: unknown): Promise<McpListResult> => handler(parseWith(schema, args)),
   );
-  // Collected so budget exhaustion can disable every write tool at once.
-  handles.push(handle);
 }
 
 /** What both registrars share: the parsed write scope and the audit/log record. */
@@ -186,7 +208,33 @@ type RegistrarConfig = {
    * per-tool declaration would arrive too late to validate the env value.
    */
   readonly scopeKinds: readonly string[];
+  /**
+   * TEST seam: where the second, non-durable channel of a record goes, in place of the client log
+   * message (gateway mode) or the stderr line (standalone mode). Production passes nothing.
+   */
+  readonly notify?: (tool: string, outcome: AuditOutcome) => Promise<void> | void;
 };
+
+/** The non-durable channel of a record: told of every record attempted, after the durable one. */
+function defaultNotify(
+  server: ConsentServer,
+  connector: string,
+): (tool: string, outcome: AuditOutcome) => Promise<void> | void {
+  if (isLayerServer(server)) {
+    // The layer server sends nothing but answers, so there is no client log to write to. stderr is
+    // where a stdio server may log: stdout is the protocol channel. Never the parameters.
+    return (tool, outcome): void => {
+      process.stderr.write(`nimbus-connector ${connector}: ${tool} ${outcome}\n`);
+    };
+  }
+  // It reaches the client because the gateway-mode server declared the MCP `logging` capability
+  // (CONSENT_SERVER_CAPABILITIES), and a client may filter it by level.
+  return (tool, outcome) =>
+    server.sendLoggingMessage({
+      level: outcome === "executed" ? "info" : "warning",
+      data: { connector, tool, outcome },
+    });
+}
 
 /**
  * The scope parse and the record function, built once per registrar. Extracted (not copied) so the
@@ -196,6 +244,7 @@ type RegistrarConfig = {
 function createConsentContext(server: ConsentServer, cfg: RegistrarConfig): ConsentContext {
   const scope = parseWriteScope(process.env[cfg.scopeEnv], cfg.scopeKinds);
   const auditLog = process.env["NIMBUS_MCP_AUDIT_LOG"];
+  const notify = cfg.notify ?? defaultNotify(server, cfg.connector);
 
   async function record(
     tool: string,
@@ -216,42 +265,57 @@ function createConsentContext(server: ConsentServer, cfg: RegistrarConfig): Cons
         });
       }
     } finally {
-      // Then the client-visible channel, told of every record attempted, one whose append failed
-      // included. It reaches the client because the connector declared the MCP `logging`
-      // capability (CONSENT_SERVER_CAPABILITIES), and a client may filter it by level. Best
-      // effort, and after the durable log: a client that has gone away mid-write must not keep the
-      // `executed` or `failed` record of a write that ran out of the log, and since the capability
-      // made this channel live, a dead pipe is where a send now fails.
-      await server
-        .sendLoggingMessage({
-          level: outcome === "executed" ? "info" : "warning",
-          data: { connector: cfg.connector, tool, outcome },
-        })
-        .catch(() => undefined);
+      // Then the second channel, told of every record attempted, one whose append failed
+      // included. Best effort, and after the durable log: a client that has gone away mid-write
+      // must not keep the `executed` or `failed` record of a write that ran out of the log.
+      try {
+        await notify(tool, outcome);
+      } catch {
+        // A dead pipe is where this fails; the durable record above is what counts.
+      }
     }
   }
 
   return { scope, record };
 }
 
+/** One approval prompt that is open: issued, not yet answered, not yet expired. */
+type PendingConsent = {
+  readonly expiresAt: number;
+  readonly tool: string;
+  readonly target: { kind: string; value: string };
+};
+
+function notBuiltByFactory(connector: string): Error {
+  return new Error(
+    `nimbus-connector ${connector}: a standalone connector must be built with ` +
+      "createConnectorServer (shared/connector-server.ts)",
+  );
+}
+
 /**
  * Build a connector's write-tool registrar.
  *
- * In `"gateway"` mode the raw handler is registered immediately: `executor.ts` (I2) is the gate
- * there, client capabilities are irrelevant, and the connector adds nothing.
+ * In `"gateway"` mode the raw handler is registered: `executor.ts` (I2) is the gate there, client
+ * capabilities are irrelevant, and the connector adds nothing.
  *
- * In `"standalone"` mode registration is QUEUED and flushed on `oninitialized`, because client
- * capabilities are not knowable at module scope — verified against the real SDK, where
- * `getClientCapabilities()` returns `undefined` before `initialize`. Deciding at registration time
- * would register nothing, for every client, forever.
+ * In `"standalone"` mode each write tool is registered behind the consent steps below, on the
+ * layer server, and asks the human through the client with an input request. One handler serves
+ * both MCP eras: a client of revision 2026-07-28 is answered `input_required` and retries the call
+ * with its answer; a client that opened with `initialize` is sent the older `elicitation/create`
+ * request by the layer, which then runs the handler again.
+ *
+ * Default-DENY listing: a write tool is in `tools/list` only for a client that declared it can
+ * prompt a person, and only while write budget is left. It is always CALLABLE, so a call from a
+ * client that was never listed it, or after the budget ran out, still reaches the handler and is
+ * refused and RECORDED rather than answered as an unknown tool.
  */
 export function createWriteToolRegistrar(
   server: ConsentServer,
   cfg: RegistrarConfig,
 ): WriteToolRegistrar {
   const handles: ToolHandle[] = [];
-  const pending: Array<() => void> = [];
-  let flushed = false;
+  const mode = getConnectorMode();
 
   const { scope, record } = createConsentContext(server, cfg);
   // Throws on a value that is not plain digits, an empty one included, as the scope parse above
@@ -259,20 +323,24 @@ export function createWriteToolRegistrar(
   // refused.
   const budget = createWriteBudget(parseWriteBudget(process.env[WRITE_BUDGET_ENV]));
 
+  // The key every consent state of this process is sealed under. Made here and never stored: a
+  // restarted connector refuses every state its predecessor issued.
+  const stateKey = randomBytes(32);
+  const pending = new Map<string, PendingConsent>();
+
   /**
-   * Take one unit of budget if any is left. Spending the last unit disables every write tool and
-   * tells the client.
+   * Take one unit of budget if any is left. Spending the last unit takes every write tool out of
+   * `tools/list`.
    *
    * Nothing may be awaited between the check and the decrement, which is why both are the one
-   * synchronous call `budget.take()`. Calls run concurrently (the SDK starts each request's
-   * handler as it arrives), and with an await between the two every call in flight passed the
-   * check before any of them spent: three approved calls all mutated under a budget of one.
+   * synchronous call `budget.take()`. Calls run concurrently, and with an await between the two
+   * every call in flight passed the check before any of them spent: three approved calls all
+   * mutated under a budget of one.
    */
   function spendOne(): boolean {
     if (!budget.take()) return false;
     if (!budget.hasLeft()) {
       for (const h of handles) h.disable();
-      server.sendToolListChanged();
     }
     return true;
   }
@@ -291,28 +359,25 @@ export function createWriteToolRegistrar(
     return refused("write budget exhausted for this session");
   }
 
-  /**
-   * Decide the write surface, once, at the first moment client capabilities are knowable.
-   *
-   * Default-DENY: if the client cannot prompt a human, the queued tools are dropped and never
-   * appear in `tools/list` at all. Refusing at call time instead would still advertise a tool the
-   * model must not use.
-   */
-  function flushWriteTools(): void {
-    if (flushed) return;
-    flushed = true;
-    const caps = server.server.getClientCapabilities();
-    if (caps?.elicitation === undefined) {
-      pending.length = 0;
-      return;
+  /** Drops the prompts whose state can no longer open, each recorded as declined. */
+  async function pruneExpired(now: number): Promise<void> {
+    const expired: PendingConsent[] = [];
+    for (const [nonce, entry] of pending) {
+      if (entry.expiresAt <= now) {
+        pending.delete(nonce);
+        expired.push(entry);
+      }
     }
-    for (const register of pending) register();
-    pending.length = 0;
-    // The tool list changed after `initialize`, so the client must be told to re-read it.
-    if (handles.length > 0) server.sendToolListChanged();
+    for (const entry of expired) {
+      await record(entry.tool, "declined", {
+        reason: "expired unanswered",
+        target: entry.target,
+      });
+    }
   }
 
-  if (getConnectorMode() === "standalone") {
+  if (mode === "standalone") {
+    if (!isLayerServer(server)) throw notBuiltByFactory(cfg.connector);
     // An empty scope denies every mutation, which is the correct default but looks identical to a
     // broken connector from the outside. Say so on stderr — safe for a stdio server, whose
     // PROTOCOL channel is stdout; writing this to stdout would corrupt the JSON-RPC stream.
@@ -323,13 +388,6 @@ export function createWriteToolRegistrar(
           "terms to enable writes.\n",
       );
     }
-    // Chain rather than overwrite: another module may already own this hook, and clobbering it
-    // would silently disable whatever it did.
-    const prev = server.server.oninitialized;
-    server.server.oninitialized = (): void => {
-      prev?.();
-      flushWriteTools();
-    };
   }
 
   return <T>(
@@ -348,50 +406,129 @@ export function createWriteToolRegistrar(
       );
     }
 
-    if (getConnectorMode() === "gateway") {
-      registerOn(server, name, description, schema, handler, handles);
+    if (mode === "gateway" || !isLayerServer(server)) {
+      // Gateway mode. (A standalone connector without a layer server threw above.)
+      if (isLayerServer(server)) {
+        throw new Error(
+          `nimbus-connector ${cfg.connector}: gateway mode needs the upstream server`,
+        );
+      }
+      registerOnGateway(server, name, description, schema, handler);
       return;
     }
 
-    const guarded = async (args: T): Promise<McpListResult> => {
-      const target = toolCfg.scopeTargetOf(args);
-
-      // 0. A refusal no consent can lift comes before everything that could involve a human.
+    /** The scope and `refuseBefore` checks: the refusals no consent can lift. */
+    async function refusalBeforeConsent(
+      args: T,
+      target: { kind: string; value: string },
+    ): Promise<McpListResult | undefined> {
+      // A refusal no consent can lift comes before everything that could involve a human.
       const early = toolCfg.refuseBefore?.(args);
       if (early !== undefined) {
         await record(name, "refused", { reason: early, target });
         return refused(early);
       }
-
-      // 1. SCOPE FIRST — before prompting. Asking a human to approve something the operator
-      //    already forbade cannot change the outcome, and training people to click through
-      //    prompts that do not matter is how you make the prompts that do matter ineffective.
+      // SCOPE before prompting. Asking a human to approve something the operator already forbade
+      // cannot change the outcome, and training people to click through prompts that do not
+      // matter is how you make the prompts that do matter ineffective.
       if (!scopeAllows(scope, target.kind, target.value)) {
         await record(name, "refused", { reason: "out of scope", target });
         return refused(`out of scope: ${target.kind}:${target.value} is not in ${cfg.scopeEnv}`);
       }
+      return undefined;
+    }
 
-      // 2. BUDGET — same reasoning: a refusal that consent cannot lift comes before consent. Not
-      //    the last word on the budget, though: see step 4.
+    /** FIRST CALL: nothing has been asked yet. Ends by asking, or by a recorded refusal. */
+    async function ask(
+      args: T,
+      digest: string,
+      ctx: McpToolContext,
+    ): Promise<McpListResult | McpInputRequired> {
+      const target = toolCfg.scopeTargetOf(args);
+      const early = await refusalBeforeConsent(args, target);
+      if (early !== undefined) return early;
+
+      // A client that cannot show a prompt is not listed this tool, but it can still name it.
+      if (!clientCanPrompt(ctx.clientCapabilities)) {
+        await record(name, "refused", { reason: "client cannot prompt", target });
+        return refused("this client cannot ask a person to approve a write");
+      }
+
+      // BUDGET — a refusal that consent cannot lift comes before consent. Not the last word on
+      // the budget, though: see `perform`.
       if (!budget.hasLeft()) return budgetExhausted(name, target, "budget exhausted");
 
-      // 3. CONSENT.
+      const now = Date.now();
+      await pruneExpired(now);
+      if (pending.size >= MAX_PENDING_CONSENTS) {
+        await record(name, "refused", { reason: "too many approvals pending", target });
+        return refused("too many approvals are pending; answer or wait for the open ones");
+      }
+
       await record(name, "requested", { target, params: args });
-      if (!(await consented(server, toolCfg.mutates, args))) {
+      const nonce = randomUUID();
+      pending.set(nonce, { expiresAt: now + CONSENT_TTL_MS, tool: name, target });
+      return inputRequired({
+        inputRequests: { confirm: consentQuestion(toolCfg.mutates, args) },
+        // Bound to this tool and these exact arguments, to the pipe's one peer, and to five
+        // minutes. It holds only the nonce: a state is readable by whoever carries it.
+        requestState: sealState(
+          stateKey,
+          { n: nonce },
+          { principal: CONSENT_PRINCIPAL, ttlMs: CONSENT_TTL_MS, requestDigest: digest },
+        ),
+      });
+    }
+
+    /**
+     * RETRY: the call came back with an answer. Nothing about it is believed until its state has
+     * opened, and a state that does not open is a protocol error that records NOTHING: a request
+     * that proved nothing must not be able to write to the audit log.
+     */
+    function takeConsent(digest: string, ctx: McpToolContext): unknown {
+      if (ctx.requestState === undefined || ctx.inputResponses === undefined) {
+        throw new McpStateError("malformed");
+      }
+      const opened = openState(stateKey, ctx.requestState, {
+        principal: CONSENT_PRINCIPAL,
+        requestDigest: digest,
+      });
+      const nonce =
+        typeof opened === "object" && opened !== null
+          ? (opened as Record<string, unknown>)["n"]
+          : undefined;
+      // Taken in the same synchronous step as the open: of two concurrent retries of one state,
+      // one finds the nonce and the other does not. A spent or pruned nonce is a state that no
+      // longer names an open prompt.
+      if (typeof nonce !== "string" || !pending.delete(nonce)) {
+        throw new McpStateError("mismatch");
+      }
+      return ctx.inputResponses["confirm"];
+    }
+
+    /** After a state has opened and its nonce is taken: the answer, then the write. */
+    async function perform(args: T, answer: unknown): Promise<McpListResult> {
+      const target = toolCfg.scopeTargetOf(args);
+      if (!isConsent(answer)) {
         await record(name, "declined", { target });
         return refused("not approved: the operation was declined, cancelled, or timed out");
       }
       await record(name, "accepted", { target });
 
-      // 4. SPEND — the budget checked AGAIN, and decremented in the same synchronous step: every
-      //    call in flight passed step 2 before any of them got this far, so step 2 alone cannot
-      //    hold the cap (see `spendOne`). Spent BEFORE the mutation so a throwing one still
-      //    consumes budget — otherwise a failing destructive tool could be retried without limit.
+      // The arguments are the ones that were asked about (the state's digest says so), but a
+      // refusal can have become true while the prompt was open.
+      const late = await refusalBeforeConsent(args, target);
+      if (late !== undefined) return late;
+
+      // SPEND — the budget checked AGAIN, and decremented in the same synchronous step: every
+      // call in flight passed the first check before any of them got this far, so that check alone
+      // cannot hold the cap (see `spendOne`). Spent BEFORE the mutation so a throwing one still
+      // consumes budget — otherwise a failing destructive tool could be retried without limit.
       if (!spendOne()) return budgetExhausted(name, target, "budget exhausted after approval");
 
-      // 5. PRE-STATE — after approval, before the mutation, so an unrecoverable action leaves a
-      //    record of what it destroyed. Capture failure is NOT fatal: refusing here would turn a
-      //    transient read error into a blocked action the owner already approved.
+      // PRE-STATE — after approval, before the mutation, so an unrecoverable action leaves a
+      // record of what it destroyed. Capture failure is NOT fatal: refusing here would turn a
+      // transient read error into a blocked action the owner already approved.
       let preState: Record<string, unknown> = {};
       if (toolCfg.capturePreState !== undefined) {
         try {
@@ -401,7 +538,7 @@ export function createWriteToolRegistrar(
         }
       }
 
-      // 6. MUTATE.
+      // MUTATE.
       let result: McpListResult;
       try {
         result = await handler(args);
@@ -430,11 +567,25 @@ export function createWriteToolRegistrar(
         });
       }
       return result;
-    };
+    }
 
-    pending.push(() => {
-      registerOn(server, name, description, schema, guarded, handles);
-    });
+    const handle = server.registerTool(
+      name,
+      {
+        description,
+        inputSchema: schema.shape,
+        listed: (client) => clientCanPrompt(client.clientCapabilities),
+      },
+      (raw: unknown, ctx: McpToolContext) => {
+        const args = parseWith(schema, raw);
+        // Over the arguments as JSON, which is what a client sends again on its retry.
+        const digest = requestDigest(name, JSON.parse(JSON.stringify(args)) as unknown);
+        const retry = ctx.requestState !== undefined || ctx.inputResponses !== undefined;
+        return retry ? perform(args, takeConsent(digest, ctx)) : ask(args, digest, ctx);
+      },
+    );
+    // Collected so budget exhaustion can take every write tool out of the list at once.
+    handles.push(handle);
   };
 }
 
@@ -463,18 +614,18 @@ export type PrepareToolRegistrar = <T>(
  * list and not a naming convention.
  *
  * In `"gateway"` mode the raw handler is registered: the executor's prepare step is the gate there.
- * In `"standalone"` mode it is registered at once for EVERY client (a prepare tool prompts no one,
- * so no elicitation capability is needed), behind the same write scope as the writes it serves, and
- * each in-scope run is audited as `prepared`. It spends no write budget and is never disabled by
- * the budget running out: a second prompt before the apply prompt would only train click-through.
+ * In `"standalone"` mode it is registered for EVERY client (a prepare tool prompts no one, so no
+ * elicitation capability is needed), behind the same write scope as the writes it serves, and
+ * each in-scope run is audited as `prepared`. It spends no write budget and is never taken out of
+ * the list by the budget running out: a second prompt before the apply prompt would only train
+ * click-through.
  */
 export function createPrepareToolRegistrar(
   server: ConsentServer,
   cfg: RegistrarConfig,
 ): PrepareToolRegistrar {
   const { scope, record } = createConsentContext(server, cfg);
-  // Prepare tools are not budget-gated, so nothing ever disables them; the handles are not kept.
-  const handles: ToolHandle[] = [];
+  const mode = getConnectorMode();
 
   return <T>(
     name: string,
@@ -490,8 +641,9 @@ export function createPrepareToolRegistrar(
       );
     }
 
-    if (getConnectorMode() === "gateway") {
-      registerOn(server, name, description, schema, handler, handles);
+    if (!isLayerServer(server)) {
+      if (mode === "standalone") throw notBuiltByFactory(cfg.connector);
+      registerOnGateway(server, name, description, schema, handler);
       return;
     }
 
@@ -520,6 +672,8 @@ export function createPrepareToolRegistrar(
       await record(name, "prepared", { target });
       return result;
     };
-    registerOn(server, name, description, schema, guarded, handles);
+    server.registerTool(name, { description, inputSchema: schema.shape }, (raw: unknown) =>
+      guarded(parseWith(schema, raw)),
+    );
   };
 }

@@ -1,6 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CONSENT_SERVER_CAPABILITIES } from "./consent-kit.ts";
+import { createConnectorServer } from "./connector-server.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -15,43 +13,52 @@ export type ZodToolRegistrar = <T>(
   handler: (args: T) => Promise<McpListResult>,
 ) => void;
 
-export interface BuildReadOnlyMcpConnectorOptions {
-  readonly createServer?: (info: { readonly name: string; readonly version: string }) => unknown;
+/** A server and the function that starts it, as `createConnectorServer` returns them. */
+export interface BuiltConnector {
+  readonly server: unknown;
+  start(): Promise<void>;
 }
 
 /**
- * `createTransport` mirrors the existing `createServer` seam. Without it the
- * stdio transport was constructed inline, so `runReadOnlyMcpConnector` — the
- * function every connector's entry point actually calls — could not be executed
- * from a test at all: it would have opened a real stdio transport on the test
- * process. That left the wiring between server and transport asserted nowhere.
+ * `createConnector` is the test seam. Without it `runReadOnlyMcpConnector` — the function every
+ * connector's entry point actually calls — could not be executed from a test at all: it would
+ * start serving on the test process's stdio. That left the wiring between the server and its start
+ * asserted nowhere.
  *
- * Production callers pass nothing and get the real `StdioServerTransport`.
+ * Production callers pass nothing and get `createConnectorServer` (`shared/connector-server.ts`),
+ * the one place a connector's server is built.
  */
-export interface RunReadOnlyMcpConnectorOptions extends BuildReadOnlyMcpConnectorOptions {
-  readonly createTransport?: () => unknown;
+export interface BuildReadOnlyMcpConnectorOptions {
+  readonly createConnector?: (info: {
+    readonly name: string;
+    readonly version: string;
+  }) => BuiltConnector;
+}
+
+export type RunReadOnlyMcpConnectorOptions = BuildReadOnlyMcpConnectorOptions;
+
+function build(
+  serverName: string,
+  register: (reg: ZodToolRegistrar, server: unknown) => void,
+  options: BuildReadOnlyMcpConnectorOptions | undefined,
+): BuiltConnector {
+  const make = options?.createConnector ?? createConnectorServer;
+  const built = make({ name: serverName, version: "0.1.0" });
+  const reg = createZodToolRegistrar(createRegisterSimpleTool(built.server));
+  // The SERVER is passed to `register` as a second argument. Despite this helper's name, several
+  // of its connectors expose write tools, and those need the server to build a consent registrar.
+  // Optional in the callback's own signature, so the many genuinely read-only connectors that
+  // ignore it are unaffected.
+  register(reg, built.server);
+  return built;
 }
 
 export function buildReadOnlyMcpConnector(
   serverName: string,
-  // The SERVER is passed to `register` as a second argument. Despite this helper's name, several
-  // of its connectors expose write tools, and those need the real server to build a consent
-  // registrar — the read-only registrar alone cannot reach capabilities, registerTool or logging.
-  // Optional in the callback's own signature, so the many genuinely read-only connectors that
-  // ignore it are unaffected.
   register: (reg: ZodToolRegistrar, server: unknown) => void,
   options?: BuildReadOnlyMcpConnectorOptions,
 ): unknown {
-  // Every server built here declares the MCP `logging` capability, since the consent kit's
-  // notifications reach a client only through it. A truly read-only connector sends no log
-  // message, so declaring it costs that connector nothing.
-  const make =
-    options?.createServer ??
-    ((info) => new McpServer(info, { capabilities: CONSENT_SERVER_CAPABILITIES }));
-  const mcp = make({ name: serverName, version: "0.1.0" });
-  const reg = createZodToolRegistrar(createRegisterSimpleTool(mcp));
-  register(reg, mcp);
-  return mcp;
+  return build(serverName, register, options).server;
 }
 
 export async function runReadOnlyMcpConnector(
@@ -59,7 +66,7 @@ export async function runReadOnlyMcpConnector(
   register: (reg: ZodToolRegistrar, server: unknown) => void,
   options?: RunReadOnlyMcpConnectorOptions,
 ): Promise<void> {
-  const mcp = buildReadOnlyMcpConnector(serverName, register, options) as McpServer;
-  const makeTransport = options?.createTransport ?? ((): unknown => new StdioServerTransport());
-  await mcp.connect(makeTransport() as StdioServerTransport);
+  // Tools are registered before the server starts: one registered afterwards would be invisible
+  // to a client that is already handshaking.
+  await build(serverName, register, options).start();
 }

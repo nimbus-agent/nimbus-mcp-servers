@@ -18,7 +18,9 @@ Architectural constraints, not preferences. Do not suggest changes that violate 
 
 1. **Consent is structural.** Every mutating tool registers through `createWriteToolRegistrar` in
    `shared/consent-kit.ts` — never the raw MCP registration call. The consent gate lives in the
-   registrar, not in a prompt, and cannot be configured away.
+   registrar, not in a prompt, and cannot be configured away. A connector's server is built only by
+   `createConnectorServer` in `shared/connector-server.ts`: it picks the upstream server for the
+   gateway and the dual-era layer server standalone, and a test fails any other construction.
 2. **No plaintext credentials in code.** They come from `process.env` at startup. Never call a Vault
    API — the connector process has no Vault access by design.
 3. **`setConnectorMode` has exactly one caller.** The mode comes from the entry point. A second
