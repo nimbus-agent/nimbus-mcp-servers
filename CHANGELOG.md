@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.14.0...connectors-v0.15.0) (2026-11-16)
+
+
+### Features
+
+* standalone connectors answer both MCP protocol eras, and write consent works with a 2026-07-28 client ([#88](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/88)) ([228ec24](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/228ec242f193ddd379008e17528ab6ad67ea2905))
+
 ## [0.14.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.13.0...connectors-v0.14.0) (2026-11-12)
 
 
