@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { captureStandaloneTools } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import type { McpListResult, ZodObjectSchema } from "../../../shared/mcp-tool-kit.ts";
 import { registerMonteCarloTools } from "../src/server.ts";
@@ -169,27 +170,19 @@ describe("monte carlo write tools in STANDALONE mode", () => {
 
   /** A client that can prompt, and approves every prompt, recording the first line of each. */
   function approvingStandaloneTools(prompts: string[]): Map<string, Handler> {
+    // The real standalone server and consent flow, through the shared harness.
+    const captured = captureStandaloneTools(registerMonteCarloTools, { elicitation: true });
     const tools = new Map<string, Handler>();
-    let ready = false;
-    const srv = {
-      server: {
-        getClientCapabilities: () => (ready ? { elicitation: {} } : undefined),
-        oninitialized: undefined as (() => void) | undefined,
-        elicitInput: (req: { message: string }) => {
-          prompts.push(req.message.split("\n")[0] ?? "");
-          return Promise.resolve({ action: "accept", content: { confirm: true } });
-        },
-      },
-      registerTool: (name: string, _cfg: unknown, handler: Handler) => {
-        tools.set(name, handler);
-        return { disable: () => undefined };
-      },
-      sendToolListChanged: () => undefined,
-      sendLoggingMessage: () => Promise.resolve(),
-    };
-    registerMonteCarloTools(() => undefined, srv);
-    ready = true;
-    srv.server.oninitialized?.();
+    for (const name of captured.tools.registrationOrder()) {
+      tools.set(name, async (args) => {
+        try {
+          return await captured.tools.call(name, args);
+        } finally {
+          prompts.length = 0;
+          prompts.push(...captured.prompts.map((message) => message.split("\n")[0] ?? ""));
+        }
+      });
+    }
     return tools;
   }
 

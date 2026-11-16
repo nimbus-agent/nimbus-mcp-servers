@@ -4,10 +4,11 @@
  * request would turn the assertions built on it into tests that cannot fail.
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { resetConnectorModeForTests, setConnectorMode } from "../shared/connector-mode.ts";
 import type { McpListResult } from "../shared/mcp-tool-kit.ts";
 import {
   bootOverStubbedStdio,
@@ -147,21 +148,40 @@ describe("captureTools", () => {
 });
 
 describe("captureStandaloneTools", () => {
-  it("reports no client capabilities until the handshake has run", () => {
-    const seen: unknown[] = [];
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+  });
+  afterEach(resetConnectorModeForTests);
+
+  it("registers on the real standalone server and calls over a real connection", async () => {
+    let handed: unknown;
     const { tools } = captureStandaloneTools(
       ((server: {
-        server: { getClientCapabilities: () => unknown };
         tool: (n: string, d: string, s: object, h: () => Promise<McpListResult>) => unknown;
       }) => {
-        seen.push(server.server.getClientCapabilities());
+        handed = server;
         server.tool("read", "r", {}, () => Promise.resolve(OK));
       }) as unknown as ConnectorRegistrar,
       { elicitation: true },
     );
     expect(tools.names()).toEqual(["read"]);
-    // Before initialize the SDK knows nothing about the client; the stand-in agrees.
-    expect(seen).toEqual([undefined]);
+    // The layer server: what `createConnectorServer` hands a standalone connector.
+    expect("layer" in (handed as object)).toBe(true);
+    expect(await tools.call("read")).toEqual(OK);
+  });
+
+  it("a tool that throws rejects the call with the tool's own message", async () => {
+    const { tools } = captureStandaloneTools(
+      ((server: {
+        tool: (n: string, d: string, s: object, h: () => Promise<McpListResult>) => unknown;
+      }) => {
+        server.tool("boom", "b", {}, () => Promise.reject(new Error("upstream said 404")));
+      }) as unknown as ConnectorRegistrar,
+      { elicitation: false },
+    );
+    await expect(tools.call("boom")).rejects.toThrow("upstream said 404");
+    expect(() => tools.get("missing")).toThrow('tool "missing" was not registered');
   });
 });
 

@@ -97,8 +97,11 @@ function bootEnv(id: string): Record<string, string> {
 }
 
 /** Import a connector's entry point and, when its bootstrap is guarded, start it — as the gateway does. */
-async function startEntryPoint(id: string): Promise<void> {
-  const mod = (await import(join(CONNECTORS, id, "src", "server.ts"))) as {
+async function startEntryPoint(id: string, again = ""): Promise<void> {
+  // An entry point builds and starts its server when it is imported, once per process. `again` is
+  // a query string that makes the import a NEW module instance, so one process can boot the same
+  // connector a second time, in the other mode.
+  const mod = (await import(`${join(CONNECTORS, id, "src", "server.ts")}${again}`)) as {
     startConnector?: unknown;
   };
   if (typeof mod.startConnector === "function") {
@@ -146,12 +149,14 @@ function declaresWrite(id: string): boolean {
  * it the SDK drops every notification the consent kit sends about a gated write.
  */
 async function expectServesItsSurface(id: string, stdio: StubbedStdio): Promise<void> {
+  // Captured first, in the gateway mode this test locked: the registrar reads the mode.
+  const surface = await expectedSurface(id);
   const client = await connectOverStubbedStdio(stdio);
   try {
     expect(client.getServerVersion()?.name).toBe(`nimbus-${id}`);
     const served = (await client.listTools()).tools.map((t) => t.name).sort(byToolName);
     expect(served.length).toBeGreaterThan(0);
-    expect(served).toEqual(await expectedSurface(id));
+    expect(served).toEqual(surface);
     if (declaresWrite(id)) {
       expect({ id, logging: client.getServerCapabilities()?.logging }).toEqual({ id, logging: {} });
     }
@@ -212,5 +217,35 @@ describe("every connector entry point, booted as the gateway boots it", () => {
     }
     expect(dav).toEqual([`login ${ICLOUD_CALDAV_BOOTSTRAP_URL}`, "fetchCalendars"]);
     await expectServesItsSurface("apple", stdio);
+  });
+});
+
+/**
+ * The same entry points, booted STANDALONE: the mode of `nimbus-connector <id>`, where the server
+ * is the layer server (`shared/layer-server.ts`) and not the upstream one. The upstream MCP
+ * client connects over the process's stdio, so this is the legacy era end to end, through the
+ * real line framing, for every connector.
+ */
+describe("every connector entry point, booted standalone on the layer server", () => {
+  const standalone = ids.filter((id) => !OWN_TEST.has(id));
+
+  test.each(standalone)("%s serves its surface to a client that can prompt", async (id) => {
+    const surface = await expectedSurface(id);
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stdio = await withEnv(bootEnv(id), () =>
+      bootOverStubbedStdio(() => startEntryPoint(id, "?standalone")),
+    );
+    const client = await connectOverStubbedStdio(stdio, { elicitation: {} });
+    try {
+      expect(client.getServerVersion()?.name).toBe(`nimbus-${id}`);
+      // The layer server sends no notifications, so it declares no `logging` capability.
+      expect(client.getServerCapabilities()).toEqual({ tools: {} });
+      const served = (await client.listTools()).tools.map((t) => t.name).sort(byToolName);
+      // A client that can prompt is listed everything, the gated writes included.
+      expect(served).toEqual(surface);
+    } finally {
+      await client.close();
+    }
   });
 });

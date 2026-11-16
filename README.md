@@ -33,8 +33,12 @@ supply them. [`NOTICE`](./NOTICE) states the tiering that notice asks you to pre
 
 Reads work everywhere. **Writes require your client to implement the MCP `elicitation` capability**,
 because that is the only way a server can put a consent prompt in front of you. Without it, write
-tools are **not registered at all** rather than offered ungated — deliberate, not a defect: a tool
-the model cannot see is one it cannot call without a human.
+tools are **not listed** rather than offered ungated, and a call that names one anyway is refused
+and recorded. That is deliberate, not a defect: a tool the model is not shown is one it has no
+reason to call, and one it cannot run without a human.
+
+A standalone connector answers both MCP protocol eras: a client of revision `2026-07-28` and a
+client that opens with `initialize` (`2025-11-25` and the three revisions before it).
 
 **Claude Desktop does not implement elicitation today**, so you get reads only there. Claude Code and
 Cursor do, per their vendor docs.

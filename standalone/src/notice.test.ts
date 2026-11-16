@@ -27,6 +27,7 @@ describe("security tiering is stated where it survives", () => {
   test("the pilot connector ships machine-readable instructions", () => {
     const src = readFileSync(here("../../../connectors/github/src/server.ts"), "utf8");
     expect(src).toContain("instructions:");
-    expect(src).toContain("not registered at all");
+    expect(src).toContain("they are not listed, and are refused, if this ");
+    expect(notice).toContain("NOT LISTED to it, and a call that names one is refused");
   });
 });

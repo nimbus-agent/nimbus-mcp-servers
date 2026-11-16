@@ -8,9 +8,7 @@
  * env → config mapping the adapter cannot know.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CONSENT_SERVER_CAPABILITIES } from "../../../shared/consent-kit.ts";
+import { createConnectorServer } from "../../../shared/connector-server.ts";
 import { envInt } from "../../../shared/imap-tool-kit.ts";
 import { createImapFlowClient, createNodemailerMailer } from "../../../shared/imapflow-adapter.ts";
 import { requireProcessEnv } from "../../../shared/mcp-tool-kit.ts";
@@ -23,10 +21,7 @@ const SMTPS_PORT = 465;
 
 const smtpPort = envInt("IMAP_SMTP_PORT", DEFAULT_SMTP_PORT);
 
-const server = new McpServer(
-  { name: "nimbus-imap", version: "0.1.0" },
-  { capabilities: CONSENT_SERVER_CAPABILITIES },
-);
+const { server, start } = createConnectorServer({ name: "nimbus-imap", version: "0.1.0" });
 
 registerImapTools(
   server,
@@ -46,4 +41,4 @@ registerImapTools(
   }),
 );
 
-await server.connect(new StdioServerTransport());
+await start();

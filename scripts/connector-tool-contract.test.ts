@@ -525,6 +525,11 @@ describe("connector tool surfaces", () => {
               const args = argsFor(surface, tools, name) ?? {};
               const assigned = new Set<string>();
               const ok = stubSpawn({ stdout: "{}" });
+              // A CLI-backed connector may also speak HTTP (bigquery mints a token with gcloud and
+              // then calls the REST API). With the CLI stubbed to succeed, that second call went to
+              // the real network: on a runner with no egress it hung until the test timed out, and
+              // the timeout left the spawn stub installed for every test after it.
+              const http = stubFetch({ body: "{}" });
               try {
                 await satisfyEnv(() => tools.call(name, args), assigned);
                 ok.restore();
@@ -544,6 +549,7 @@ describe("connector tool surfaces", () => {
                   failing.restore();
                 }
               } finally {
+                http.restore();
                 ok.restore();
                 clearEnv(assigned);
               }

@@ -1,4 +1,5 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { resetConnectorModeForTests, setConnectorMode } from "./connector-mode.ts";
 import type { ZodObjectSchema } from "./mcp-tool-kit.ts";
 import {
   buildReadOnlyMcpConnector,
@@ -17,12 +18,16 @@ function syntheticSchema(): ZodObjectSchema<SyntheticArgs> {
   };
 }
 
+beforeEach(resetConnectorModeForTests);
+afterEach(resetConnectorModeForTests);
+
 describe("buildReadOnlyMcpConnector", () => {
-  test("passes serverName and version 0.1.0 to the createServer factory", () => {
+  test("passes serverName and version 0.1.0 to the createConnector factory", () => {
     const factory = mock((_info: { readonly name: string; readonly version: string }) => ({
-      tool: () => undefined,
+      server: { tool: () => undefined },
+      start: async () => undefined,
     }));
-    buildReadOnlyMcpConnector("nimbus-acme", () => undefined, { createServer: factory });
+    buildReadOnlyMcpConnector("nimbus-acme", () => undefined, { createConnector: factory });
     expect(factory).toHaveBeenCalledTimes(1);
     expect(factory.mock.calls[0]?.[0]).toEqual({ name: "nimbus-acme", version: "0.1.0" });
   });
@@ -40,7 +45,7 @@ describe("buildReadOnlyMcpConnector", () => {
           content: [{ type: "text", text: "{}" }],
         }));
       },
-      { createServer: () => fakeServer },
+      { createConnector: () => ({ server: fakeServer, start: async () => undefined }) },
     );
     expect(toolSpy).toHaveBeenCalledTimes(2);
     expect(toolSpy.mock.calls[0]?.[0]).toBe("acme_list");
@@ -48,49 +53,57 @@ describe("buildReadOnlyMcpConnector", () => {
     expect(toolSpy.mock.calls[1]?.[0]).toBe("acme_get");
   });
 
-  test("returns the constructed server instance", () => {
+  test("returns the constructed server instance, and hands the same one to register", () => {
     const fakeServer = { tool: () => undefined };
-    const result = buildReadOnlyMcpConnector("nimbus-acme", () => undefined, {
-      createServer: () => fakeServer,
-    });
+    let handed: unknown;
+    const result = buildReadOnlyMcpConnector(
+      "nimbus-acme",
+      (_reg, server) => {
+        handed = server;
+      },
+      { createConnector: () => ({ server: fakeServer, start: async () => undefined }) },
+    );
     expect(result).toBe(fakeServer);
+    expect(handed).toBe(fakeServer);
+  });
+
+  /**
+   * The DEFAULT arm is the production one — every connector entry point calls these functions
+   * with no options at all. Injecting the seam in every test would leave exactly the code that
+   * ships uncovered. Building a server is inert in both modes: nothing touches stdio until it is
+   * started.
+   */
+  test("defaults to createConnectorServer: the layer server standalone, the upstream one for the gateway", () => {
+    const standalone = buildReadOnlyMcpConnector("nimbus-acme", () => undefined);
+    expect("layer" in (standalone as object)).toBe(true);
+
+    resetConnectorModeForTests();
+    setConnectorMode("gateway");
+    const gateway = buildReadOnlyMcpConnector("nimbus-acme", () => undefined);
+    expect("layer" in (gateway as object)).toBe(false);
+    expect(typeof (gateway as { connect?: unknown }).connect).toBe("function");
   });
 });
 
 /**
- * This is the function every connector entry point actually calls, and it was
- * covered by nothing — it built a real `StdioServerTransport` inline, so a test
- * could not run it without opening stdio on the test process. The
- * `createTransport` seam mirrors the existing `createServer` one and makes the
- * server↔transport wiring assertable.
+ * This is the function every connector entry point actually calls. The `createConnector` seam
+ * makes the wiring between the server and its start assertable without serving on the test
+ * process's stdio.
  */
 describe("runReadOnlyMcpConnector", () => {
-  test("connects the built server to the transport", async () => {
-    const connect = mock(async (_t: unknown) => undefined);
-    const fakeServer = { tool: () => undefined, connect };
-    const fakeTransport = { kind: "fake-transport" };
-
+  test("starts the built server, once", async () => {
+    const start = mock(async () => undefined);
     await runReadOnlyMcpConnector("nimbus-acme", () => undefined, {
-      createServer: () => fakeServer,
-      createTransport: () => fakeTransport,
+      createConnector: () => ({ server: { tool: () => undefined }, start }),
     });
-
-    expect(connect).toHaveBeenCalledTimes(1);
-    expect(connect.mock.calls[0]?.[0]).toBe(fakeTransport);
+    expect(start).toHaveBeenCalledTimes(1);
   });
 
-  test("registers the caller's tools before connecting", async () => {
+  test("registers the caller's tools before starting", async () => {
     const order: string[] = [];
     const toolSpy = mock((..._a: unknown[]) => {
       order.push("register");
     });
-    const fakeServer = {
-      tool: toolSpy,
-      connect: mock(async () => {
-        order.push("connect");
-      }),
-    };
-
     await runReadOnlyMcpConnector(
       "nimbus-acme",
       (reg) => {
@@ -98,57 +111,30 @@ describe("runReadOnlyMcpConnector", () => {
           content: [{ type: "text", text: "[]" }],
         }));
       },
-      { createServer: () => fakeServer, createTransport: () => ({}) },
+      {
+        createConnector: () => ({
+          server: { tool: toolSpy },
+          start: async () => {
+            order.push("start");
+          },
+        }),
+      },
     );
 
-    // A tool registered after connect would be invisible to the client that is
-    // already handshaking.
-    expect(order).toEqual(["register", "connect"]);
+    // A tool registered after the start would be invisible to the client that is already
+    // handshaking.
+    expect(order).toEqual(["register", "start"]);
   });
 
-  /**
-   * The DEFAULT arms are the production ones — every connector entry point calls
-   * these functions with no options at all. Injecting both seams in every test
-   * would leave exactly the code that ships uncovered, so these two exercise the
-   * real `McpServer` / `StdioServerTransport` factories.
-   *
-   * Safe to do: constructing `StdioServerTransport` is inert. Verified — it adds
-   * no `data` listener to stdin and does not resume it; the transport only
-   * attaches on `start()`, which `connect()` drives, and the fake server here
-   * never calls it.
-   */
-  test("defaults to a real McpServer when no createServer is given", () => {
-    const server = buildReadOnlyMcpConnector("nimbus-acme", () => undefined);
-    expect(server).toBeDefined();
-    expect(typeof (server as { connect?: unknown }).connect).toBe("function");
-  });
-
-  test("defaults to a real StdioServerTransport when no createTransport is given", async () => {
-    const connect = mock(async (_t: unknown) => undefined);
-    const stdinListenersBefore = process.stdin.listenerCount("data");
-
-    await runReadOnlyMcpConnector("nimbus-acme", () => undefined, {
-      createServer: () => ({ tool: () => undefined, connect }),
-    });
-
-    expect(connect).toHaveBeenCalledTimes(1);
-    // It was handed a real transport instance, not undefined.
-    expect(connect.mock.calls[0]?.[0]).toBeDefined();
-    // ...and constructing it left stdin alone, which is what makes this test safe.
-    expect(process.stdin.listenerCount("data")).toBe(stdinListenersBefore);
-  });
-
-  test("propagates a transport failure rather than resolving silently", async () => {
-    const fakeServer = {
-      tool: () => undefined,
-      connect: async () => {
-        throw new Error("stdio unavailable");
-      },
-    };
+  test("propagates a start failure rather than resolving silently", async () => {
     await expect(
       runReadOnlyMcpConnector("nimbus-acme", () => undefined, {
-        createServer: () => fakeServer,
-        createTransport: () => ({}),
+        createConnector: () => ({
+          server: { tool: () => undefined },
+          start: async () => {
+            throw new Error("stdio unavailable");
+          },
+        }),
       }),
     ).rejects.toThrow(/stdio unavailable/);
   });

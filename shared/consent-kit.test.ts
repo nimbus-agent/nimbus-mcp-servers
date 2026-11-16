@@ -11,43 +11,29 @@ import {
   type ConsentServer,
   createPrepareToolRegistrar,
   createWriteToolRegistrar,
+  type GatewayConsentServer,
   type WriteToolRegistrar,
 } from "./consent-kit.ts";
+import { createLayerServer, type LayerServer } from "./layer-server.ts";
 import { DEFAULT_WRITE_BUDGET, WRITE_BUDGET_ENV } from "./write-budget.ts";
 
 type Registered = { name: string };
 
 /**
- * `capsReadable` models the real SDK: `getClientCapabilities()` returns undefined until the
- * client's `initialize` has been received. A fake that answers synchronously from construction
- * would hide the entire bug this suite exists to prevent.
+ * The upstream-shaped server a GATEWAY-mode connector registers on. The kit asks it nothing about
+ * the client: in gateway mode the gateway's executor is the gate.
  */
-function fakeServer(opts: {
-  elicitation: boolean;
-}): ConsentServer & { registered: Registered[]; handshake: () => void } {
+function gatewayServer(): GatewayConsentServer & { registered: Registered[] } {
   const registered: Registered[] = [];
-  let capsReadable = false;
-  const srv = {
+  return {
     registered,
-    server: {
-      getClientCapabilities: () =>
-        capsReadable ? (opts.elicitation ? { elicitation: {} } : {}) : undefined,
-      oninitialized: undefined as (() => void) | undefined,
-      elicitInput: () => Promise.resolve({ action: "accept" as const, content: { confirm: true } }),
-    },
     registerTool: (name: string) => {
       registered.push({ name });
       return { disable: () => undefined };
     },
-    sendToolListChanged: () => undefined,
+    tool: () => undefined,
     sendLoggingMessage: () => Promise.resolve(),
-    /** Simulate the client's `initialize` completing. */
-    handshake: () => {
-      capsReadable = true;
-      srv.server.oninitialized?.();
-    },
-  } as unknown as ConsentServer & { registered: Registered[]; handshake: () => void };
-  return srv;
+  };
 }
 
 const schema = z.object({ branch: z.string() });
@@ -101,66 +87,75 @@ describe("write tool registration", () => {
 
   test("gateway mode registers the write tool — executor.ts is the gate there", () => {
     setConnectorMode("gateway");
-    const srv = fakeServer({ elicitation: false });
+    const srv = gatewayServer();
     const reg = createWriteToolRegistrar(srv, {
       connector: "github",
       scopeEnv: "X",
       scopeKinds: ["repo"],
     });
     reg("github_branch_delete", cfgFor(), "desc", schema, async () => ok());
-    // No handshake needed: the gateway does not consult client capabilities at all.
+    // The gateway does not consult client capabilities at all.
     expect(srv.registered.map((r) => r.name)).toEqual(["github_branch_delete"]);
   });
 
-  test("standalone WITHOUT elicitation does not register the tool at all", () => {
+  test("standalone lists the tool only to a client that can prompt a person", () => {
     setConnectorMode("standalone");
-    const srv = fakeServer({ elicitation: false });
+    const srv = createLayerServer({ name: "t", version: "0" });
     const reg = createWriteToolRegistrar(srv, {
       connector: "github",
       scopeEnv: "X",
       scopeKinds: ["repo"],
     });
     reg("github_branch_delete", cfgFor(), "desc", schema, async () => ok());
-    srv.handshake();
-    expect(srv.registered).toEqual([]);
+    const listedTo = (clientCapabilities: Record<string, unknown>): string[] =>
+      srv.toolsFor("list", { clientCapabilities }).map((t) => t.name);
+    // Default-DENY: a client that declared no elicitation is not shown a tool it must not use.
+    expect(listedTo({})).toEqual([]);
+    expect(listedTo({ elicitation: { url: {} } })).toEqual([]);
+    expect(listedTo({ elicitation: "yes" })).toEqual([]);
+    // An empty object is how the revisions before 2025-11-25 declared form support.
+    expect(listedTo({ elicitation: {} })).toEqual(["github_branch_delete"]);
+    expect(listedTo({ elicitation: { form: {} } })).toEqual(["github_branch_delete"]);
+    // Listing is not what makes it callable: the handler is always reachable, so a call from a
+    // client that was never listed it is refused and RECORDED, not answered as an unknown tool.
+    expect(srv.toolsFor("call", { clientCapabilities: {} }).map((t) => t.name)).toEqual([
+      "github_branch_delete",
+    ]);
   });
 
-  test("standalone WITH elicitation registers it AFTER the handshake", () => {
+  test("a standalone connector that was not built by createConnectorServer does not start", () => {
     setConnectorMode("standalone");
-    const srv = fakeServer({ elicitation: true });
-    const reg = createWriteToolRegistrar(srv, {
-      connector: "github",
-      scopeEnv: "X",
-      scopeKinds: ["repo"],
-    });
-    reg("github_branch_delete", cfgFor(), "desc", schema, async () => ok());
-
-    // THE REGRESSION GUARD. Capabilities are unknowable at module scope — verified against the
-    // real SDK, where getClientCapabilities() returns undefined before initialize. A registrar
-    // that decided here would register nothing, for every client, forever.
-    expect(srv.registered).toEqual([]);
-
-    srv.handshake();
-    expect(srv.registered.map((r) => r.name)).toEqual(["github_branch_delete"]);
+    const cfg = { connector: "github", scopeEnv: "X", scopeKinds: ["repo"] };
+    expect(() => createWriteToolRegistrar(gatewayServer(), cfg)).toThrow(
+      "must be built with createConnectorServer",
+    );
+    const prepare = createPrepareToolRegistrar(gatewayServer(), cfg);
+    expect(() =>
+      prepare(
+        "github_commit_prepare",
+        { scopeTargetOf: () => ({ kind: "repo", value: "x" }) },
+        "d",
+        schema,
+        async () => ok(),
+      ),
+    ).toThrow("must be built with createConnectorServer");
   });
 
-  test("a second initialize does not double-register", () => {
-    setConnectorMode("standalone");
-    const srv = fakeServer({ elicitation: true });
-    const reg = createWriteToolRegistrar(srv, {
+  test("a gateway connector handed the standalone server does not register a write on it", () => {
+    setConnectorMode("gateway");
+    const reg = createWriteToolRegistrar(createLayerServer({ name: "t", version: "0" }), {
       connector: "github",
       scopeEnv: "X",
       scopeKinds: ["repo"],
     });
-    reg("github_branch_delete", cfgFor(), "desc", schema, async () => ok());
-    srv.handshake();
-    srv.handshake();
-    expect(srv.registered).toHaveLength(1);
+    expect(() => reg("github_branch_delete", cfgFor(), "desc", schema, async () => ok())).toThrow(
+      "gateway mode needs the upstream server",
+    );
   });
 
   test("a config with recoverable:false and NO capturePreState is rejected at registration", () => {
     setConnectorMode("gateway");
-    const srv = fakeServer({ elicitation: true });
+    const srv = gatewayServer();
     const reg = createWriteToolRegistrar(srv, {
       connector: "github",
       scopeEnv: "X",
@@ -188,43 +183,127 @@ type Elicit = (p: { message: string }) => Promise<{
   content?: Record<string, unknown>;
 }>;
 
-type FakeServer = ConsentServer & {
-  captured: ((args: unknown) => Promise<McpListResult>) | undefined;
+type Handler = (args: unknown) => Promise<McpListResult>;
+
+/**
+ * The real standalone server, plus a client for it. `captured` and `handlers` CALL a tool the way
+ * a client does: `tools/call` on a real connection of the MCP layer, opened with `initialize`
+ * (the legacy era), with the `elicitation/create` request a write's consent raises answered by
+ * `elicit`. So every case below runs the whole flow: the prompt, the sealed state, the nonce.
+ *
+ * A call REJECTS with the server's own text when the tool failed or the request was refused as a
+ * protocol error, which is what the cases assert on.
+ */
+type FakeServer = LayerServer & {
+  /** Calls the tool registered last. */
+  captured: Handler | undefined;
+  /** Calls a registered tool by name. */
+  handlers: Map<string, Handler>;
+  /** How many consent prompts the client was sent. */
+  prompts: { count: number };
+  /** The tools this client is listed now. */
+  listed: () => string[];
   onUnregister?: () => void;
-  /** Simulate the client's `initialize` completing, which is what flushes the write tools. */
+  /** Kept so the cases read as before: on this server nothing waits for a handshake. */
   handshake: () => void;
+  /** Where `registerAndGet` and `kit` send the second channel of a record (the `notify` seam). */
+  sendLoggingMessage: (p: { level: string; data: unknown }) => Promise<void>;
 };
 
-function serverWith(elicit: Elicit): FakeServer {
-  let capsReadable = false;
+type Wire = {
+  id?: unknown;
+  method?: string;
+  params?: { message?: string };
+  result?: McpListResult & { isError?: boolean };
+  error?: { code: number; message: string };
+};
+
+function serverWith(
+  elicit: Elicit,
+  capabilities: Record<string, unknown> = { elicitation: {} },
+): FakeServer {
+  const real = createLayerServer({ name: "consent-kit-test", version: "0" });
+  const waiting = new Map<number, (answer: Wire) => void>();
+  let nextId = 1;
+  const connection = real.layer.connect((message) => {
+    const wire = message as unknown as Wire;
+    if (wire.method !== undefined) {
+      // The server asking the client: a consent prompt.
+      srv.prompts.count += 1;
+      elicit({ message: wire.params?.message ?? "" }).then(
+        (result) => void connection.receive({ jsonrpc: "2.0", id: wire.id, result }),
+        (e: unknown) =>
+          void connection.receive({
+            jsonrpc: "2.0",
+            id: wire.id,
+            error: { code: -32000, message: e instanceof Error ? e.message : String(e) },
+          }),
+      );
+      return;
+    }
+    if (typeof wire.id !== "number") return;
+    waiting.get(wire.id)?.(wire);
+    waiting.delete(wire.id);
+  });
+  const request = (method: string, params: Record<string, unknown>): Promise<Wire> => {
+    const id = nextId;
+    nextId += 1;
+    return new Promise((resolve, reject) => {
+      waiting.set(id, resolve);
+      connection.receive({ jsonrpc: "2.0", id, method, params }).catch(reject);
+    });
+  };
+  let opened: Promise<unknown> | undefined;
+  const callTool = async (name: string, args: unknown): Promise<McpListResult> => {
+    opened ??= request("initialize", { protocolVersion: "2025-11-25", capabilities });
+    await opened;
+    const answered = await request("tools/call", { name, arguments: args });
+    if (answered.error !== undefined) {
+      throw new Error(`MCP error ${String(answered.error.code)}: ${answered.error.message}`);
+    }
+    if (answered.result === undefined) throw new Error("the call was not answered");
+    if (answered.result.isError === true) {
+      const first = answered.result.content[0];
+      throw new Error(first?.type === "text" ? first.text : "the tool failed");
+    }
+    return answered.result;
+  };
   const srv: FakeServer = {
+    ...real,
     captured: undefined,
-    server: {
-      // Mirrors the real SDK: undefined until initialize.
-      getClientCapabilities: () => (capsReadable ? { elicitation: {} } : undefined),
-      oninitialized: undefined,
-      elicitInput: (p: { message: string }) => elicit(p),
-    },
-    registerTool: (
-      _name: string,
-      _config: unknown,
-      cb: (args: unknown) => Promise<McpListResult>,
-    ) => {
-      srv.captured = cb;
+    handlers: new Map(),
+    prompts: { count: 0 },
+    listed: () => real.toolsFor("list", { clientCapabilities: capabilities }).map((t) => t.name),
+    registerTool: (name, config, cb) => {
+      const handle = real.registerTool(name, config, cb);
+      const call: Handler = (args) => callTool(name, args);
+      srv.captured = call;
+      srv.handlers.set(name, call);
       return {
         disable: () => {
+          handle.disable();
           srv.onUnregister?.();
         },
       };
     },
-    sendToolListChanged: () => undefined,
+    handshake: () => undefined,
     sendLoggingMessage: () => Promise.resolve(),
-    handshake: () => {
-      capsReadable = true;
-      srv.server.oninitialized?.();
-    },
-  } as unknown as FakeServer;
+  };
   return srv;
+}
+
+/** The registrar config every standalone case uses, with records sent on to `srv`. */
+function kitConfig(srv: FakeServer) {
+  return {
+    connector: "github",
+    scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
+    scopeKinds: ["repo"],
+    notify: (tool: string, outcome: string) =>
+      srv.sendLoggingMessage({
+        level: outcome === "executed" ? "info" : "warning",
+        data: { connector: "github", tool, outcome },
+      }),
+  };
 }
 
 /** Register one write tool and hand back the WRAPPED handler the client would call. */
@@ -247,11 +326,7 @@ function registerAndGet(
   if (opts.auditLog !== undefined) process.env["NIMBUS_MCP_AUDIT_LOG"] = opts.auditLog;
   else delete process.env["NIMBUS_MCP_AUDIT_LOG"];
 
-  const reg = createWriteToolRegistrar(srv, {
-    connector: "github",
-    scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
-    scopeKinds: ["repo"],
-  });
+  const reg = createWriteToolRegistrar(srv, kitConfig(srv));
   reg(
     "github_branch_delete",
     {
@@ -265,9 +340,6 @@ function registerAndGet(
     z.object({ branch: z.string() }),
     handler,
   );
-  // Standalone write tools are queued at registration and flushed on initialize. Without this the
-  // tool is never registered and `captured` stays undefined — which is the bug, not the test.
-  srv.handshake();
   const cb = srv.captured;
   if (cb === undefined) throw new Error("tool was not registered");
   return (args) => cb(args);
@@ -320,7 +392,7 @@ describe("elicitation consent", () => {
     expect(calls).toBe(0);
   });
 
-  test("an elicitation that THROWS (timeout, transport) mutates nothing — fail-closed", async () => {
+  test("a client that answers the prompt with an ERROR mutates nothing — fail-closed", async () => {
     let calls = 0;
     const srv = serverWith(() => Promise.reject(new Error("timed out")));
     const call = registerAndGet(srv, async () => {
@@ -429,7 +501,7 @@ describe("client-independent controls", () => {
     expect(JSON.stringify(await call({ branch: "acme/api" }))).toMatch(/out of scope/i);
   });
 
-  test("budget exhaustion unregisters the tool AND still refuses a call that arrives", async () => {
+  test("budget exhaustion takes the tool out of the list AND still refuses a call that arrives", async () => {
     let unregistered = 0;
     const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
     srv.onUnregister = () => {
@@ -438,7 +510,8 @@ describe("client-independent controls", () => {
     const call = registerAndGet(srv, async () => ok(), { scope: "repo:acme/api", budget: 1 });
     await call({ branch: "acme/api" });
     expect(unregistered).toBe(1);
-    // A call already in flight, or a client ignoring list_changed, still reaches the handler.
+    expect(srv.listed()).toEqual([]);
+    // A client that still holds the old list reaches the handler, which refuses.
     expect(JSON.stringify(await call({ branch: "acme/api" }))).toMatch(/budget/i);
   });
 
@@ -457,7 +530,7 @@ describe("client-independent controls", () => {
   });
 
   test("approved calls in flight together cannot overrun the budget", async () => {
-    // The SDK runs each request's handler as it arrives, so a client that sends several tool
+    // The server runs each request's handler as it arrives, so a client that sends several tool
     // calls without waiting has them all past the pre-consent budget check before any of them has
     // spent from it. Measured through the real argocd entry point before the fix: under a budget
     // of 1, three such approved syncs all reached the network.
@@ -791,7 +864,8 @@ describe("standalone outcomes at the edges", () => {
       () => Promise.resolve({ sha: "abc" }),
       () => Promise.reject("remote said no"),
     );
-    await expect(call({ branch: "acme/api" })).rejects.toBe("remote said no");
+    // The tool's own text reaches the client, whatever kind of value was thrown.
+    await expect(call({ branch: "acme/api" })).rejects.toThrow("remote said no");
     const all = await entries(log);
     expect(all.map((e) => e.outcome)).toEqual(["requested", "accepted", "failed"]);
     expect(all[2]?.detail).toEqual({
@@ -824,9 +898,9 @@ describe("standalone outcomes at the edges", () => {
   });
 
   test("each record is in the durable log before the client is told of it", async () => {
-    // The client channel is live now that write connectors declare MCP `logging`, and a send to a
-    // client that has gone away can be the last thing the process does. So the durable append
-    // comes first, and a notification never precedes the line it reports.
+    // The second channel of a record (a client log message in gateway mode, a stderr line in
+    // standalone mode) can fail, and can be the last thing the process does. So the durable append
+    // comes first, and the second channel never precedes the line it reports.
     const log = await tempAuditPath();
     const seen: { outcome: string; lastLogged: string | undefined }[] = [];
     const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
@@ -936,33 +1010,15 @@ describe("standalone outcomes at the edges", () => {
       thrown = e;
     });
     expect(thrown).toBeInstanceOf(Error);
-    const { message, cause } = thrown as Error;
+    const { message } = thrown as Error;
     expect(message).toStartWith(
       "github_branch_delete failed: the branch was deleted, but the follow-up comment failed. " +
         "Recording that failure also failed: ",
     );
     expect(message).toContain("is not a chained entry");
-    expect(cause).toBe(toolError);
     // The failure was attempted, and nothing landed after the line the tool left.
     expect(outcomes).toEqual(["requested", "accepted", "failed"]);
     expect((await readFile(log, "utf8")).trimEnd().split("\n").at(-1)).toBe("torn");
-  });
-
-  test("a handshake with nothing queued tells the client nothing changed", () => {
-    // The client is told to re-read its tool list only when write tools were actually added.
-    let listChanged = 0;
-    const srv = serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
-    srv.sendToolListChanged = () => {
-      listChanged += 1;
-    };
-    process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"] = "repo:acme/api";
-    createWriteToolRegistrar(srv, {
-      connector: "github",
-      scopeEnv: "NIMBUS_MCP_TEST_WRITE_SCOPE",
-      scopeKinds: ["repo"],
-    });
-    srv.handshake();
-    expect(listChanged).toBe(0);
   });
 });
 
@@ -1086,44 +1142,27 @@ describe("prepare tool registrar", () => {
     resetConnectorModeForTests();
   });
 
-  type Handler = (args: unknown) => Promise<McpListResult>;
-
-  /** A server that keeps every registered handler by name and counts the consent prompts. */
-  function multiServer(): ConsentServer & {
+  /** The upstream-shaped server of a gateway-mode connector, keeping each handler by name. */
+  function gatewayMulti(): GatewayConsentServer & {
     handlers: Map<string, Handler>;
     prompts: { count: number };
-    handshake: () => void;
   } {
     const handlers = new Map<string, Handler>();
-    const prompts = { count: 0 };
-    let capsReadable = false;
-    const srv = {
+    return {
       handlers,
-      prompts,
-      server: {
-        getClientCapabilities: () => (capsReadable ? { elicitation: {} } : undefined),
-        oninitialized: undefined as (() => void) | undefined,
-        elicitInput: () => {
-          prompts.count += 1;
-          return Promise.resolve({ action: "accept" as const, content: { confirm: true } });
-        },
-      },
+      prompts: { count: 0 },
       registerTool: (name: string, _config: unknown, cb: Handler) => {
         handlers.set(name, cb);
         return { disable: () => handlers.delete(name) };
       },
-      sendToolListChanged: () => undefined,
+      tool: () => undefined,
       sendLoggingMessage: () => Promise.resolve(),
-      handshake: () => {
-        capsReadable = true;
-        srv.server.oninitialized?.();
-      },
-    } as unknown as ConsentServer & {
-      handlers: Map<string, Handler>;
-      prompts: { count: number };
-      handshake: () => void;
     };
-    return srv;
+  }
+
+  /** The standalone server, for a client that approves every prompt. */
+  function multiServer(): FakeServer {
+    return serverWith(() => Promise.resolve({ action: "accept", content: { confirm: true } }));
   }
 
   const prepCfg = {
@@ -1154,7 +1193,7 @@ describe("prepare tool registrar", () => {
 
   test("a name that is not in PREPARE_TOOL_IDS throws at registration", () => {
     setConnectorMode("gateway");
-    const srv = multiServer();
+    const srv = gatewayMulti();
     const { registerPrepareTool } = kit(srv, undefined);
     expect(() =>
       registerPrepareTool("github_files_get", prepCfg, "d", schema, async () => ok()),
@@ -1165,7 +1204,7 @@ describe("prepare tool registrar", () => {
   test("gateway mode registers the raw handler and records nothing", async () => {
     setConnectorMode("gateway");
     const log = await tempAuditPath();
-    const srv = multiServer();
+    const srv = gatewayMulti();
     const { registerPrepareTool } = kit(srv, undefined, { auditLog: log });
     registerPrepareTool("github_commit_prepare", prepCfg, "d", schema, async () => ok());
     const cb = srv.handlers.get("github_commit_prepare");
@@ -1293,7 +1332,9 @@ describe("prepare tool registrar", () => {
     expect(prepared).toBe(2);
     expect(wrote).toBe(1);
     // The write spent the only unit and the write tool left the listing; the prepare tool stays.
-    expect(srv.handlers.has("github_branch_delete")).toBe(false);
-    expect(srv.handlers.has("github_commit_prepare")).toBe(true);
+    expect(srv.listed()).toEqual(["github_commit_prepare"]);
+    // And it stays callable: a third prepare runs.
+    await prepare({ branch: "acme/api" });
+    expect(prepared).toBe(3);
   });
 });

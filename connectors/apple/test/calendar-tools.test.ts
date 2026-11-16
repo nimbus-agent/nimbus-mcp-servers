@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-
 import { parseICalendar } from "@nimbus-dev/sdk";
+import { captureStandaloneTools } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import type { CalDavClient, CalendarRef } from "../src/caldav-core.ts";
 import {
@@ -684,31 +684,6 @@ describe("apple calendar write tools in STANDALONE mode", () => {
     delete process.env["NIMBUS_MCP_APPLE_WRITE_SCOPE"];
   });
 
-  function standaloneServer(accept: boolean) {
-    const tools: Record<string, (input: unknown) => Promise<unknown>> = {};
-    let ready = false;
-    const srv = {
-      server: {
-        getClientCapabilities: () => (ready ? { elicitation: {} } : undefined),
-        oninitialized: undefined as (() => void) | undefined,
-        elicitInput: () =>
-          Promise.resolve({ action: accept ? "accept" : "decline", content: { confirm: accept } }),
-      },
-      registerTool: (name: string, _cfg: unknown, cb: (i: unknown) => Promise<unknown>) => {
-        tools[name] = cb;
-        return { disable: () => undefined };
-      },
-      tool: () => undefined,
-      sendToolListChanged: () => undefined,
-      sendLoggingMessage: () => Promise.resolve(),
-      handshake: () => {
-        ready = true;
-        srv.server.oninitialized?.();
-      },
-    };
-    return { srv, tools };
-  }
-
   const client: CalDavClient = {
     listCalendars: async (): Promise<CalendarRef[]> => [],
     listEvents: async () => [],
@@ -716,14 +691,23 @@ describe("apple calendar write tools in STANDALONE mode", () => {
     deleteEvent: async () => undefined,
   } as unknown as CalDavClient;
 
+  /** The calendar tools on the real standalone server, for a client that answers every prompt. */
+  function standalone(accept: boolean) {
+    return captureStandaloneTools(
+      (server: never) =>
+        registerAppleCalendarTools(server, { calendar: client, now: () => "20260601T000000Z" }),
+      {
+        elicitation: true,
+        ...(accept ? {} : { answer: { action: "decline", content: { confirm: false } } }),
+      },
+    ).tools;
+  }
+
   it("an approved create runs, exercising scopeTargetOf with an explicit calendar", async () => {
-    const { srv, tools } = standaloneServer(true);
-    registerAppleCalendarTools(srv as never, { calendar: client, now: () => "20260601T000000Z" });
-    srv.handshake();
     // It reaches the CONNECTOR's own error, not a gate refusal — which is the point: scope
     // matched, consent was granted, and the handler ran. The stub exposes no calendars.
     await expect(
-      tools.apple_calendar_event_create?.({
+      standalone(true).call("apple_calendar_event_create", {
         calendar: "work",
         summary: "s",
         start: "20260601T000000Z",
@@ -733,13 +717,10 @@ describe("apple calendar write tools in STANDALONE mode", () => {
   });
 
   it('an omitted calendar scopes to "default" — the nullish arm', async () => {
-    const { srv, tools } = standaloneServer(true);
-    registerAppleCalendarTools(srv as never, { calendar: client, now: () => "20260601T000000Z" });
-    srv.handshake();
     // Scoped to "default" via the nullish arm, so it passes the allow-list and reaches the
     // connector's own error rather than being refused as out of scope.
     await expect(
-      tools.apple_calendar_event_create?.({
+      standalone(true).call("apple_calendar_event_create", {
         summary: "s",
         start: "20260601T000000Z",
         end: "20260601T010000Z",
@@ -748,18 +729,12 @@ describe("apple calendar write tools in STANDALONE mode", () => {
   });
 
   it("a DECLINED delete mutates nothing, and capturePreState never runs", async () => {
-    const { srv, tools } = standaloneServer(false);
-    registerAppleCalendarTools(srv as never, { calendar: client, now: () => "20260601T000000Z" });
-    srv.handshake();
-    const res = await tools.apple_calendar_event_delete?.({ href: "/e/1.ics" });
+    const res = await standalone(false).call("apple_calendar_event_delete", { href: "/e/1.ics" });
     expect(JSON.stringify(res)).toMatch(/not approved/i);
   });
 
   it("an approved delete captures the href as pre-state", async () => {
-    const { srv, tools } = standaloneServer(true);
-    registerAppleCalendarTools(srv as never, { calendar: client, now: () => "20260601T000000Z" });
-    srv.handshake();
-    const res = await tools.apple_calendar_event_delete?.({ href: "/e/1.ics" });
+    const res = await standalone(true).call("apple_calendar_event_delete", { href: "/e/1.ics" });
     expect(JSON.stringify(res)).not.toMatch(/not approved/i);
   });
 });

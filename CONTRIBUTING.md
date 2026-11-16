@@ -23,7 +23,9 @@ bun run check   # lint, typecheck, the four connector audits, full suite
    fails a connector that declares `write`/`delete` in `hitlRequired` without going through it, and
    the launcher refuses to start it. Both check the connector, not each tool: a mutating tool
    registered through the read registrar beside gated ones passes both, so review the registrar of
-   every tool you add.
+   every tool you add. A connector's server is built only by
+   `createConnectorServer` in `shared/connector-server.ts`: it picks the upstream server for the
+   gateway and the dual-era layer server standalone, and a test fails any other construction.
 2. **`setConnectorMode` has exactly one caller.** The mode comes from the entry point; a second
    caller could re-gate a connector mid-process. Enforced statically.
 3. **Credentials come from `process.env`.** Never call a Vault API — the connector process has no

@@ -1,12 +1,9 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CONSENT_SERVER_CAPABILITIES } from "../../../shared/consent-kit.ts";
+import { createConnectorServer } from "../../../shared/connector-server.ts";
 import { registerDiscordTools } from "./tools.ts";
 
-const server = new McpServer(
+const { server, start } = createConnectorServer(
   { name: "nimbus-discord", version: "0.1.0" },
   {
-    capabilities: CONSENT_SERVER_CAPABILITIES,
     // Machine-readable security tiering, so a client can surface it rather than relying on a
     // human having read the NOTICE file.
     instructions:
@@ -19,5 +16,4 @@ const server = new McpServer(
 
 registerDiscordTools(server);
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+await start();

@@ -62,8 +62,25 @@ Stated plainly, because the difference is the whole point of [`NOTICE`](./NOTICE
   config holds them in plaintext. That is a property of running standalone, not a defect.
 - **There is no process sandbox, egress ledger, or owner-controlled consent.** Those belong to the
   Nimbus gateway and no published package can supply them.
-- **A client that does not implement MCP `elicitation`** is served read tools only. That is the
-  designed behaviour — a tool the model cannot see is one it cannot call without a human.
+- **A client that does not implement MCP `elicitation`** is listed read tools only, and a call
+  that names a write tool anyway is refused before anything runs. That is the designed behaviour
+  — a tool the model is not shown is one it cannot run without a human. Leaving a tool out of the
+  list is not the control: the refusal in the tool's own handler is.
+- **What an approval is bound to, and what it is not.** With a client of MCP revision 2026-07-28
+  the approval comes back in a second call, carrying a state the connector sealed: an
+  HMAC-SHA-256 under a key made at startup and never stored, over a single-use nonce, the tool
+  name, a digest of the exact arguments, and an expiry five minutes out. A state that was
+  changed, has expired, was already used, came from another run of the connector, or is
+  presented with other arguments is answered as a protocol error, runs nothing and records
+  nothing. It does **not** identify the client: the only party is whatever process holds the
+  connector's stdio, and the answer is whatever that client sends. A client configured to answer
+  automatically, or one that fabricates an accept, approves the write, exactly as with the older
+  elicitation request. The state is signed, not encrypted; it holds a nonce and nothing else.
+- **At most 256 approval prompts are open at once.** A further write is refused until one is
+  answered or five minutes pass. An open prompt is never dropped to make room.
+- **A tool's own error text reaches the client**, as it always has. Connector errors are written
+  to be read (an API status, an out-of-scope target), but they have not been audited for paths
+  or tokens an upstream service might echo back.
 - **The audit log's chain shows its lines are consistent and in order, not that they are the
   originals or all of them.** The chain is unkeyed, so anyone who can write the file can change an
   entry and recompute every hash after it, cut lines off its end, or rewrite it from scratch, and

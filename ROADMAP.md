@@ -21,15 +21,18 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
 
 ## Open rows
 
-- [ ] **MCP revision 2026-07-28.** The SDK this repository builds against declares `2025-11-25`.
-  The newer revision moves capability declaration out of the `initialize` handshake and changes
-  how an elicitation reaches the client, and standalone consent depends on elicitation
-  ([Client support](./docs/client-support.md), "A note on protocol drift"). The row: build
-  against an SDK that speaks the newer revision, give the consent kit its successor path, keep
-  serving older clients, and re-run the client matrix. What the revision changes is to be read
-  from the published specification when this row is designed. The gateway's roadmap carries the
-  matching row for its own MCP server
+- [ ] **MCP revision 2026-07-28.** *Built in 0.15.0, not yet run against a real client.* A
+  standalone connector runs on the MCP server layer of `@nimbus-dev/sdk` and answers both a
+  2026-07-28 client and one that opens with `initialize`; the consent kit asks through an input
+  request with a sealed, single-use state ([Client support](./docs/client-support.md), "A note
+  on protocol drift"; [SECURITY](./SECURITY.md)). One file, `shared/connector-server.ts`, builds
+  every connector's server. What keeps the row open: re-running the client matrix with a shipped
+  2026-07-28 client, which none of this has had. A gateway-started connector stays on the
+  upstream SDK by design. The gateway's roadmap carries the matching row for its own MCP server
   ([Phase 28](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-28--the-agent-door)).
+- [ ] **Audit connector error text.** A tool's thrown message reaches the standalone client
+  verbatim, as it did on the upstream SDK. No one has checked the 96 connectors' error paths for
+  an upstream reply that could carry a path or a token into that text.
 - [ ] **Cost connectors.** `vantage` shipped in 0.14.0, read-only. The other platforms named in
   the gateway's *FinOps connectors* row
   ([Phase 10](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-10--the-autonomous-agent))
