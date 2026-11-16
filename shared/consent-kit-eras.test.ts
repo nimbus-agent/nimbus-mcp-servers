@@ -7,7 +7,7 @@
  * the client, and the protocol says to treat it as attacker-controlled.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -418,6 +418,58 @@ describe("a 2026-07-28 client", () => {
     );
     expect(audit.filter((a) => a === "refused:too many approvals pending")).toHaveLength(1);
     expect(await verifyAuditChain(k.log)).toMatchObject({ ok: true });
+  });
+
+  test("calls in flight together cannot open more prompts than the cap", async () => {
+    const k = await kit({ budget: 1000 });
+    const client = modernClient(k.server);
+    for (let i = 0; i < MAX_PENDING_CONSENTS - 1; i += 1) await ask(client);
+    // One slot left, and three calls arrive before any of them has finished its record.
+    const replies = await Promise.all([client.call(ARGS), client.call(ARGS), client.call(ARGS)]);
+    expect(replies.filter((r) => r.result?.["resultType"] === "input_required")).toHaveLength(1);
+    expect(
+      replies.filter((r) => textOf(r).includes("too many approvals are pending")),
+    ).toHaveLength(2);
+  });
+
+  test("a write whose first record cannot be written is not asked about and holds no slot", async () => {
+    const k = await kit({ budget: 1000 });
+    const client = modernClient(k.server);
+    for (let i = 0; i < MAX_PENDING_CONSENTS - 1; i += 1) await ask(client);
+    // The log's directory is gone, so `requested` cannot land.
+    await rm(join(k.log, ".."), { recursive: true, force: true });
+    const failed = await client.call(ARGS);
+    expect(failed.result?.["isError"]).toBe(true);
+    expect(failed.result?.["requestState"]).toBeUndefined();
+    // The slot it took was given back: with the directory restored, the last slot is still free.
+    await mkdir(join(k.log, ".."), { recursive: true });
+    expect((await client.call(ARGS)).result?.["resultType"]).toBe("input_required");
+  });
+
+  test("a state and its open prompt expire at the same instant", async () => {
+    const k = await kit();
+    const client = modernClient(k.server);
+    const issued = realNow();
+    // The clock moves while the first call is recording: the state must still expire with the
+    // prompt, measured from the one reading the call took.
+    let reads = 0;
+    Date.now = () => {
+      reads += 1;
+      return issued + (reads > 1 ? 4_000 : 0);
+    };
+    const { state } = await ask(client);
+    const body = JSON.parse(
+      Buffer.from(state.split(".")[0] ?? "", "base64url").toString("utf8"),
+    ) as { e: number };
+    expect(body.e).toBe(issued + CONSENT_TTL_MS);
+  });
+
+  test("a budget that starts at zero lists no write tool, and a call is refused", async () => {
+    const k = await kit({ budget: 0 });
+    const client = modernClient(k.server);
+    expect(await client.list()).toEqual(["github_commit_prepare"]);
+    expect(textOf(await client.call(ARGS))).toContain("write budget exhausted for this session");
+    expect(await k.audit()).toEqual(["refused:budget exhausted"]);
   });
 
   test("the tool's own failure text reaches the client, and so does a failed record of a write that ran", async () => {

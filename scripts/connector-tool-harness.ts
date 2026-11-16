@@ -448,6 +448,15 @@ class StandaloneTools extends CapturedTools {
       handler: (args: unknown) => this.client.call(name, args),
     };
   }
+
+  /**
+   * The ORIGINAL arguments go to the server, which checks them once, as it does for a real
+   * client. The base class parses first and hands on the parsed value; sent on to a server that
+   * parses again, a schema with a transform would be applied twice.
+   */
+  override call(name: string, args: unknown = {}): Promise<McpListResult> {
+    return this.get(name).handler(args);
+  }
 }
 
 /**

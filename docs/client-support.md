@@ -5,7 +5,10 @@ capability**, because that is the only way a server can put a consent prompt in 
 
 A client without it is **listed read tools only**. The write tools are left out of `tools/list`,
 rather than offered ungated, and a call that names one anyway is refused before anything runs and
-recorded in the audit log (`client cannot prompt`). This is the designed behaviour, not a
+recorded in the audit log (`client cannot prompt`). (A call that claims to be the second half of
+an approval, by carrying a request state or an answer, is judged on that state first: one that
+does not open is rejected as a protocol error, runs nothing and is not recorded.) This is the
+designed behaviour, not a
 degradation: a tool the model is not shown is one it has no reason to call, and one it cannot run
 without a human. It also makes the tool list an honest signal — if the writes are there, consent
 is enforceable.

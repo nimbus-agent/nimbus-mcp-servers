@@ -465,9 +465,18 @@ export function createWriteToolRegistrar(
         return refused("too many approvals are pending; answer or wait for the open ones");
       }
 
-      await record(name, "requested", { target, params: args });
+      // The slot is taken BEFORE the record is awaited: calls run concurrently, and with an await
+      // between the size check and the insert every call in flight passed the check before any of
+      // them inserted, so the set could exceed its cap. If the record cannot be written the write
+      // is not asked about at all, and the slot is given back.
       const nonce = randomUUID();
       pending.set(nonce, { expiresAt: now + CONSENT_TTL_MS, tool: name, target });
+      try {
+        await record(name, "requested", { target, params: args });
+      } catch (e) {
+        pending.delete(nonce);
+        throw e;
+      }
       return inputRequired({
         inputRequests: { confirm: consentQuestion(toolCfg.mutates, args) },
         // Bound to this tool and these exact arguments, to the pipe's one peer, and to five
@@ -475,7 +484,14 @@ export function createWriteToolRegistrar(
         requestState: sealState(
           stateKey,
           { n: nonce },
-          { principal: CONSENT_PRINCIPAL, ttlMs: CONSENT_TTL_MS, requestDigest: digest },
+          {
+            principal: CONSENT_PRINCIPAL,
+            ttlMs: CONSENT_TTL_MS,
+            requestDigest: digest,
+            // The clock read above, so the state and its pending entry expire at the same
+            // instant: a state can never still open after its entry has been pruned.
+            now: () => now,
+          },
         ),
       });
     }
@@ -586,6 +602,8 @@ export function createWriteToolRegistrar(
     );
     // Collected so budget exhaustion can take every write tool out of the list at once.
     handles.push(handle);
+    // A budget that starts at zero never spends its last unit, so nothing would unlist the tool.
+    if (!budget.hasLeft()) handle.disable();
   };
 }
 
