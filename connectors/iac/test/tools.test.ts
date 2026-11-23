@@ -385,6 +385,120 @@ describe("iac terraform (gateway mode)", () => {
     expect(b.planFile.endsWith("destroy.tfplan")).toBe(true);
   });
 
+  it("refresh-only plan adds -refresh-only and saves refresh.tfplan", async () => {
+    const stub = terraform(2);
+    const r = (await tools.callJson("iac_terraform_plan_refresh_only", {
+      workingDirectory: "infra/prod",
+    })) as { planFile: string; hasChanges: boolean };
+    expect(r.hasChanges).toBe(true);
+    expect(r.planFile.endsWith("refresh.tfplan")).toBe(true);
+    expect(stub.calls[0]?.command.slice(0, 5)).toEqual([
+      "terraform",
+      "-chdir=infra/prod",
+      "plan",
+      "-refresh-only",
+      "-input=false",
+    ]);
+  });
+
+  describe("refresh-only apply", () => {
+    const show = (json: string): SpawnStub =>
+      script((cmd) => (cmd.includes("show") ? { stdout: json } : { stdout: "" }));
+    const run = (file: string, hash: string): Promise<unknown> =>
+      tools.callJson("iac_terraform_apply_refresh_only", {
+        workingDirectory: "w",
+        planFile: file,
+        planSha256: hash,
+      });
+
+    it("takes only refresh.tfplan", async () => {
+      const stub = terraform(0);
+      const plan = savedPlan("P", "plan.tfplan");
+      await expect(run(plan.file, plan.hash)).rejects.toThrow("must be named refresh.tfplan");
+      for (const tool of ["iac_terraform_apply", "iac_terraform_destroy"]) {
+        const r = savedPlan("R", "refresh.tfplan");
+        await expect(
+          tools.call(tool, { workingDirectory: "w", planFile: r.file, planSha256: r.hash }),
+        ).rejects.toThrow("must be named");
+      }
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("shows the plan, then applies the same real file, then removes it", async () => {
+      const { file, hash } = savedPlan("R", "refresh.tfplan");
+      const real = realpathSync.native(file);
+      const stub = show(
+        JSON.stringify({
+          resource_changes: [
+            { mode: "managed", change: { actions: ["no-op"] } },
+            { mode: "data", change: { actions: ["read"] } },
+          ],
+        }),
+      );
+      expect(await run(file, hash)).toEqual({ ok: true, status: "applied" });
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        ["terraform", "-chdir=w", "show", "-json", "-no-color", real],
+        ["terraform", "-chdir=w", "apply", "-input=false", "-no-color", real],
+      ]);
+      expect(existsSync(file)).toBe(false);
+    });
+
+    it("applies a plan with no resource_changes key", async () => {
+      const { file, hash } = savedPlan("R", "refresh.tfplan");
+      show("{}");
+      expect(await run(file, hash)).toEqual({ ok: true, status: "applied" });
+    });
+
+    for (const [why, json] of [
+      ["an update", { resource_changes: [{ mode: "managed", change: { actions: ["update"] } }] }],
+      ["a replace", { resource_changes: [{ change: { actions: ["delete", "create"] } }] }],
+      [
+        "a managed read",
+        { resource_changes: [{ mode: "managed", change: { actions: ["read"] } }] },
+      ],
+      ["a row with no actions", { resource_changes: [{ change: {} }] }],
+      ["a changes value that is not a list", { resource_changes: "x" }],
+    ] as const) {
+      it(`refuses a plan that holds ${why}, and never applies`, async () => {
+        const { file, hash } = savedPlan("R", "refresh.tfplan");
+        const stub = show(JSON.stringify(json));
+        await expect(run(file, hash)).rejects.toThrow(/not a refresh-only plan|not a list/);
+        expect(stub.calls.map((c) => c.command[2])).toEqual(["show"]);
+        expect(existsSync(file)).toBe(true);
+      });
+    }
+
+    it("refuses a show that prints no JSON or fails", async () => {
+      const { file, hash } = savedPlan("R", "refresh.tfplan");
+      show("not json");
+      await expect(run(file, hash)).rejects.toThrow("did not print JSON");
+      script(() => ({ exitCode: 1, stderr: "boom" }));
+      await expect(run(file, hash)).rejects.toThrow("terraform exited 1: boom");
+    });
+
+    it("refuses a show larger than the bound", async () => {
+      const { file, hash } = savedPlan("R", "refresh.tfplan");
+      show(`{"x":"${"a".repeat(4 * 1024 * 1024)}"}`);
+      await expect(run(file, hash)).rejects.toThrow("plan JSON too large");
+    });
+
+    it("spawns nothing when the hash is not the approved one", async () => {
+      const { file } = savedPlan("R", "refresh.tfplan");
+      const stub = terraform(0);
+      await expect(run(file, "0".repeat(64))).rejects.toThrow("does not match the approved hash");
+      expect(stub.calls).toEqual([]);
+    });
+
+    it("throws terraform's stderr when the apply fails, keeping the plan", async () => {
+      const { file, hash } = savedPlan("R", "refresh.tfplan");
+      script((cmd) =>
+        cmd.includes("show") ? { stdout: "{}" } : { exitCode: 1, stderr: "Saved plan is stale" },
+      );
+      await expect(run(file, hash)).rejects.toThrow("terraform exited 1: Saved plan is stale");
+      expect(existsSync(file)).toBe(true);
+    });
+  });
+
   it("refuses a flag-shaped plan file at the schema", async () => {
     const stub = terraform(0);
     await expect(
@@ -1070,6 +1184,7 @@ describe("iac standalone mode", () => {
         "iac_terraform_plan",
         "iac_terraform_destroy_plan",
         "iac_terraform_show_json",
+        "iac_terraform_plan_refresh_only",
         "iac_cloudformation_changeset_create",
         "iac_cloudformation_stack_get",
         "iac_pulumi_preview",

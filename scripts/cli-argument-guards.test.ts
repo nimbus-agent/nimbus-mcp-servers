@@ -129,6 +129,8 @@ const BOUND_TO_STATE: ReadonlyMap<string, Readonly<Record<string, string>>> = ne
   ["iac_terraform_show_json", { workingDirectory: "terraform", planFile: "terraform" }],
   ["iac_terraform_apply", { workingDirectory: "terraform", planFile: "terraform" }],
   ["iac_terraform_destroy", { workingDirectory: "terraform", planFile: "terraform" }],
+  ["iac_terraform_apply_refresh_only", { workingDirectory: "terraform", planFile: "terraform" }],
+  ["iac_terraform_plan_refresh_only", { workingDirectory: "terraform" }],
   ["iac_cloudformation_changeset_create", { stackName: "aws" }],
   ["iac_cloudformation_changeset_discard", { stackName: "aws", changeSetId: "aws" }],
   ["iac_cloudformation_deploy", { stackName: "aws", changeSetId: "aws" }],

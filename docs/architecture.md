@@ -123,7 +123,7 @@ with its answer, and a cancelled or unanswered prompt arrives as a cancel answer
 **The prepare class.** A write bound to state the owner approves is preceded by a prepare tool the
 gateway calls before the approval prompt: a commit is bound to the branch head it was prepared
 against (`github_commit_prepare`, `gitlab_commit_prepare`), a Terraform apply or destroy to the
-hash of a saved plan (`iac_terraform_plan`, `iac_terraform_destroy_plan`; `iac_terraform_show_json`
+hash of a saved plan (`iac_terraform_plan`, `iac_terraform_destroy_plan`, `iac_terraform_plan_refresh_only`; `iac_terraform_show_json`
 renders a saved plan for the preview), a CloudFormation deploy to a change set whose name carries
 the template's sha256 (`iac_cloudformation_changeset_create`), and a Kubernetes apply to the hash of
 the manifest, context and namespace a server-side dry run and a built-in diff were shown for (`k8s_manifest_plan`; the apply re-runs the plan and refuses if the diff changed). Those tools register through `createPrepareToolRegistrar`, never `reg` and never the write
