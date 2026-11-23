@@ -1,12 +1,12 @@
 {
   "format": 1,
   "livenessKey": "SDmbdq5LPTH/r7jfCBod2L/igvNQdFeBiiDRnWI53qc=",
-  "sequence": 3,
-  "generatedAt": "2026-11-16T13:46:59.188Z",
-  "nimbusVersion": "10.67.0",
+  "sequence": 4,
+  "generatedAt": "2026-11-23T16:09:08.000Z",
+  "nimbusVersion": "11.11.0",
   "extensions": {
     "com.nimbus.readwise@0.2.1": {
-      "checkedAt": "2026-11-16T13:46:31.522Z",
+      "checkedAt": "2026-11-23T16:08:33.807Z",
       "hosts": {
         "declared": 1,
         "answered": 1
@@ -22,5 +22,5 @@
       }
     }
   },
-  "signature": "lYYRh7512Lc5gkoR0za24ow7fUi5qylkWKI5AL/iwH2OBrau1uVC2iYapFUkiOtApFXJu7YvqgcC2chhD/pABg=="
+  "signature": "VP2cIgiZXZw+Z0AIXu6LGgeVqjqZyO+ebfJOOFpMEBYD4wDOsIVr9y2zbbsWQ+zeJsaFPY+IbYFJyV//9IuiDg=="
 }
