@@ -458,6 +458,8 @@ describe("iac terraform (gateway mode)", () => {
       ],
       ["a row with no actions", { resource_changes: [{ change: {} }] }],
       ["a changes value that is not a list", { resource_changes: "x" }],
+      ["a saved provider action and no resource changes", { action_invocations: [{ a: 1 }] }],
+      ["an action_invocations value that is not a list", { action_invocations: "x" }],
     ] as const) {
       it(`refuses a plan that holds ${why}, and never applies`, async () => {
         const { file, hash } = savedPlan("R", "refresh.tfplan");

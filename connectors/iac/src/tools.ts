@@ -259,10 +259,14 @@ async function terraformPlan(
  */
 function refreshOnlyProblem(planJson: string): string | undefined {
   const doc: unknown = JSON.parse(planJson);
-  const changes =
-    typeof doc === "object" && doc !== null
-      ? (doc as Record<string, unknown>)["resource_changes"]
-      : undefined;
+  const fields = typeof doc === "object" && doc !== null ? (doc as Record<string, unknown>) : {};
+  // Terraform 1.14 stores provider actions apart from resource changes, and applying the file runs
+  // them: any value that is not an empty list is refused, whatever else the plan says.
+  const invocations = fields["action_invocations"];
+  if (invocations !== undefined && (!Array.isArray(invocations) || invocations.length > 0)) {
+    return "the plan runs provider actions, so it is not a refresh-only plan";
+  }
+  const changes = fields["resource_changes"];
   // Terraform omits the key when a plan has no resource changes at all.
   if (changes === undefined) return undefined;
   if (!Array.isArray(changes)) return "the plan's resource_changes is not a list";
