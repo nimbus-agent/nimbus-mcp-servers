@@ -22,7 +22,8 @@ Bundled with Nimbus. No separate install is required.
 
 ```bash
 nimbus vault set opencost.url http://opencost.example.svc:9003
-# Optional, for an ingress that wants a bearer token
+# Optional, for an ingress that wants a bearer token; the URL must then be https
+nimbus vault set opencost.url https://opencost.example.com
 nimbus vault set opencost.token <token>
 ```
 
@@ -38,13 +39,13 @@ and `http://127.0.0.1:9003`, or an ingress. Nimbus never starts a port-forward.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `OPENCOST_URL` | yes | Base URL of the service, `http` or `https`, with no credentials, query or fragment. A path prefix is kept. |
-| `OPENCOST_TOKEN` | no | Sent as `Authorization: Bearer <token>` when set. A cluster-local OpenCost is usually unauthenticated; send a token over `https` only. |
+| `OPENCOST_TOKEN` | no | Sent as `Authorization: Bearer <token>` when set. With a token the URL must be `https` (or `http` on `localhost`, `127.0.0.1` or `[::1]`); an `http` URL on any other host with a token is refused before any request, so the token never travels in clear text. |
 
 ## Tools
 
 | Tool | Purpose |
 | --- | --- |
-| `opencost_allocation_list` | `GET /allocation` with `accumulate=false` and `step=1d`. Inputs: `sinceMs`, `untilMs` (epoch ms; the start is moved back to UTC midnight; `untilMs` defaults to now, `sinceMs` to 7 days before it; at most 62 days), `aggregate` (`namespace` by default; `cluster`, `node`, `controllerKind`, `controller`, `service`, `pod`, `container`, `label:<name>`, `annotation:<name>`), `includeIdle` (sent as `includeIdle`, default false), `cursor`, `limit` (page size, default 5000, at most 20000). Returns `{ items, nextCursor, skipped }`: rows are ordered by date then key, `nextCursor` goes back as `cursor`, and each page asks the service again. |
+| `opencost_allocation_list` | `GET /allocation` with `accumulate=false` and `step=1d`. Inputs: `sinceMs`, `untilMs` (epoch ms; the start is moved back to UTC midnight; `untilMs` defaults to now, `sinceMs` to 7 days before it; at most 62 days), `aggregate` (`namespace` by default; `cluster`, `node`, `controllerKind`, `controller`, `service`, `pod`, `container`, `label:<name>`, `annotation:<name>`), `includeIdle` (sent as `includeIdle`, default false), `cursor`, `limit` (page size, default 5000, at most 20000). Returns `{ items, nextCursor, skipped }`: rows are ordered by date then key, `nextCursor` (it carries the window, so every page of one listing reads the same window) goes back as `cursor`, and each page asks the service again. A reply without a `data` array is an error, never an empty page. |
 
 Each item is one allocation for one UTC day: `date`, `key`, `name`, `start`, `end`, `minutes`,
 `properties` (cluster, namespace, controller, controllerKind, node, pod, container, when present),

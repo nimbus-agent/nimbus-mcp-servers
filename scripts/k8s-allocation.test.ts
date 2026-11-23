@@ -152,7 +152,10 @@ for (const c of CASES) {
       http = stubFetch(JSON.stringify(TWO_DAYS));
       const first = bodyOf(await withEnv(env(), () => tools.call(tool, { limit: 2 })));
       expect(first.items.map((i) => i.key)).toEqual(["default", "kube-system"]);
-      expect(first.nextCursor).toBe("2");
+      // `<offset>:<window start>,<window end>`: the window is the one this listing started with.
+      expect(first.nextCursor).toBe(
+        `2:${String(Date.UTC(2026, 10, 15) / 1000)},${String(NOW / 1000)}`,
+      );
       const second = bodyOf(
         await withEnv(env(), () => tools.call(tool, { limit: 2, cursor: first.nextCursor })),
       );
@@ -162,8 +165,74 @@ for (const c of CASES) {
       await withEnv(env(), async () => {
         await expect(tools.call(tool, { cursor: "abc" })).rejects.toThrow("nextCursor");
         await expect(tools.call(tool, { cursor: "0" })).rejects.toThrow("nextCursor");
+        await expect(tools.call(tool, { cursor: "2" })).rejects.toThrow("nextCursor");
+        await expect(tools.call(tool, { cursor: "2:5,5" })).rejects.toThrow("after sinceMs");
       });
       expect(http.calls).toHaveLength(2);
+    });
+
+    it("reads every page of one listing in the same window, even after UTC midnight", async () => {
+      let clock = NOW;
+      const tools = captureTools((reg) =>
+        registerAllocationTools(reg, { ...c.api, now: () => clock }),
+      );
+      http = stubFetch(JSON.stringify(TWO_DAYS));
+      const first = bodyOf(await withEnv(env(), () => tools.call(tool, { limit: 2 })));
+      clock = Date.UTC(2026, 10, 23, 0, 5); // past midnight between two pages
+      await withEnv(env(), () => tools.call(tool, { limit: 2, cursor: first.nextCursor }));
+      const windows = http.calls.map((r) => new URL(r.url).searchParams.get("window"));
+      expect(windows).toHaveLength(2);
+      expect(windows[1]).toBe(windows[0]);
+    });
+
+    it("refuses reversed endpoints even when rounding would make them look valid", async () => {
+      const tools = surface();
+      http = stubFetch(JSON.stringify(TWO_DAYS));
+      await withEnv(env(), async () => {
+        await expect(
+          tools.call(tool, {
+            sinceMs: Date.UTC(2026, 10, 22, 18),
+            untilMs: Date.UTC(2026, 10, 22, 12),
+          }),
+        ).rejects.toThrow("after sinceMs");
+      });
+      expect(http.calls).toHaveLength(0);
+    });
+
+    it("refuses a reply with no data array instead of reading it as an empty page", async () => {
+      const tools = surface();
+      for (const reply of [{ code: 200 }, { code: 200, data: null }, { code: 200, data: {} }]) {
+        http?.restore();
+        http = stubFetch(JSON.stringify(reply));
+        await withEnv(env(), async () => {
+          await expect(tools.call(tool, {})).rejects.toThrow("no data array");
+        });
+      }
+      http?.restore();
+      http = stubFetch(JSON.stringify({ code: 200, data: [] }));
+      const empty = bodyOf(await withEnv(env(), () => tools.call(tool, {})));
+      expect(empty).toEqual({ items: [], nextCursor: null, skipped: 0 });
+    });
+
+    it("sends a token only over https or a loopback http base", async () => {
+      const tools = surface();
+      http = stubFetch(JSON.stringify(TWO_DAYS));
+      await withEnv(
+        env({ [c.urlEnv]: "http://cost.example.com", [c.tokenEnv]: "tok" }),
+        async () => {
+          await expect(tools.call(tool, {})).rejects.toThrow("must be https");
+        },
+      );
+      expect(http.calls).toHaveLength(0);
+      for (const base of [
+        "https://cost.example.com",
+        "http://localhost:9003",
+        "http://[::1]:9003",
+      ]) {
+        await withEnv(env({ [c.urlEnv]: base, [c.tokenEnv]: "tok" }), () => tools.call(tool, {}));
+      }
+      expect(http.calls).toHaveLength(3);
+      expect(http.calls.every((r) => r.headers["authorization"] === "Bearer tok")).toBe(true);
     });
 
     it("refuses a bad window before any request, and a non-200 code or HTTP status after one", async () => {

@@ -210,7 +210,8 @@ properties no per-connector test was checking:
 
 - a tool whose credential is missing must **refuse before it sends anything** — a connector that
   fetches first and authenticates second leaks the request to the upstream API on every
-  misconfigured install;
+  misconfigured install (the annotated `KEYLESS` map holds the connectors whose service may run
+  without a credential, `prefect`, `opencost` and `kubecost`; they still refuse without their URL);
 - a connector must **demand a credential at all**, and must carry it into the request it makes.
   Verified by mutation: deleting Stripe's auth header is caught here and nowhere else.
 

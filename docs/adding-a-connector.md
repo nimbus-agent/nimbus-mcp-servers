@@ -157,7 +157,9 @@ Windows.
 
 A new connector is picked up automatically by `scripts/connector-tool-contract.test.ts`, which will
 hold it to the same properties as the other 97 — including that every tool refuses by name before
-sending anything when its credential is missing. It needs no registration; if your connector cannot
+sending anything when its credential is missing (`opencost` and `kubecost`, whose cluster-local
+service is unauthenticated by default, are in that file's annotated `KEYLESS` map and demand only
+their URL). It needs no registration; if your connector cannot
 satisfy a property for a real reason, add it to the annotated exclusion map in that file with the
 reason, rather than loosening the property for everyone.
 

@@ -17,7 +17,9 @@
  *
  * The base URL is the owner's own (a cluster-local service), so it is validated before use: http
  * or https only, no credentials in the URL, no query or fragment. The optional token is sent only
- * as `Authorization: Bearer`, and only when set (a cluster-local service is usually unauthenticated).
+ * as `Authorization: Bearer`, and only when set (a cluster-local service is usually unauthenticated);
+ * with a token set the base must be https, or http on a loopback host, so the token never travels in
+ * clear text across a network.
  */
 
 import { z } from "zod";
@@ -100,11 +102,15 @@ export interface AllocationRow {
   readonly totalCost: number;
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
 /**
  * The service base URL from `urlEnv`: trimmed, http or https only, no userinfo, no query or
  * fragment, trailing slashes stripped. A bad value names the variable and nothing else.
  */
-export function allocationBaseUrl(urlEnv: string): string {
+export function allocationBaseUrl(urlEnv: string, withToken = false): string {
   const raw = requiredEnv(urlEnv);
   let parsed: URL;
   try {
@@ -120,6 +126,11 @@ export function allocationBaseUrl(urlEnv: string): string {
   }
   if (parsed.search !== "" || parsed.hash !== "") {
     throw new Error(`${urlEnv} must not carry a query or a fragment`);
+  }
+  if (withToken && parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error(
+      `${urlEnv} must be https when a bearer token is set (the token would travel in clear text)`,
+    );
   }
   return stripTrailingSlashes(raw);
 }
@@ -188,18 +199,23 @@ function rowOf(key: string, raw: unknown): AllocationRow | undefined {
 }
 
 /**
- * The rows of an Allocation reply. `data` must be an array of sets; anything else yields no rows
- * (a reply with `code` other than 200, or no `data`, is an error the caller has already thrown).
+ * The rows of an Allocation reply. `data` must be an array of sets (an empty one is a valid, empty
+ * read; a missing or non-array `data` is an error, never an empty page); a set that is not an object
+ * is skipped. A reply with a `code` other than 200 is an error the caller has already thrown.
  */
 export function allocationRows(
   root: unknown,
   offset: number,
   limit: number,
+  span: AllocationSpan,
 ): { items: AllocationRow[]; nextCursor: string | null; skipped: number } {
   const data = asRecord(root)?.["data"];
+  if (!Array.isArray(data)) {
+    throw new Error("the allocation reply has no data array");
+  }
   const rows: AllocationRow[] = [];
   let skipped = 0;
-  for (const set of Array.isArray(data) ? data : []) {
+  for (const set of data) {
     for (const [key, raw] of Object.entries(asRecord(set) ?? {})) {
       const row = rowOf(key, raw);
       if (row === undefined) {
@@ -214,7 +230,7 @@ export function allocationRows(
   const end = offset + limit;
   return {
     items: rows.slice(offset, end),
-    nextCursor: end < rows.length ? String(end) : null,
+    nextCursor: end < rows.length ? cursorOf(end, span) : null,
     skipped,
   };
 }
@@ -225,16 +241,46 @@ function compareText(a: string, b: string): number {
   return a > b ? 1 : 0;
 }
 
-/** The offset a cursor stands for: absent is 0, otherwise the `nextCursor` of an earlier page. */
-const OFFSET_CURSOR = /^[1-9]\d{0,6}$/;
-function offsetFromCursor(cursor: string | null | undefined): number {
+/** The window of one listing as the service takes it: Unix seconds, start (UTC midnight) then end. */
+interface AllocationSpan {
+  readonly startSec: number;
+  readonly endSec: number;
+}
+
+/**
+ * `<offset>:<startSec>,<endSec>`: where a page resumes AND the window it was read in, so every page
+ * of one listing reads the same window even when the clock crosses UTC midnight between two calls.
+ */
+const PAGE_CURSOR = /^([1-9]\d{0,6}):(\d{1,11}),(\d{1,11})$/;
+
+function cursorOf(offset: number, span: AllocationSpan): string {
+  return `${String(offset)}:${String(span.startSec)},${String(span.endSec)}`;
+}
+
+/** The resume point a cursor stands for, or undefined for the first page. */
+function resumeFromCursor(
+  cursor: string | null | undefined,
+): { offset: number; span: AllocationSpan } | undefined {
   if (cursor === undefined || cursor === null) {
-    return 0;
+    return undefined;
   }
-  if (!OFFSET_CURSOR.test(cursor)) {
+  const m = PAGE_CURSOR.exec(cursor);
+  const [, offset, startSec, endSec] = m ?? [];
+  if (offset === undefined || startSec === undefined || endSec === undefined) {
     throw new Error("cursor must be the nextCursor of a previous page");
   }
-  return Number(cursor);
+  const span = { startSec: Number(startSec), endSec: Number(endSec) };
+  checkSpan(span);
+  return { offset: Number(offset), span };
+}
+
+function checkSpan(span: AllocationSpan): void {
+  if (span.endSec <= span.startSec) {
+    throw new Error("untilMs must be after sinceMs");
+  }
+  if (span.endSec - span.startSec > ALLOCATION_MAX_DAYS * (DAY_MS / 1000)) {
+    throw new Error(`the window may not exceed ${String(ALLOCATION_MAX_DAYS)} days`);
+  }
 }
 
 const AGGREGATE =
@@ -252,31 +298,33 @@ function listSchema() {
 }
 
 /**
- * The window to ask for: `<start>,<end>` in Unix seconds, the start moved back to UTC midnight so
- * the day steps line up with UTC days, the end the caller's `untilMs` (default now). A range
- * longer than {@link ALLOCATION_MAX_DAYS} days, or an end before the start, is an error.
+ * The window to ask for, in Unix seconds: the start moved back to UTC midnight so the day steps line
+ * up with UTC days, the end the caller's `untilMs` (default now). The endpoints are compared BEFORE
+ * the start is rounded, so a reversed pair is refused rather than widened into a query; a range
+ * longer than {@link ALLOCATION_MAX_DAYS} days is an error too.
  */
 export function allocationWindow(
   sinceMs: number | undefined,
   untilMs: number | undefined,
   nowMs: number,
-): string {
+): AllocationSpan {
   const until = untilMs ?? nowMs;
   const since = sinceMs ?? until - DEFAULT_DAYS * DAY_MS;
-  const start = Math.floor(since / DAY_MS) * DAY_MS;
-  if (until <= start) {
+  if (until <= since) {
     throw new Error("untilMs must be after sinceMs");
   }
-  if (until - start > ALLOCATION_MAX_DAYS * DAY_MS) {
-    throw new Error(`the window may not exceed ${String(ALLOCATION_MAX_DAYS)} days`);
-  }
-  return `${String(start / 1000)},${String(Math.floor(until / 1000))}`;
+  const span = {
+    startSec: (Math.floor(since / DAY_MS) * DAY_MS) / 1000,
+    endSec: Math.floor(until / 1000),
+  };
+  checkSpan(span);
+  return span;
 }
 
 /** Registers `<service>_allocation_list`. Every request is a GET. */
 export function registerAllocationTools(reg: ZodToolRegistrar, api: AllocationApi): void {
   const getter = createJsonGetter({
-    base: () => allocationBaseUrl(api.urlEnv),
+    base: () => allocationBaseUrl(api.urlEnv, optionalEnv(api.tokenEnv, "") !== ""),
     label: api.label,
     headers: () => {
       const token = optionalEnv(api.tokenEnv, "");
@@ -289,13 +337,13 @@ export function registerAllocationTools(reg: ZodToolRegistrar, api: AllocationAp
   const now = api.now ?? Date.now;
   reg(
     `${api.service}_allocation_list`,
-    `List ${api.label} cost allocations (\`GET ${api.path}\`), one row per allocation per UTC day. \`sinceMs\` / \`untilMs\` (epoch milliseconds; the start is moved back to UTC midnight; \`untilMs\` defaults to now, \`sinceMs\` to 7 days before it; at most ${String(ALLOCATION_MAX_DAYS)} days) bound the window. \`aggregate\` is one of cluster, node, namespace (default), controllerKind, controller, service, pod, container, or label:<name> / annotation:<name>. Idle cost is left out unless \`includeIdle\` is true. Rows are ordered by date then key and paged: returns \`{ items, nextCursor, skipped }\`, where \`nextCursor\` goes back as \`cursor\` for the next page (null on the last; each page asks the service again) and \`limit\` (default ${String(ROW_LIMIT_DEFAULT)}) is the page size. Each item is \`{ date, key, name, start, end, minutes, properties, cpuCost, ramCost, gpuCost, pvCost, networkCost, loadBalancerCost, sharedCost, externalCost, totalCost }\`; \`skipped\` counts allocations whose day could not be read. Costs are in the currency the cluster's pricing is configured for. The first day and the last are partial when the window does not start or end at midnight.`,
+    `List ${api.label} cost allocations (\`GET ${api.path}\`), one row per allocation per UTC day. \`sinceMs\` / \`untilMs\` (epoch milliseconds; the start is moved back to UTC midnight; \`untilMs\` defaults to now, \`sinceMs\` to 7 days before it; at most ${String(ALLOCATION_MAX_DAYS)} days) bound the window. \`aggregate\` is one of cluster, node, namespace (default), controllerKind, controller, service, pod, container, or label:<name> / annotation:<name>. Idle cost is left out unless \`includeIdle\` is true. Rows are ordered by date then key and paged: returns \`{ items, nextCursor, skipped }\`, where \`nextCursor\` (it carries the window, so every page reads the same one) goes back as \`cursor\` for the next page (null on the last; each page asks the service again) and \`limit\` (default ${String(ROW_LIMIT_DEFAULT)}) is the page size. Each item is \`{ date, key, name, start, end, minutes, properties, cpuCost, ramCost, gpuCost, pvCost, networkCost, loadBalancerCost, sharedCost, externalCost, totalCost }\`; \`skipped\` counts allocations whose day could not be read. Costs are in the currency the cluster's pricing is configured for. The first day and the last are partial when the window does not start or end at midnight.`,
     listSchema(),
     async (p) => {
-      const offset = offsetFromCursor(p.cursor);
-      const window = allocationWindow(p.sinceMs, p.untilMs, now());
+      const resume = resumeFromCursor(p.cursor);
+      const span = resume?.span ?? allocationWindow(p.sinceMs, p.untilMs, now());
       const search = new URLSearchParams({
-        window,
+        window: `${String(span.startSec)},${String(span.endSec)}`,
         aggregate: p.aggregate ?? "namespace",
         accumulate: "false",
       });
@@ -308,7 +356,9 @@ export function registerAllocationTools(reg: ZodToolRegistrar, api: AllocationAp
       if (typeof code === "number" && code !== 200) {
         throw new Error(`${api.label} ${String(code)}: the allocation query was refused`);
       }
-      return jsonResult(allocationRows(root, offset, p.limit ?? ROW_LIMIT_DEFAULT));
+      return jsonResult(
+        allocationRows(root, resume?.offset ?? 0, p.limit ?? ROW_LIMIT_DEFAULT, span),
+      );
     },
   );
 }
