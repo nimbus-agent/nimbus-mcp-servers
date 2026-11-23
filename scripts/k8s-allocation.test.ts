@@ -97,6 +97,17 @@ for (const c of CASES) {
       expect(req.headers["authorization"]).toBeUndefined();
     });
 
+    it("also accepts a plain http base, as a cluster-local service is usually served", async () => {
+      const tools = surface();
+      http = stubFetch(JSON.stringify(TWO_DAYS));
+      await withEnv(env({ [c.urlEnv]: "http://127.0.0.1:9003/prefix" }), () =>
+        tools.call(tool, {}),
+      );
+      const url = new URL(http.only.url);
+      expect(url.protocol).toBe("http:");
+      expect(url.pathname).toBe(`/prefix${c.path}`);
+    });
+
     it("flattens each set into one row per allocation per day", async () => {
       const tools = surface();
       http = stubFetch(JSON.stringify(TWO_DAYS));

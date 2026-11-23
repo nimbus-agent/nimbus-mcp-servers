@@ -4,8 +4,8 @@
  * one set per day step. Shared by the `opencost` and `kubecost` tests.
  */
 
-export const OPENCOST_BASE = "http://opencost.opencost.svc:9003";
-export const KUBECOST_BASE = "http://kubecost-cost-analyzer.kubecost.svc:9090";
+export const OPENCOST_BASE = "https://opencost.opencost.svc:9003";
+export const KUBECOST_BASE = "https://kubecost-cost-analyzer.kubecost.svc:9090";
 
 function allocation(name: string, day: string, costs: Record<string, number>) {
   const start = `${day}T00:00:00Z`;
