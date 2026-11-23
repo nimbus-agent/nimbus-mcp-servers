@@ -115,6 +115,7 @@ function sha256Of(data: string | Uint8Array): string {
 /** The file names a plan is saved under: the KIND of plan is its name (apply vs destroy). */
 const PLAN_NAME = "plan.tfplan";
 const DESTROY_PLAN_NAME = "destroy.tfplan";
+const REFRESH_PLAN_NAME = "refresh.tfplan";
 
 /**
  * Why a plan file path is refused before the disk is touched (shared with refuseBefore): not
@@ -195,24 +196,35 @@ async function planDirBase(): Promise<string> {
   return configured;
 }
 
-/** `terraform plan` / `plan -destroy`, saved under a fresh per-plan directory. */
+const PLAN_FILE_OF_MODE = {
+  apply: PLAN_NAME,
+  destroy: DESTROY_PLAN_NAME,
+  "refresh-only": REFRESH_PLAN_NAME,
+} as const;
+const PLAN_FLAGS_OF_MODE = {
+  apply: [],
+  destroy: ["-destroy"],
+  "refresh-only": ["-refresh-only"],
+} as const;
+
+/** `terraform plan` / `plan -destroy` / `plan -refresh-only`, saved under a fresh per-plan directory. */
 async function terraformPlan(
   workingDirectory: string,
-  destroy: boolean,
+  mode: "apply" | "destroy" | "refresh-only",
 ): Promise<ReturnType<typeof jsonResult>> {
   const base = await planDirBase();
   const planId = randomBytes(16).toString("hex");
   const planDir = join(base, planId);
   // Non-recursive: an existing directory of that name is an error, never silently reused.
   await mkdir(planDir, { mode: 0o700 });
-  const planFile = join(planDir, destroy ? DESTROY_PLAN_NAME : PLAN_NAME);
+  const planFile = join(planDir, PLAN_FILE_OF_MODE[mode]);
   try {
     const r = await runCliCode(
       [
         "terraform",
         `-chdir=${workingDirectory}`,
         "plan",
-        ...(destroy ? ["-destroy"] : []),
+        ...PLAN_FLAGS_OF_MODE[mode],
         "-input=false",
         "-no-color",
         "-detailed-exitcode",
@@ -239,6 +251,40 @@ async function terraformPlan(
   }
 }
 
+/**
+ * Why a plan JSON is not a refresh-only plan, or `undefined`. A refresh-only plan may change the
+ * state and the outputs, never infrastructure: every resource change must be a no-op (a data
+ * source may be read). Anything else is refused, because the check is about what the file would
+ * do, not what it is named.
+ */
+function refreshOnlyProblem(planJson: string): string | undefined {
+  const doc: unknown = JSON.parse(planJson);
+  const fields = typeof doc === "object" && doc !== null ? (doc as Record<string, unknown>) : {};
+  // Terraform 1.14 stores provider actions apart from resource changes, and applying the file runs
+  // them: any value that is not an empty list is refused, whatever else the plan says.
+  const invocations = fields["action_invocations"];
+  if (invocations !== undefined && (!Array.isArray(invocations) || invocations.length > 0)) {
+    return "the plan runs provider actions, so it is not a refresh-only plan";
+  }
+  const changes = fields["resource_changes"];
+  // Terraform omits the key when a plan has no resource changes at all.
+  if (changes === undefined) return undefined;
+  if (!Array.isArray(changes)) return "the plan's resource_changes is not a list";
+  for (const c of changes) {
+    const row = typeof c === "object" && c !== null ? (c as Record<string, unknown>) : {};
+    const change = row["change"];
+    const actions =
+      typeof change === "object" && change !== null
+        ? (change as Record<string, unknown>)["actions"]
+        : undefined;
+    const only = Array.isArray(actions) && actions.length === 1 ? actions[0] : undefined;
+    if (only !== "no-op" && !(only === "read" && row["mode"] === "data")) {
+      return "the plan changes infrastructure, so it is not a refresh-only plan";
+    }
+  }
+  return undefined;
+}
+
 /** `terraform apply <planFile>` after the file's hash is proven to be the approved one. */
 async function terraformApplyPlan(
   p: { workingDirectory: string; planFile: string; planSha256: string },
@@ -250,6 +296,27 @@ async function terraformApplyPlan(
   const approved = Buffer.from(p.planSha256, "hex");
   if (actual.length !== approved.length || !timingSafeEqual(actual, approved)) {
     throw new Error("plan file does not match the approved hash");
+  }
+  if (name === REFRESH_PLAN_NAME) {
+    // The file name says what the plan was made as; this proves what it does, so a plan file that
+    // would change infrastructure can never be applied under the accept-drift tool.
+    const shown = await runCliCode(
+      ["terraform", `-chdir=${p.workingDirectory}`, "show", "-json", "-no-color", planFile],
+      terraformEnv(),
+    );
+    if (shown.code !== 0) {
+      throw new Error(`terraform exited ${String(shown.code)}: ${shown.stderr.slice(0, 500)}`);
+    }
+    if (Buffer.byteLength(shown.stdout, "utf8") > PLAN_JSON_MAX_BYTES) {
+      throw new Error("plan JSON too large");
+    }
+    let problem: string | undefined;
+    try {
+      problem = refreshOnlyProblem(shown.stdout);
+    } catch {
+      problem = "terraform show -json did not print JSON";
+    }
+    if (problem !== undefined) throw new Error(problem);
   }
   // No -auto-approve and no -destroy: a saved plan applies as it was planned, and `apply <file>`
   // runs without a prompt. https://developer.hashicorp.com/terraform/cli/commands/apply
@@ -675,9 +742,11 @@ const PULUMI_UP_REFUSAL =
 export const IAC_TOOL_NAMES = [
   "iac_terraform_plan",
   "iac_terraform_destroy_plan",
+  "iac_terraform_plan_refresh_only",
   "iac_terraform_show_json",
   "iac_terraform_apply",
   "iac_terraform_destroy",
+  "iac_terraform_apply_refresh_only",
   "iac_cloudformation_changeset_create",
   "iac_cloudformation_changeset_discard",
   "iac_cloudformation_deploy",
@@ -720,7 +789,7 @@ export function registerIacTools(
     { scopeTargetOf: dirScope },
     "Run terraform plan in a directory and save the plan under NIMBUS_IAC_PLAN_DIR. Returns the plan id, file, its SHA-256 and whether it has changes.",
     z.object({ workingDirectory: cliArg }),
-    (p) => terraformPlan(p.workingDirectory, false),
+    (p) => terraformPlan(p.workingDirectory, "apply"),
   );
 
   registerPrepareTool(
@@ -728,7 +797,15 @@ export function registerIacTools(
     { scopeTargetOf: dirScope },
     "Run terraform plan -destroy in a directory and save the plan under NIMBUS_IAC_PLAN_DIR.",
     z.object({ workingDirectory: cliArg }),
-    (p) => terraformPlan(p.workingDirectory, true),
+    (p) => terraformPlan(p.workingDirectory, "destroy"),
+  );
+
+  registerPrepareTool(
+    "iac_terraform_plan_refresh_only",
+    { scopeTargetOf: dirScope },
+    "Run terraform plan -refresh-only in a directory and save the plan (refresh.tfplan) under NIMBUS_IAC_PLAN_DIR. Returns the plan id, file, its SHA-256 and whether the state would change.",
+    z.object({ workingDirectory: cliArg }),
+    (p) => terraformPlan(p.workingDirectory, "refresh-only"),
   );
 
   registerPrepareTool(
@@ -737,7 +814,11 @@ export function registerIacTools(
     "Render a saved terraform plan file as JSON (terraform show -json).",
     z.object({ workingDirectory: cliArg, planFile: planFileArg }),
     async (p) => {
-      const planFile = await resolvePlanFile(p.planFile, [PLAN_NAME, DESTROY_PLAN_NAME]);
+      const planFile = await resolvePlanFile(p.planFile, [
+        PLAN_NAME,
+        DESTROY_PLAN_NAME,
+        REFRESH_PLAN_NAME,
+      ]);
       // Read once, immediately before the show: the hash is of the bytes the owner is shown.
       const planSha256 = sha256Of(await readFile(planFile));
       const r = await runCliCode(
@@ -803,6 +884,21 @@ export function registerIacTools(
     "Apply a saved terraform destroy plan file (destroy.tfplan) whose SHA-256 matches the approved one.",
     z.object(applyShape),
     (p) => terraformApplyPlan(p, DESTROY_PLAN_NAME),
+  );
+
+  registerWriteTool(
+    "iac_terraform_apply_refresh_only",
+    {
+      mutates: "iac.terraform.apply_refresh_only",
+      // Accepting drift rewrites the state; the plan's identity is the record.
+      recoverable: false,
+      capturePreState: applyPreState,
+      scopeTargetOf: dirScope,
+      refuseBefore: (p) => planFilePathProblem(p.planFile, [REFRESH_PLAN_NAME]),
+    },
+    "Apply a saved terraform refresh-only plan file (refresh.tfplan) whose SHA-256 matches the approved one: updates the state to match what exists, changes no infrastructure, and refuses a plan that would.",
+    z.object(applyShape),
+    (p) => terraformApplyPlan(p, REFRESH_PLAN_NAME),
   );
 
   registerPrepareTool(

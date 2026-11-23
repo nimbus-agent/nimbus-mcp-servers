@@ -9,9 +9,11 @@ spawns (`terraform`, `aws`, `pulumi`) are bounded by the sandbox the gateway put
 | --- | --- | --- |
 | `iac_terraform_plan` | prepare | `terraform plan -out=<file>` in a directory; saves the plan and returns `{planId, planFile, planSha256, hasChanges}` |
 | `iac_terraform_destroy_plan` | prepare | the same with `-destroy` |
+| `iac_terraform_plan_refresh_only` | prepare | `terraform plan -refresh-only -out=<file>`; saves `refresh.tfplan` and returns `{planId, planFile, planSha256, hasChanges}` (`hasChanges` means the state would change) |
 | `iac_terraform_show_json` | prepare | `terraform show -json <planFile>`; returns `{planJson, planSha256}` (at most 4 MiB, must parse; the hash of the bytes it rendered) |
 | `iac_terraform_apply` | write | applies a saved plan file whose SHA-256 equals `planSha256` |
 | `iac_terraform_destroy` | write | the same tool body for a plan made by `iac_terraform_destroy_plan` |
+| `iac_terraform_apply_refresh_only` | write | applies a saved `refresh.tfplan` whose SHA-256 equals `planSha256`: accepts drift into the state. It first renders the file with `terraform show -json` and refuses unless every resource change is a no-op (a data source may be read) and the plan saves no provider action (`action_invocations`), so a plan that would change infrastructure is never applied under this tool |
 | `iac_cloudformation_changeset_create` | prepare | creates a change set for a template and lists its changes |
 | `iac_cloudformation_changeset_discard` | write | deletes a change set this connector made, and the empty stack shell it left |
 | `iac_cloudformation_deploy` | write | executes a reviewed change set; answers `execution started`, never "deployed" |
@@ -86,8 +88,9 @@ Every terraform child runs with `TF_IN_AUTOMATION=1` and `TF_INPUT=0`.
   Device and network forms (`\\?\`, `\\.\`, UNC) are refused. The gateway must place the plan inside
   the plan directory it grants that spawn.
 - **Plan kind is its file name.** `iac_terraform_plan` writes `plan.tfplan`,
-  `iac_terraform_destroy_plan` writes `destroy.tfplan`; apply takes only the first, destroy only the
-  second, `show_json` either. `show_json` also returns the SHA-256 of the bytes it read just before
+  `iac_terraform_destroy_plan` writes `destroy.tfplan`, `iac_terraform_plan_refresh_only` writes
+  `refresh.tfplan`; apply takes only the first, destroy only the second, the refresh-only apply only
+  the third, `show_json` any of them. `show_json` also returns the SHA-256 of the bytes it read just before
   rendering them.
 - A successfully applied plan file is deleted, best effort (a directory the gateway made read-only
   keeps it).

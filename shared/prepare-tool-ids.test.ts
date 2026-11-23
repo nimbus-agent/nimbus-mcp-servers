@@ -70,6 +70,7 @@ describe("PREPARE_TOOL_IDS", () => {
       "iac_terraform_plan",
       "iac_terraform_destroy_plan",
       "iac_terraform_show_json",
+      "iac_terraform_plan_refresh_only",
       "iac_cloudformation_changeset_create",
       "k8s_manifest_plan",
     ]);

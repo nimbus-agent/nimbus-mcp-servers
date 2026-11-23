@@ -492,6 +492,16 @@ const WRITES: Readonly<
       ),
       ["iac_pulumi_up", "iac.pulumi.up", { workingDirectory: "infra/prod" }, "dir:infra/prod"],
       [
+        "iac_terraform_apply_refresh_only",
+        "iac.terraform.apply_refresh_only",
+        {
+          workingDirectory: "infra/prod",
+          planFile: join(IAC_PLAN_DIR, "refresh.tfplan"),
+          planSha256: "a".repeat(64),
+        },
+        "dir:infra/prod",
+      ],
+      [
         "iac_cloudformation_deploy",
         "iac.cloudformation.deploy",
         { stackName: "web-stack", templateBody: IAC_TEMPLATE, changeSetId: IAC_DEPLOY_ARN },
