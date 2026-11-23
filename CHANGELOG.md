@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.15.0...connectors-v0.16.0) (2026-11-23)
+
+
+### Features
+
+* **iac:** terraform refresh-only plan and apply tools ([#90](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/90)) ([e54d0cf](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e54d0cfb6352ef1d45eb2bf5565e705cbfd7e6ee))
+
 ## [0.15.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.14.0...connectors-v0.15.0) (2026-11-16)
 
 
