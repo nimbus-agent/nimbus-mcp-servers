@@ -1,0 +1,16 @@
+{
+  "id": "com.nimbus.opencost",
+  "displayName": "OpenCost",
+  "version": "0.1.0",
+  "description": "OpenCost FinOps connector (read-only). Reads Kubernetes cost allocation from the owner's own OpenCost service (`OPENCOST_URL`, default port 9003) through `GET /allocation`, one row per namespace (or controller, pod, label) per UTC day, with the CPU, RAM, GPU, persistent-volume, network, load-balancer, shared and external cost of each. One tool: `opencost_allocation_list`. OpenCost is always self-hosted, so the host is supplied by the gateway at spawn time and the static manifest network list is intentionally empty. An optional `OPENCOST_TOKEN` is sent as a bearer token for an authenticating ingress. No write tool; GET only.",
+  "author": "Nimbus",
+  "entrypoint": "dist/server.js",
+  "runtime": "bun",
+  "permissions": {
+    "network": [],
+    "filesystem": { "read": [], "write": [] }
+  },
+  "hitlRequired": [],
+  "syncInterval": 21600,
+  "minNimbusVersion": "0.2.0"
+}
