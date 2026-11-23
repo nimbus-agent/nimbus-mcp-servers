@@ -112,6 +112,14 @@ const UPSTREAM_BODY = "upstream is down";
  */
 const KEYLESS = new Map<string, string>([
   ["prefect", "self-hosted Prefect Server may run without an API key; the header is optional"],
+  [
+    "opencost",
+    "a cluster-local OpenCost service is unauthenticated by default; the bearer token is optional",
+  ],
+  [
+    "kubecost",
+    "a cluster-local Kubecost service is unauthenticated by default; the bearer token is optional",
+  ],
 ]);
 
 /**
