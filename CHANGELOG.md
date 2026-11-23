@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.16.0...connectors-v0.17.0) (2026-11-23)
+
+
+### Features
+
+* **opencost,kubecost:** read-only Kubernetes cost allocation connectors ([#91](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/91)) ([375562e](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/375562ef1e8bb3e9d0b52aa6af5fa2ffa8d10a0c))
+
 ## [0.16.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.15.0...connectors-v0.16.0) (2026-11-23)
 
 
