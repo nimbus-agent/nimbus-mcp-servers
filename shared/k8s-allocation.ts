@@ -193,26 +193,48 @@ function rowOf(key: string, raw: unknown): AllocationRow | undefined {
  */
 export function allocationRows(
   root: unknown,
+  offset: number,
   limit: number,
-): { items: AllocationRow[]; skipped: number; truncated: boolean } {
+): { items: AllocationRow[]; nextCursor: string | null; skipped: number } {
   const data = asRecord(root)?.["data"];
-  const items: AllocationRow[] = [];
+  const rows: AllocationRow[] = [];
   let skipped = 0;
-  let truncated = false;
   for (const set of Array.isArray(data) ? data : []) {
-    const entries = Object.entries(asRecord(set) ?? {});
-    for (const [key, raw] of entries) {
+    for (const [key, raw] of Object.entries(asRecord(set) ?? {})) {
       const row = rowOf(key, raw);
       if (row === undefined) {
         skipped += 1;
-      } else if (items.length >= limit) {
-        truncated = true;
       } else {
-        items.push(row);
+        rows.push(row);
       }
     }
   }
-  return { items, skipped, truncated };
+  // A stable order, so that a page boundary falls on the same row when the window is read again.
+  rows.sort((a, b) => compareText(a.date, b.date) || compareText(a.key, b.key));
+  const end = offset + limit;
+  return {
+    items: rows.slice(offset, end),
+    nextCursor: end < rows.length ? String(end) : null,
+    skipped,
+  };
+}
+
+/** Code-unit order: the same on every machine, unlike a locale compare. */
+function compareText(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/** The offset a cursor stands for: absent is 0, otherwise the `nextCursor` of an earlier page. */
+const OFFSET_CURSOR = /^[1-9]\d{0,6}$/;
+function offsetFromCursor(cursor: string | null | undefined): number {
+  if (cursor === undefined || cursor === null) {
+    return 0;
+  }
+  if (!OFFSET_CURSOR.test(cursor)) {
+    throw new Error("cursor must be the nextCursor of a previous page");
+  }
+  return Number(cursor);
 }
 
 const AGGREGATE =
@@ -224,6 +246,7 @@ function listSchema() {
     untilMs: z.number().int().min(0).max(MAX_EPOCH_MS).optional(),
     aggregate: z.string().regex(AGGREGATE).optional(),
     includeIdle: z.boolean().optional(),
+    cursor: z.string().nullable().optional(),
     limit: z.number().int().min(1).max(ROW_LIMIT_MAX).optional(),
   });
 }
@@ -266,9 +289,10 @@ export function registerAllocationTools(reg: ZodToolRegistrar, api: AllocationAp
   const now = api.now ?? Date.now;
   reg(
     `${api.service}_allocation_list`,
-    `List ${api.label} cost allocations (\`GET ${api.path}\`), one row per allocation per UTC day. \`sinceMs\` / \`untilMs\` (epoch milliseconds; the start is moved back to UTC midnight; \`untilMs\` defaults to now, \`sinceMs\` to 7 days before it; at most ${String(ALLOCATION_MAX_DAYS)} days) bound the window. \`aggregate\` is one of cluster, node, namespace (default), controllerKind, controller, service, pod, container, or label:<name> / annotation:<name>. Idle cost is left out unless \`includeIdle\` is true. Returns \`{ items, skipped, truncated }\`: each item is \`{ date, key, name, start, end, minutes, properties, cpuCost, ramCost, gpuCost, pvCost, networkCost, loadBalancerCost, sharedCost, externalCost, totalCost }\`; \`skipped\` counts allocations whose day could not be read and \`truncated\` is true when \`limit\` (default ${String(ROW_LIMIT_DEFAULT)}) cut the list. Costs are in the currency the cluster's pricing is configured for. The first day and the last are partial when the window does not start or end at midnight.`,
+    `List ${api.label} cost allocations (\`GET ${api.path}\`), one row per allocation per UTC day. \`sinceMs\` / \`untilMs\` (epoch milliseconds; the start is moved back to UTC midnight; \`untilMs\` defaults to now, \`sinceMs\` to 7 days before it; at most ${String(ALLOCATION_MAX_DAYS)} days) bound the window. \`aggregate\` is one of cluster, node, namespace (default), controllerKind, controller, service, pod, container, or label:<name> / annotation:<name>. Idle cost is left out unless \`includeIdle\` is true. Rows are ordered by date then key and paged: returns \`{ items, nextCursor, skipped }\`, where \`nextCursor\` goes back as \`cursor\` for the next page (null on the last; each page asks the service again) and \`limit\` (default ${String(ROW_LIMIT_DEFAULT)}) is the page size. Each item is \`{ date, key, name, start, end, minutes, properties, cpuCost, ramCost, gpuCost, pvCost, networkCost, loadBalancerCost, sharedCost, externalCost, totalCost }\`; \`skipped\` counts allocations whose day could not be read. Costs are in the currency the cluster's pricing is configured for. The first day and the last are partial when the window does not start or end at midnight.`,
     listSchema(),
     async (p) => {
+      const offset = offsetFromCursor(p.cursor);
       const window = allocationWindow(p.sinceMs, p.untilMs, now());
       const search = new URLSearchParams({
         window,
@@ -284,7 +308,7 @@ export function registerAllocationTools(reg: ZodToolRegistrar, api: AllocationAp
       if (typeof code === "number" && code !== 200) {
         throw new Error(`${api.label} ${String(code)}: the allocation query was refused`);
       }
-      return jsonResult(allocationRows(root, p.limit ?? ROW_LIMIT_DEFAULT));
+      return jsonResult(allocationRows(root, offset, p.limit ?? ROW_LIMIT_DEFAULT));
     },
   );
 }

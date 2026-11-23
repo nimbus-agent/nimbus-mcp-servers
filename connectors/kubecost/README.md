@@ -21,13 +21,14 @@ Bundled with Nimbus. No separate install is required.
 ## Quickstart
 
 ```bash
-nimbus connector auth kubecost --url http://kubecost.example.svc:9090
+nimbus vault set kubecost.url http://kubecost.example.svc:9090
 # Optional, for an ingress that wants a bearer token
-nimbus connector auth kubecost --url <url> --token <token>
+nimbus vault set kubecost.token <token>
 ```
 
-(The `nimbus connector auth` flags are registered on the gateway side by the Nimbus release that
-adds the Kubecost syncable; this README lists the variables the connector reads.)
+The gateway injects the Vault keys as environment variables at spawn time; the connector itself
+never touches the Vault. (The Vault keys are registered on the gateway side by the Nimbus release
+that adds the Kubecost syncable; this README lists the variables the connector reads.)
 
 Reach the service from where the gateway runs, for example `kubectl -n <ns> port-forward svc/<name> 9090`
 and `http://127.0.0.1:9090`, or an ingress. Nimbus never starts a port-forward.
@@ -43,7 +44,7 @@ and `http://127.0.0.1:9090`, or an ingress. Nimbus never starts a port-forward.
 
 | Tool | Purpose |
 | --- | --- |
-| `kubecost_allocation_list` | `GET /model/allocation` with `accumulate=false`. Inputs: `sinceMs`, `untilMs` (epoch ms; the start is moved back to UTC midnight; `untilMs` defaults to now, `sinceMs` to 7 days before it; at most 62 days), `aggregate` (`namespace` by default; `cluster`, `node`, `controllerKind`, `controller`, `service`, `pod`, `container`, `label:<name>`, `annotation:<name>`), `includeIdle` (sent as `idle`, default false), `limit` (default 5000, at most 20000). Returns `{ items, skipped, truncated }`. |
+| `kubecost_allocation_list` | `GET /model/allocation` with `accumulate=false`. Inputs: `sinceMs`, `untilMs` (epoch ms; the start is moved back to UTC midnight; `untilMs` defaults to now, `sinceMs` to 7 days before it; at most 62 days), `aggregate` (`namespace` by default; `cluster`, `node`, `controllerKind`, `controller`, `service`, `pod`, `container`, `label:<name>`, `annotation:<name>`), `includeIdle` (sent as `idle`, default false), `cursor`, `limit` (page size, default 5000, at most 20000). Returns `{ items, nextCursor, skipped }`: rows are ordered by date then key, `nextCursor` goes back as `cursor`, and each page asks the service again. |
 
 Each item is one allocation for one UTC day: `date`, `key`, `name`, `start`, `end`, `minutes`,
 `properties` (cluster, namespace, controller, controllerKind, node, pod, container, when present),

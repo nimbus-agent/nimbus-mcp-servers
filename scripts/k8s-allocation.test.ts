@@ -50,7 +50,7 @@ interface Body {
     properties: Record<string, string>;
   }[];
   skipped: number;
-  truncated: boolean;
+  nextCursor: string | null;
 }
 
 function bodyOf(result: unknown): Body {
@@ -111,7 +111,7 @@ for (const c of CASES) {
         namespace: "default",
       });
       expect(body.skipped).toBe(0);
-      expect(body.truncated).toBe(false);
+      expect(body.nextCursor).toBeNull();
     });
 
     it("sends the optional bearer token only when set, and passes idle and aggregate", async () => {
@@ -136,12 +136,23 @@ for (const c of CASES) {
       expect(body.skipped).toBe(2);
     });
 
-    it("cuts at limit and says so", async () => {
+    it("pages by offset over a stable order, asking the service for each page", async () => {
       const tools = surface();
       http = stubFetch(JSON.stringify(TWO_DAYS));
-      const body = bodyOf(await withEnv(env(), () => tools.call(tool, { limit: 2 })));
-      expect(body.items).toHaveLength(2);
-      expect(body.truncated).toBe(true);
+      const first = bodyOf(await withEnv(env(), () => tools.call(tool, { limit: 2 })));
+      expect(first.items.map((i) => i.key)).toEqual(["default", "kube-system"]);
+      expect(first.nextCursor).toBe("2");
+      const second = bodyOf(
+        await withEnv(env(), () => tools.call(tool, { limit: 2, cursor: first.nextCursor })),
+      );
+      expect(second.items.map((i) => [i.date, i.key])).toEqual([["2026-11-21", "default"]]);
+      expect(second.nextCursor).toBeNull();
+      expect(http.calls).toHaveLength(2);
+      await withEnv(env(), async () => {
+        await expect(tools.call(tool, { cursor: "abc" })).rejects.toThrow("nextCursor");
+        await expect(tools.call(tool, { cursor: "0" })).rejects.toThrow("nextCursor");
+      });
+      expect(http.calls).toHaveLength(2);
     });
 
     it("refuses a bad window before any request, and a non-200 code or HTTP status after one", async () => {
