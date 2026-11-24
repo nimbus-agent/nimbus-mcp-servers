@@ -150,10 +150,15 @@ describe("mayRunAsBatchFile", () => {
     expect(may("az", { PATH: "C:\\a;C:\\b" }, () => false)).toBe(false);
   });
 
-  test("without a PATH variable that is set and not empty nothing is looked up, and it is not one", () => {
+  test("without a PATH variable that is set and not empty only the working directory is looked in", () => {
     // Bun hands such a name to libuv, which starts only a .com or an .exe.
     for (const env of [{}, { PATH: "" }, { Path: "" }, { PATH: undefined }, { HOME: "C:\\x" }]) {
-      expect({ env, batch: may("az", env, untouchedFs) }).toEqual({ env, batch: false });
+      expect({ env, batch: may("az", env, fsWith()) }).toEqual({ env, batch: false });
+      // Bun 1.4 searches the working directory, so a batch file there counts even with no PATH.
+      expect({ env, batch: may("az", env, fsWith("C:\\work\\az.cmd")) }).toEqual({
+        env,
+        batch: true,
+      });
       expect({ env, batch: may("C:\\sdk\\bin\\gcloud", env, untouchedFs) }).toEqual({
         env,
         batch: false,
@@ -194,9 +199,11 @@ describe("mayRunAsBatchFile", () => {
     expect(may("az", { PATH: "tools" }, fsWith("C:\\work\\tools\\az.cmd"))).toBe(true);
   });
 
-  test("the current directory itself is not searched for a bare name", () => {
-    // Bun never looks there: a batch file in it is not found, and nothing runs.
-    expect(may("az", { PATH: "C:\\bin" }, fsWith("C:\\work\\az.cmd"))).toBe(false);
+  test("the current directory is searched for a bare name", () => {
+    // Bun 1.3 never looked there; Bun 1.4 does, unless NoDefaultCurrentDirectoryInExePath is set in
+    // the spawned environment, so a batch file there counts.
+    expect(may("az", { PATH: "C:\\bin" }, fsWith("C:\\work\\az.cmd"))).toBe(true);
+    expect(may("az", { PATH: "C:\\bin" }, fsWith("C:\\work\\az.exe"))).toBe(false);
   });
 
   test("a name with a directory is looked up in that directory alone, never on PATH", () => {
@@ -210,7 +217,7 @@ describe("mayRunAsBatchFile", () => {
     expect(may("C:/sdk/bin/gcloud", env, fsWith("C:\\sdk\\bin\\gcloud.cmd"))).toBe(true);
   });
 
-  test("only the spawn environment's PATH is searched, in Bun's order, and never this process's", () => {
+  test("the working directory and then the spawn environment's PATH are searched, in Bun's order, and never this process's", () => {
     const looked: string[] = [];
     mayRunAsBatchFile(
       "nimbus-batch-probe",
@@ -224,6 +231,9 @@ describe("mayRunAsBatchFile", () => {
       },
     );
     expect(looked).toEqual([
+      "C:\\work\\nimbus-batch-probe.exe",
+      "C:\\work\\nimbus-batch-probe.cmd",
+      "C:\\work\\nimbus-batch-probe.bat",
       "C:\\elsewhere\\nimbus-batch-probe.exe",
       "C:\\elsewhere\\nimbus-batch-probe.cmd",
       "C:\\elsewhere\\nimbus-batch-probe.bat",
@@ -450,14 +460,17 @@ describe.skipIf(process.platform !== "win32")(
         predicted: true,
       },
       {
-        name: "a .cmd only in the current directory: nothing runs",
+        // Bun 1.4 searches the working directory unless the environment of THIS process sets
+        // NoDefaultCurrentDirectoryInExePath (a developer machine may; a CI runner does not), so
+        // the pin follows it. The model says yes either way.
+        name: "a .cmd only in the current directory: Bun 1.4 runs it unless the process sets NoDefaultCurrentDirectoryInExePath",
         files: ["work/ordx.cmd"],
         dirs: ["empty"],
         program: bare,
         env: (d) => ({ PATH: at(d, "empty") }),
         cwd: "work",
-        bunStartsBatch: false,
-        predicted: false,
+        bunStartsBatch: process.env["NoDefaultCurrentDirectoryInExePath"] === undefined,
+        predicted: true,
       },
       {
         name: "a name ending in .com, looked up like any other",

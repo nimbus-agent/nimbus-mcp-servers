@@ -195,7 +195,7 @@ function firstHolderIsBatch(bases: readonly string[], exists: (path: string) => 
  *  - Otherwise — and for any name written with a `/` — Bun hands the name to libuv, as Node does,
  *    and libuv starts only a `.com` or an `.exe`: never a batch file.
  *
- * It says yes where Bun could change without notice, and nowhere else: a PATH variable counts in
+ * It says yes where Bun could change without notice, and nowhere else (its working directory is searched too, as Bun 1.4 does): a PATH variable counts in
  * any spelling, not only `PATH` — Bun reads no other, though `nimbus-spawn.ts` respells the
  * variable `PATH` before every spawn, so a bare `az` under `Path` starts too — and each is searched
  * both as written and with whitespace and quotes stripped from its entries; a name written with a
@@ -215,13 +215,16 @@ export function mayRunAsBatchFile(
     return false;
   }
   const paths = pathValues(env);
-  if (paths.length === 0) {
-    return false;
-  }
   const exists = probe.exists ?? isFile;
   const cwd = probe.cwd ?? process.cwd();
   if (bin.includes("/") || bin.includes("\\")) {
-    return firstHolderIsBatch([win32.resolve(cwd, bin)], exists);
+    return paths.length > 0 && firstHolderIsBatch([win32.resolve(cwd, bin)], exists);
+  }
+  // Bun 1.4 searches the working directory too, unless NoDefaultCurrentDirectoryInExePath is set
+  // (Bun 1.3 did not): a batch file there may run whatever PATH holds. Answered yes either way,
+  // since the variable lives in the spawned environment and Bun's rule may change again.
+  if (firstHolderIsBatch([win32.resolve(cwd, bin)], exists)) {
+    return true;
   }
   return paths.some((value) =>
     searchOrders(value).some((dirs) =>
