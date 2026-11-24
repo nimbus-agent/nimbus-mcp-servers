@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.1...connectors-v0.17.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **snowflake:** snowflake_list and snowflake_get return each table's columns ([#99](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/99)) ([114634a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/114634ad58efa1b11b31802817a276f4909fe106))
+
 ## [0.17.1](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.0...connectors-v0.17.1) (2026-11-24)
 
 
