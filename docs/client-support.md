@@ -23,6 +23,7 @@ releases, so the version tested is part of the claim. Re-check yours rather than
 | **Claude Desktop** | 1.34493.1 (MSIX) | **no** | **observed** | **reads only** |
 | Claude Code | not tested | yes — form + URL | vendor docs | reads and writes |
 | Cursor | not tested | yes, since v1.5 | vendor changelog | reads and writes |
+| Python MCP SDK (`mcp`), revision 2026-07-28 | 2.3.0 | yes, when the client passes an elicitation callback | **observed** (SDK client) | reads and writes |
 | Anything else | — | check it | — | reads, plus writes if it advertises `elicitation` |
 
 Measured 2026-08-24 against the `github` connector, which exposes 9 read tools and 5 write tools
@@ -70,10 +71,24 @@ connection is by its first request. The consent rules are the same in each. What
   messages (each record is written to the connector's stderr, and to the audit log when one is
   configured).
 
-**Not verified:** no shipped 2026-07-28 client has been run against a connector. That era is
-tested with requests scripted from the published specification; the `initialize` era is tested
-with the upstream MCP SDK's own client. The matrix above predates this change and its rows are
-all `initialize` clients; a row for a 2026-07-28 client waits for one to test with.
+**Observed with a real 2026-07-28 client (2026-11-24, connectors 0.17.1).** The official Python
+MCP SDK, `mcp` 2.3.0 (the TypeScript SDK's latest, 1.32.2, stops at `2025-11-25`), was run over
+stdio against `nimbus-connector github` with a fake token and a write scope naming a repository
+that does not exist:
+
+- `mode="2026-07-28"` and `mode="auto"` negotiated `2026-07-28` (auto through `server/discover`);
+  `mode="legacy"` negotiated `2025-11-25`.
+- With an elicitation callback the client was listed 26 tools; without one, 13: the 13 write tools
+  were left out. Both eras listed the same set.
+- `github_issue_comment_create` put one prompt in front of the client, naming
+  `github.issue.comment.create` and the exact arguments, with a required boolean `confirm`. A
+  decline (or an accept without `confirm: true`) returned `not approved` and sent nothing; an
+  accept with `confirm: true` reached GitHub, which answered `401 Bad credentials`, so the
+  approval survived the sealed-state retry to the dispatch. The `initialize` era behaved the same.
+
+This is an SDK client, not a shipped application: it establishes that the 2026-07-28 path works
+with an independent implementation of the revision, not what any product does. The other rows of
+the matrix are all `initialize` clients.
 
 A connector the Nimbus gateway starts is unchanged: it still runs on the upstream MCP SDK and the
 `initialize` handshake, since the gateway is its only client and approves its writes itself.

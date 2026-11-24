@@ -21,13 +21,13 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
 
 ## Open rows
 
-- [ ] **MCP revision 2026-07-28.** *Built in 0.15.0, not yet run against a real client.* A
+- [ ] **MCP revision 2026-07-28.** *Built in 0.15.0; run against an independent 2026-07-28 client, the Python MCP SDK 2.3.0, on 2026-11-24 (listing, the hidden-writes rule and the consent round trip in both eras, [Client support](./docs/client-support.md)); not yet against a shipped application.* A
   standalone connector runs on the MCP server layer of `@nimbus-dev/sdk` and answers both a
   2026-07-28 client and one that opens with `initialize`; the consent kit asks through an input
   request with a sealed, single-use state ([Client support](./docs/client-support.md), "A note
   on protocol drift"; [SECURITY](./SECURITY.md)). One file, `shared/connector-server.ts`, builds
   every connector's server. What keeps the row open: re-running the client matrix with a shipped
-  2026-07-28 client, which none of this has had. A gateway-started connector stays on the
+  2026-07-28 application (an SDK client has been run; no shipped application has). A gateway-started connector stays on the
   upstream SDK by design. The gateway's roadmap carries the matching row for its own MCP server
   ([Phase 28](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-28--the-agent-door)).
 - [ ] **Audit connector error text.** A tool's thrown message reaches the standalone client
