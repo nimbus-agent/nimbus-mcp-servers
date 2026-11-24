@@ -96,8 +96,8 @@ jobs:
       group: official-registry
       cancel-in-progress: false
     env:
-      NIMBUS_CLI_VERSION: v10.17.0
-      NIMBUS_CLI_SHA256: "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2"
+      NIMBUS_CLI_VERSION: v11.13.0
+      NIMBUS_CLI_SHA256: "86e63106758447c3a06027b7eb124ed06978191fa4c1884b9292fefa3714d912"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2.23.0

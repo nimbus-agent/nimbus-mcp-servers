@@ -92,7 +92,7 @@ jobs:
 
       # `results` is left unset, so the action writes liveness-results.json in the workspace.
       - name: Check
-        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669 # v10.17.0
+        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@f3c4caeecadffe2fe0891417470910d8c49ab705 # v11.13.0
         with:
           mode: liveness-check
           default-branch: "main"
@@ -134,7 +134,7 @@ jobs:
           path: ${{ runner.temp }}/registry-liveness
 
       - name: Sign
-        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669 # v10.17.0
+        uses: nimbus-agent/Nimbus/packages/github-actions/registry-action@f3c4caeecadffe2fe0891417470910d8c49ab705 # v11.13.0
         with:
           mode: liveness-sign
           default-branch: "main"

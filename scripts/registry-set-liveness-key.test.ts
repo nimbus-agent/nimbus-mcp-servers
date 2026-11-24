@@ -117,8 +117,8 @@ describe("the set-liveness-key workflow", () => {
       "cancel-in-progress": false,
     });
     expect(setKey.env).toEqual({
-      NIMBUS_CLI_VERSION: "v10.17.0",
-      NIMBUS_CLI_SHA256: "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2",
+      NIMBUS_CLI_VERSION: "v11.13.0",
+      NIMBUS_CLI_SHA256: "86e63106758447c3a06027b7eb124ed06978191fa4c1884b9292fefa3714d912",
     });
   });
 

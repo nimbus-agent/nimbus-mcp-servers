@@ -46,7 +46,7 @@ describe("the registry liveness workflow", () => {
   const signSteps = sign.steps ?? [];
   const HARDEN = "step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c";
   const ACTION =
-    "nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669";
+    "nimbus-agent/Nimbus/packages/github-actions/registry-action@f3c4caeecadffe2fe0891417470910d8c49ab705";
 
   test("triggers weekly and by hand, and nothing else", () => {
     expect(Object.keys(parsed.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
@@ -176,14 +176,14 @@ describe("the registry liveness workflow", () => {
     expect(text).not.toContain("NIMBUS_PUBLISHER_KEY");
   });
 
-  test("pins every action by commit SHA, the Nimbus action at v10.17.0", () => {
+  test("pins every action by commit SHA, the Nimbus action at v11.13.0", () => {
     const uses = [...text.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((m) => m[1] ?? "");
     expect(uses.length).toBeGreaterThan(2);
     expect(uses.filter((u) => !/@[0-9a-f]{40}$/.test(u))).toEqual([]);
     const lines = text.split("\n").filter((l) => l.includes("registry-action@"));
     expect(lines.length).toBe(2);
     for (const line of lines) {
-      expect(line.trim()).toBe(`uses: ${ACTION} # v10.17.0`);
+      expect(line.trim()).toBe(`uses: ${ACTION} # v11.13.0`);
     }
   });
 });

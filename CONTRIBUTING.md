@@ -69,12 +69,11 @@ What that PR has to get right:
   same commit, or CodeQL fails with "Loaded a configuration file for version X, but running version
   Y". Third-party actions are pinned to a full commit SHA with the tag in a trailing comment; update
   both together.
-- **Held back on purpose: the Nimbus action and CLI pins.** `nimbus-agent/Nimbus/packages/github-actions/registry-action`
-  and `NIMBUS_CLI_VERSION` / `NIMBUS_GATEWAY_VERSION` (with their SHA-256 literals) in
-  `registry-publish.yml` are one pin, v10.17.0, pinned together by `scripts/publish-registry.test.ts`.
-  They are not part of a routine bump: move all of them in a PR that can run the registry workflows.
-  (Checked 2026-11-24: v11.13.0 is released and the action's `action.yml` is unchanged, but the
-  workflows cannot be exercised by CI here.)
+- **The Nimbus action and CLI pins move as one.** `nimbus-agent/Nimbus/packages/github-actions/registry-action`
+  (a commit SHA), `NIMBUS_CLI_VERSION` / `NIMBUS_GATEWAY_VERSION` and their SHA-256 literals in
+  `registry-publish.yml` and `registry-set-liveness-key.yml`, and the tests that pin them are one
+  release (now v11.13.0). Take each digest from the release-asset API and from a `sha256sum` of
+  the downloaded file, and confirm they agree.
 - **Bun moves as a toolchain.** `.bun-version`, `@types/bun` and every workflow `bun-version` go
   together; Bun 1.4 refuses a cmd.exe metacharacter in an argument to a `.cmd` itself and refuses
   `node:child_process` starting a `.cmd` by path, which `shared/windows-batch-args.test.ts` pins.

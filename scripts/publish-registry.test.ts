@@ -1027,12 +1027,12 @@ describe("the registry workflow", () => {
     expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).not.toMatch(/^0+$/);
   });
 
-  test("the gateway is pinned to v10.17.0, checked against a literal and its SHA256SUMS line", () => {
-    expect(score?.env?.["NIMBUS_GATEWAY_VERSION"]).toBe("v10.17.0");
+  test("the gateway is pinned to v11.13.0, checked against a literal and its SHA256SUMS line", () => {
+    expect(score?.env?.["NIMBUS_GATEWAY_VERSION"]).toBe("v11.13.0");
     // The shape check stays beside the literal: a literal copied short must still fail here.
     expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
     expect(score?.env?.["NIMBUS_GATEWAY_SHA256"]).toBe(
-      "9fc1640a4a305a1a7c4b421f2b42371ddd2e075c1aafcd3c04a17b0072ac7318",
+      "8342400226b98398e9ee7528b1d6070562a36bb3e7ce6e42d45e0f504db6b054",
     );
     const run = stepNamed(scoreSteps, "Download the Nimbus gateway")?.run ?? "";
     expect(run).toMatch(/\/releases\/download\/\$\{NIMBUS_GATEWAY_VERSION\}"/);
@@ -1044,12 +1044,12 @@ describe("the registry workflow", () => {
     expect(run).toContain("sha256sum -c CHECKSUM.txt");
   });
 
-  test("the CLI is v10.17.0 with a 64-hex literal in both keyed jobs, the action by 40 hex", () => {
+  test("the CLI is v11.13.0 with a 64-hex literal in both keyed jobs, the action by 40 hex", () => {
     for (const job of [pack, publish]) {
-      expect(job?.env?.["NIMBUS_CLI_VERSION"]).toBe("v10.17.0");
+      expect(job?.env?.["NIMBUS_CLI_VERSION"]).toBe("v11.13.0");
       expect(job?.env?.["NIMBUS_CLI_SHA256"]).toMatch(/^[0-9a-f]{64}$/);
       expect(job?.env?.["NIMBUS_CLI_SHA256"]).toBe(
-        "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2",
+        "86e63106758447c3a06027b7eb124ed06978191fa4c1884b9292fefa3714d912",
       );
       expect(stepNamed(job?.steps ?? [], "Download and verify the Nimbus CLI")?.run).toContain(
         "sha256sum --check --strict",
@@ -1057,7 +1057,7 @@ describe("the registry workflow", () => {
     }
     // The version comment is not in the parsed tree; read it from the text.
     expect(workflow).toMatch(
-      /uses: nimbus-agent\/Nimbus\/packages\/github-actions\/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669 # v10\.17\.0(?: |$)/m,
+      /uses: nimbus-agent\/Nimbus\/packages\/github-actions\/registry-action@f3c4caeecadffe2fe0891417470910d8c49ab705 # v11.13.0(?: |$)/m,
     );
   });
 
