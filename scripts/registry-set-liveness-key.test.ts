@@ -49,7 +49,7 @@ describe("the set-liveness-key workflow", () => {
   const setSteps = setKey.steps ?? [];
   const pubPre = publish.jobs["preflight"]?.steps ?? [];
   const pubSteps = publish.jobs["publish"]?.steps ?? [];
-  const HARDEN = "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1";
+  const HARDEN = "step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c";
   const CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 
   test("is a manual dispatch with no inputs, read-only by default", () => {
@@ -117,8 +117,8 @@ describe("the set-liveness-key workflow", () => {
       "cancel-in-progress": false,
     });
     expect(setKey.env).toEqual({
-      NIMBUS_CLI_VERSION: "v10.17.0",
-      NIMBUS_CLI_SHA256: "840fdc4f7d529e9aa986a9e57272d5584cf719d3f482468c498b31bb74920fe2",
+      NIMBUS_CLI_VERSION: "v11.13.0",
+      NIMBUS_CLI_SHA256: "86e63106758447c3a06027b7eb124ed06978191fa4c1884b9292fefa3714d912",
     });
   });
 

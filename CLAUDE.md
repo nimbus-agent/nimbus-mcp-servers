@@ -7,7 +7,7 @@ The **98 first-party Nimbus MCP connectors**, extracted from the
 **`@nimbus-dev/connectors`**. Each connector is an MCP server over stdio, runnable by any MCP client
 without a Nimbus gateway.
 
-**Runtime:** Bun 1.2+ (CI runs 1.3) / TypeScript 7.x strict · **Linter:** Biome · **License:** AGPL-3.0-only
+**Runtime:** Bun 1.2+ (CI and `.bun-version` pin 1.4.5) / TypeScript 7.x strict · **Linter:** Biome · **License:** AGPL-3.0-only
 
 Read [`docs/architecture.md`](./docs/architecture.md) before changing structure, and
 [`docs/adding-a-connector.md`](./docs/adding-a-connector.md) before adding or modifying one.

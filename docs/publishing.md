@@ -94,7 +94,7 @@ never prompts a reviewer. It holds the publisher key and never the registry root
 1. waits for a reviewer to approve the protected `official-registry` environment;
 2. checks out the release commit and `gh-pages`, with no persisted credential, and runs
    `bun install --frozen-lockfile --ignore-scripts`;
-3. downloads the Nimbus CLI, which is not on npm, from a pinned Nimbus release (v10.17.0) and
+3. downloads the Nimbus CLI, which is not on npm, from a pinned Nimbus release (v11.13.0) and
    verifies it against a SHA-256 written into the workflow as a literal;
 4. builds `dist/server.js` before any key exists;
 5. writes the publisher key to a file under `$RUNNER_TEMP` (mode 0600) and, in the very next step,
@@ -106,7 +106,7 @@ never prompts a reviewer. It holds the publisher key and never the registry root
 
 **`score`** runs the package's own code, so it has no environment, no secret, no checkout, and
 `contents: read` only. It downloads the `.tgz`, sets up the Linux sandbox the same way the Nimbus
-registry template does, downloads the Nimbus gateway of the same release (v10.17.0, checked against
+registry template does, downloads the Nimbus gateway of the same release (v11.13.0, checked against
 a SHA-256 written into the workflow as a literal and against the release's `SHA256SUMS`), and runs
 the registry action's `score-package` mode from that release on the `.tgz`. The action runs the
 baseline and the `evals/` suite in the sandbox and writes `scores.json`, which the job uploads. The
@@ -280,12 +280,12 @@ Both liveness jobs are skipped until the repository variable `OFFICIAL_REGISTRY_
 `true` and the variable `NIMBUS_REGISTRY_LIVENESS_PUBLIC_KEY` is set, so a scheduled run before setup does
 nothing, and the `registry-liveness` environment is never created by a run.
 
-`maintain add` from Nimbus v10.17.0 carries `livenessKey` through every later publish. Do not move
-the pin in `registry-publish.yml` back below v10.17.0, or the next publish drops the key.
+`maintain add` from Nimbus v11.13.0 carries `livenessKey` through every later publish. Do not move
+the pin in `registry-publish.yml` back below v11.13.0, or the next publish drops the key.
 
 ### One-time setup (the owner)
 
-1. Generate the liveness key with Nimbus v10.17.0 or later:
+1. Generate the liveness key with Nimbus v11.13.0 or later:
    `nimbus extension keygen --out <path outside every clone>`. The command writes the seed to the
    file and prints the base64 public key. Back the seed up as for the other keys: encrypt it with
    `age` and keep two offline copies.

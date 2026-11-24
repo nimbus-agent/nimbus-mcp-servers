@@ -12,9 +12,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.0",
-    "@nimbus-dev/sdk": "^2.1.0",
-    "zod": "^4.6.5"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@nimbus-dev/sdk": "^2.3.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -47,7 +47,7 @@ body:
     id: runtime
     attributes:
       label: Runtime & OS
-      placeholder: "Bun 1.3.x on Windows 11"
+      placeholder: "Bun 1.4.x on Windows 11"
     validations:
       required: true
   - type: textarea
