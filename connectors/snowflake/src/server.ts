@@ -148,6 +148,17 @@ export interface SnowflakeColumn {
   ordinal: number | null;
 }
 
+/** Snowflake lists every result partition in `partitionInfo`; the response body holds only the first. */
+function hasMorePartitions(parsed: unknown): boolean {
+  const info = asRecord(asRecord(parsed)?.["resultSetMetaData"])?.["partitionInfo"];
+  return Array.isArray(info) && info.length > 1;
+}
+
+/** Case-preserving key: `USERS` and `"users"` are different tables, so the lowercased key will not do. */
+function exactTableKey(row: Record<string, unknown>): string {
+  return JSON.stringify([row["database_name"], row["schema_name"], row["table_name"]]);
+}
+
 /**
  * Column metadata for the given tables: ONE `information_schema.columns` query per distinct
  * (database, schema), not per table, each capped at {@link MAX_COLUMNS_PER_SCHEMA} rows, and at most
@@ -165,7 +176,7 @@ async function fetchColumnsFor(
     const db = t["database_name"];
     const schema = t["schema_name"];
     if (typeof db !== "string" || typeof schema !== "string") {
-      incomplete.add(tableKey(t));
+      incomplete.add(exactTableKey(t));
       continue;
     }
     schemas.set(schemaKey(db, schema), { db, schema });
@@ -182,12 +193,12 @@ async function fetchColumnsFor(
       `WHERE table_catalog = ${sfValueLiteral(db)} AND table_schema = ${sfValueLiteral(schema)}` +
       (onlyTable === undefined ? "" : ` AND table_name = ${sfValueLiteral(onlyTable)}`);
     try {
-      const rows = rowsFromStatementsResponse(
-        await executeStatement(
-          `${COLUMNS_SQL} ${filter} ORDER BY table_name, ordinal_position LIMIT ${MAX_COLUMNS_PER_SCHEMA + 1}`,
-        ),
+      const parsed = await executeStatement(
+        `${COLUMNS_SQL} ${filter} ORDER BY table_name, ordinal_position LIMIT ${MAX_COLUMNS_PER_SCHEMA + 1}`,
       );
-      if (rows.length > MAX_COLUMNS_PER_SCHEMA) failed.add(key);
+      const rows = rowsFromStatementsResponse(parsed);
+      // Only the first result partition comes back in this response; a LIMIT does not prove it holds every row.
+      if (rows.length > MAX_COLUMNS_PER_SCHEMA || hasMorePartitions(parsed)) failed.add(key);
       for (const r of rows.slice(0, MAX_COLUMNS_PER_SCHEMA)) {
         if (typeof r["column_name"] !== "string" || r["column_name"] === "") continue;
         const ordinal = Number(r["ordinal_position"]);
@@ -197,7 +208,7 @@ async function fetchColumnsFor(
           nullable: r["is_nullable"] === "YES" ? true : r["is_nullable"] === "NO" ? false : null,
           ordinal: Number.isFinite(ordinal) ? ordinal : null,
         };
-        const k = tableKey(r);
+        const k = exactTableKey(r);
         const list = byTable.get(k);
         if (list === undefined) byTable.set(k, [col]);
         else list.push(col);
@@ -210,7 +221,7 @@ async function fetchColumnsFor(
     const db = t["database_name"];
     const schema = t["schema_name"];
     if (typeof db === "string" && typeof schema === "string" && failed.has(schemaKey(db, schema))) {
-      incomplete.add(tableKey(t));
+      incomplete.add(exactTableKey(t));
     }
   }
   return { byTable, incomplete };
@@ -223,7 +234,7 @@ async function withColumns(
 ): Promise<Record<string, unknown>[]> {
   const { byTable, incomplete } = await fetchColumnsFor(tables, onlyTable);
   return tables.map((t) => {
-    const k = tableKey(t);
+    const k = exactTableKey(t);
     return { ...t, columns: byTable.get(k) ?? [], columns_complete: !incomplete.has(k) };
   });
 }

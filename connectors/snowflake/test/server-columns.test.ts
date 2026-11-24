@@ -65,6 +65,10 @@ function parsePayload(res: McpListResult): { items: unknown[]; nextCursor: strin
   return JSON.parse((res.content[0] as { text: string }).text);
 }
 
+function names(item: Record<string, unknown> | undefined): string[] {
+  return ((item?.["columns"] ?? []) as { name: string }[]).map((c) => c.name);
+}
+
 function resp(names: string[], data: unknown[][]): Response {
   return new Response(
     JSON.stringify({ resultSetMetaData: { rowType: names.map((name) => ({ name })) }, data }),
@@ -212,5 +216,44 @@ describe("snowflake table columns", () => {
     const q = statements.filter((s) => s.includes("information_schema.columns"));
     expect(q).toHaveLength(1);
     expect(q[0]).toContain("table_name = 'USERS'");
+  });
+
+  it("marks a schema incomplete when Snowflake reports more than one result partition", async () => {
+    const base = globalThis.fetch;
+    globalThis.fetch = (async (u: string, init: { body: string }) => {
+      const r = await base(u, init);
+      const j = JSON.parse(await r.text()) as { resultSetMetaData: Record<string, unknown> };
+      if (JSON.parse(init.body).statement.includes("information_schema.columns")) {
+        j.resultSetMetaData["partitionInfo"] = [{ rowCount: 1 }, { rowCount: 1 }];
+      }
+      return new Response(JSON.stringify(j), { status: 200 });
+    }) as unknown as typeof fetch;
+    const items = parsePayload(await tool(captureTools(), "snowflake_list")({})).items as Record<
+      string,
+      unknown
+    >[];
+    expect(items.every((i) => i["columns_complete"] === false)).toBe(true);
+  });
+
+  it("keeps USERS and a quoted lower-case users table's columns apart", async () => {
+    globalThis.fetch = (async (_u: string, init: { body: string }) => {
+      const statement = JSON.parse(init.body).statement as string;
+      if (statement.includes("information_schema.columns")) {
+        return resp(COLUMN_COLS, [
+          ["DB", "PUBLIC", "USERS", "A", "TEXT", "NO", "1"],
+          ["DB", "PUBLIC", "users", "B", "TEXT", "NO", "1"],
+        ]);
+      }
+      return resp(TABLE_COLS, [
+        ["DB", "PUBLIC", "USERS", "1", "2026-01-01T00:00:00Z"],
+        ["DB", "PUBLIC", "users", "1", "2026-01-01T00:00:00Z"],
+      ]);
+    }) as unknown as typeof fetch;
+    const items = parsePayload(await tool(captureTools(), "snowflake_list")({})).items as Record<
+      string,
+      unknown
+    >[];
+    expect(names(items[0])).toEqual(["A"]);
+    expect(names(items[1])).toEqual(["B"]);
   });
 });
