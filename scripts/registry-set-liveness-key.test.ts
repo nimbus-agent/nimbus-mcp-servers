@@ -49,7 +49,7 @@ describe("the set-liveness-key workflow", () => {
   const setSteps = setKey.steps ?? [];
   const pubPre = publish.jobs["preflight"]?.steps ?? [];
   const pubSteps = publish.jobs["publish"]?.steps ?? [];
-  const HARDEN = "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1";
+  const HARDEN = "step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c";
   const CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
 
   test("is a manual dispatch with no inputs, read-only by default", () => {

@@ -44,7 +44,7 @@ describe("the registry liveness workflow", () => {
   const sign = parsed.jobs["sign"] as Job;
   const checkSteps = check.steps ?? [];
   const signSteps = sign.steps ?? [];
-  const HARDEN = "step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1";
+  const HARDEN = "step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c";
   const ACTION =
     "nimbus-agent/Nimbus/packages/github-actions/registry-action@90515ccbb2c4d74aa5db31cfe17d9c0dcf44e669";
 

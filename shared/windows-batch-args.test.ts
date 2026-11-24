@@ -407,6 +407,8 @@ describe.skipIf(process.platform !== "win32")(
       readonly cwd?: string;
       /** Whether Bun starts a batch file: measured, and pinned. */
       readonly bunStartsBatch: boolean;
+      /** Whether `node:child_process` starts it, when that differs (Bun 1.4 refuses a .cmd path). */
+      readonly childProcessStartsBatch?: boolean;
       /** What `mayRunAsBatchFile` says. */
       readonly predicted: boolean;
     }
@@ -462,7 +464,7 @@ describe.skipIf(process.platform !== "win32")(
         files: ["first/ordx.com.cmd"],
         program: () => "ordx.com",
         env: (d) => ({ PATH: at(d, "first") }),
-        bunStartsBatch: true,
+        bunStartsBatch: false,
         predicted: true,
       },
       {
@@ -489,6 +491,7 @@ describe.skipIf(process.platform !== "win32")(
         program: (d) => at(d, "first", "ordx.cmd"),
         env: (d) => ({ Path: at(d, "first") }),
         bunStartsBatch: true,
+        childProcessStartsBatch: false,
         predicted: true,
       },
       {
@@ -497,6 +500,7 @@ describe.skipIf(process.platform !== "win32")(
         program: (d) => `${at(d, "first", "ordx.cmd")}.`,
         env: (d) => ({ Path: at(d, "first") }),
         bunStartsBatch: true,
+        childProcessStartsBatch: false,
         predicted: true,
       },
       {
@@ -504,7 +508,8 @@ describe.skipIf(process.platform !== "win32")(
         files: ["first/ordx.cmd", "second/ordx.exe"],
         program: bare,
         env: (d) => ({ PATH: at(d, "first"), Path: at(d, "second") }),
-        bunStartsBatch: true,
+        bunStartsBatch: false,
+        childProcessStartsBatch: true,
         predicted: true,
       },
       {
@@ -516,19 +521,20 @@ describe.skipIf(process.platform !== "win32")(
         predicted: true,
       },
       {
-        name: "margin: only Path is set — Bun starts nothing",
+        name: "only Path is set — Bun 1.4 finds the .cmd through it",
         files: ["first/ordx.cmd"],
         program: bare,
         env: (d) => ({ Path: at(d, "first") }),
-        bunStartsBatch: false,
+        bunStartsBatch: true,
         predicted: true,
       },
       {
-        name: "margin: PATH and Path disagree, Path holding the .cmd — Bun reads PATH",
+        name: "PATH and Path disagree, Path holding the .cmd — Bun.spawn finds it, node:child_process does not",
         files: ["first/ordx.exe", "second/ordx.cmd"],
         program: bare,
         env: (d) => ({ PATH: at(d, "first"), Path: at(d, "second") }),
-        bunStartsBatch: false,
+        bunStartsBatch: true,
+        childProcessStartsBatch: false,
         predicted: true,
       },
       {
@@ -575,6 +581,11 @@ describe.skipIf(process.platform !== "win32")(
       }
     }
 
+    /** Bun 1.4's own refusal of a metacharacter argument to a .bat/.cmd, which names a batch file. */
+    function refusedForBatchFile(e: unknown): boolean {
+      return e instanceof Error && e.message.includes("cmd.exe special character");
+    }
+
     /** Whether cmd.exe parsed the argument when `Bun.spawn` started `program`. */
     async function parsedViaBunSpawn(
       program: string,
@@ -590,8 +601,10 @@ describe.skipIf(process.platform !== "win32")(
         });
         await proc.exited;
         return (await new Response(proc.stdout).text()).includes(MARK);
-      } catch {
-        return false; // nothing to start: Bun found no file
+      } catch (e) {
+        // Bun 1.4 refuses a cmd.exe metacharacter in an argument to a batch file BEFORE starting
+        // it, so a refusal of that kind proves Bun's lookup found a batch file.
+        return refusedForBatchFile(e);
       }
     }
 
@@ -608,10 +621,10 @@ describe.skipIf(process.platform !== "win32")(
           child.stdout.on("data", (chunk: Buffer) => {
             out += chunk.toString();
           });
-          child.on("error", () => resolve(false));
+          child.on("error", (e) => resolve(refusedForBatchFile(e)));
           child.on("close", () => resolve(out.includes(MARK)));
-        } catch {
-          resolve(false);
+        } catch (e) {
+          resolve(refusedForBatchFile(e));
         }
       });
     }
@@ -634,7 +647,7 @@ describe.skipIf(process.platform !== "win32")(
         });
         expect({ viaBunSpawn, viaChildProcess, predicted }).toEqual({
           viaBunSpawn: layout.bunStartsBatch,
-          viaChildProcess: layout.bunStartsBatch,
+          viaChildProcess: layout.childProcessStartsBatch ?? layout.bunStartsBatch,
           predicted: layout.predicted,
         });
       });
