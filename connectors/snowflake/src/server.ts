@@ -121,6 +121,113 @@ async function fetchTables(page?: {
   return rowsFromStatementsResponse(await executeStatement(statement));
 }
 
+/** Column names, types and nullability only. NEVER `column_default`, `comment` or any row data. */
+const COLUMNS_SQL =
+  "SELECT table_catalog AS database_name, table_schema AS schema_name, table_name, " +
+  "column_name, data_type, is_nullable, ordinal_position FROM information_schema.columns";
+
+/** At most this many schemas get a column query per page; tables in the rest are marked incomplete. */
+const MAX_SCHEMAS_PER_PAGE = 50;
+/** At most this many column rows per schema query; a cut schema marks its tables incomplete. */
+const MAX_COLUMNS_PER_SCHEMA = 20_000;
+
+/** A string literal for a value read back from Snowflake: doubles `'` and `\` (Snowflake's escape). */
+function sfValueLiteral(v: string): string {
+  return `'${v.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
+}
+
+/** Collision-free (database, schema) key. */
+function schemaKey(db: string, schema: string): string {
+  return JSON.stringify([db, schema]);
+}
+
+export interface SnowflakeColumn {
+  name: string;
+  type: string | null;
+  nullable: boolean | null;
+  ordinal: number | null;
+}
+
+/**
+ * Column metadata for the given tables: ONE `information_schema.columns` query per distinct
+ * (database, schema), not per table, each capped at {@link MAX_COLUMNS_PER_SCHEMA} rows, and at most
+ * {@link MAX_SCHEMAS_PER_PAGE} schemas. Returns the columns by table key plus the keys of tables whose
+ * columns may be incomplete (schema over the cap, cut result, or a failed query).
+ */
+async function fetchColumnsFor(
+  tables: Record<string, unknown>[],
+  onlyTable?: string,
+): Promise<{ byTable: Map<string, SnowflakeColumn[]>; incomplete: Set<string> }> {
+  const byTable = new Map<string, SnowflakeColumn[]>();
+  const incomplete = new Set<string>();
+  const schemas = new Map<string, { db: string; schema: string }>();
+  for (const t of tables) {
+    const db = t["database_name"];
+    const schema = t["schema_name"];
+    if (typeof db !== "string" || typeof schema !== "string") {
+      incomplete.add(tableKey(t));
+      continue;
+    }
+    schemas.set(schemaKey(db, schema), { db, schema });
+  }
+  let queried = 0;
+  const failed = new Set<string>();
+  for (const [key, { db, schema }] of schemas) {
+    if (queried >= MAX_SCHEMAS_PER_PAGE) {
+      failed.add(key);
+      continue;
+    }
+    queried++;
+    const filter =
+      `WHERE table_catalog = ${sfValueLiteral(db)} AND table_schema = ${sfValueLiteral(schema)}` +
+      (onlyTable === undefined ? "" : ` AND table_name = ${sfValueLiteral(onlyTable)}`);
+    try {
+      const rows = rowsFromStatementsResponse(
+        await executeStatement(
+          `${COLUMNS_SQL} ${filter} ORDER BY table_name, ordinal_position LIMIT ${MAX_COLUMNS_PER_SCHEMA + 1}`,
+        ),
+      );
+      if (rows.length > MAX_COLUMNS_PER_SCHEMA) failed.add(key);
+      for (const r of rows.slice(0, MAX_COLUMNS_PER_SCHEMA)) {
+        if (typeof r["column_name"] !== "string" || r["column_name"] === "") continue;
+        const ordinal = Number(r["ordinal_position"]);
+        const col: SnowflakeColumn = {
+          name: r["column_name"],
+          type: typeof r["data_type"] === "string" ? r["data_type"] : null,
+          nullable: r["is_nullable"] === "YES" ? true : r["is_nullable"] === "NO" ? false : null,
+          ordinal: Number.isFinite(ordinal) ? ordinal : null,
+        };
+        const k = tableKey(r);
+        const list = byTable.get(k);
+        if (list === undefined) byTable.set(k, [col]);
+        else list.push(col);
+      }
+    } catch {
+      failed.add(key);
+    }
+  }
+  for (const t of tables) {
+    const db = t["database_name"];
+    const schema = t["schema_name"];
+    if (typeof db === "string" && typeof schema === "string" && failed.has(schemaKey(db, schema))) {
+      incomplete.add(tableKey(t));
+    }
+  }
+  return { byTable, incomplete };
+}
+
+/** Adds `columns` (`{ name, type, nullable, ordinal }[]`) and `columns_complete` to each table row. */
+async function withColumns(
+  tables: Record<string, unknown>[],
+  onlyTable?: string,
+): Promise<Record<string, unknown>[]> {
+  const { byTable, incomplete } = await fetchColumnsFor(tables, onlyTable);
+  return tables.map((t) => {
+    const k = tableKey(t);
+    return { ...t, columns: byTable.get(k) ?? [], columns_complete: !incomplete.has(k) };
+  });
+}
+
 function tableKey(row: Record<string, unknown>): string {
   const db = typeof row["database_name"] === "string" ? row["database_name"].toLowerCase() : "";
   const schema = typeof row["schema_name"] === "string" ? row["schema_name"].toLowerCase() : "";
@@ -181,7 +288,7 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
 
   reg(
     "snowflake_list",
-    "List Snowflake tables across all databases and schemas. Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
+    "List Snowflake tables across all databases and schemas, each with its `columns` (`{ name, type, nullable, ordinal }`, metadata only, never row data or defaults; `columns_complete` is false when they may be cut). Paginated: `cursor` (opaque offset) + `limit` (default 200, max 500) → `{ items, nextCursor }`.",
     cursorListInputSchema(),
     async (p) => {
       const limit = p.limit ?? 200;
@@ -189,8 +296,9 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
         p.cursor === null || p.cursor === undefined || p.cursor === ""
           ? 0
           : Math.max(0, Number.parseInt(p.cursor, 10) || 0);
-      const items = await fetchTables({ limit, offset });
-      const nextCursor = items.length === limit ? String(offset + limit) : null;
+      const tables = await fetchTables({ limit, offset });
+      const items = await withColumns(tables);
+      const nextCursor = tables.length === limit ? String(offset + limit) : null;
       return jsonResult({ items, nextCursor });
     },
   );
@@ -208,7 +316,8 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
       if (found === undefined) {
         throw new Error(`Snowflake table not found: ${p.id}`);
       }
-      return jsonResult(found);
+      const [withCols] = await withColumns([found], found["table_name"] as string);
+      return jsonResult(withCols);
     },
   );
 

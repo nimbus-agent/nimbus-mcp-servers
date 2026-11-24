@@ -104,8 +104,10 @@ describe("snowflake server main tools", () => {
       table_name: "USERS",
       row_count: 100,
       last_altered: "2026-01-01T00:00:00Z",
+      columns: [],
+      columns_complete: true,
     });
-    expect(fetchCalls).toBe(1);
+    expect(fetchCalls).toBe(2); // the tables, then the one schema's columns
   });
 
   it("snowflake_get rejects when the table is not found", async () => {
@@ -169,8 +171,20 @@ describe("snowflake server main tools", () => {
       await (captureTools().get("snowflake_list") as Handler)({ cursor: "not-a-number" }),
     );
     expect(out["items"]).toEqual([
-      { database_name: "DB1", table_name: "EVENTS", row_count: "" },
-      { database_name: "DB1", table_name: "LOGS", row_count: 7 },
+      {
+        database_name: "DB1",
+        table_name: "EVENTS",
+        row_count: "",
+        columns: [],
+        columns_complete: false,
+      },
+      {
+        database_name: "DB1",
+        table_name: "LOGS",
+        row_count: 7,
+        columns: [],
+        columns_complete: false,
+      },
     ]);
     expect(out["nextCursor"]).toBeNull();
     expect(statements[0]).toEndWith("LIMIT 200 OFFSET 0");
@@ -195,11 +209,15 @@ describe("snowflake server main tools", () => {
       database_name: "DB1",
       schema_name: null,
       table_name: "EVENTS",
+      columns: [],
+      columns_complete: false,
     });
     expect(payload(await get({ id: ".public." }))).toEqual({
       database_name: null,
       schema_name: "PUBLIC",
       table_name: 7,
+      columns: [],
+      columns_complete: false,
     });
   });
 
