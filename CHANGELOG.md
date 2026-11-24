@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.0...connectors-v0.17.1) (2026-11-24)
+
+
+### Miscellaneous Chores
+
+* release 0.17.1 ([#96](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/96)) ([fda6a07](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/fda6a0727373a5bc410b8e4a76f4112c592c6096))
+
 ## [0.17.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.16.0...connectors-v0.17.0) (2026-11-23)
 
 
