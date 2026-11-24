@@ -11,7 +11,11 @@ column names and tags only — **NEVER row data or cell values**.
 
 Uses the Snowflake SQL REST API (`POST /api/v2/statements`) with OAuth token
 or key-pair JWT auth. v1 indexes tables from `information_schema.tables` across
-all non-INFORMATION_SCHEMA schemas.
+all non-INFORMATION_SCHEMA schemas. `snowflake_list` and `snowflake_get` also return each
+table's `columns` (`{ name, type, nullable, ordinal }`, from `information_schema.columns`, one
+query per schema, capped at 20,000 columns per schema and 50 schemas per page;
+`columns_complete` is false when a cap or a failed query may have cut them). Never a column
+default, comment or any row data.
 
 ## Install
 
