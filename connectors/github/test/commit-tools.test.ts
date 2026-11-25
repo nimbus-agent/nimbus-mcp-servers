@@ -332,7 +332,7 @@ describe("github_commit_prepare", () => {
         "GITHUB_PAT is not set",
       );
     });
-    expect(stub.calls.length).toBe(before);
+    expect(stub.calls).toHaveLength(before);
   });
 });
 

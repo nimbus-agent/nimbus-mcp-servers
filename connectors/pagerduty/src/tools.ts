@@ -40,7 +40,7 @@ async function pdFetch(token: string, path: string, init?: RequestInit): Promise
 export function isEmailShape(email: string): boolean {
   if (email.length === 0 || email.length > 254) return false;
   for (let i = 0; i < email.length; i++) {
-    const c = email.charCodeAt(i);
+    const c = email.codePointAt(i) ?? 0;
     if (c <= 0x20 || (c >= 0x7f && c <= 0xa0) || c === 0x2028 || c === 0x2029 || c === 0xfeff) {
       return false;
     }

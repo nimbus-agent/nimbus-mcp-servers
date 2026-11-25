@@ -181,7 +181,7 @@ describe("the registry liveness workflow", () => {
     expect(uses.length).toBeGreaterThan(2);
     expect(uses.filter((u) => !/@[0-9a-f]{40}$/.test(u))).toEqual([]);
     const lines = text.split("\n").filter((l) => l.includes("registry-action@"));
-    expect(lines.length).toBe(2);
+    expect(lines).toHaveLength(2);
     for (const line of lines) {
       expect(line.trim()).toBe(`uses: ${ACTION} # v11.13.0`);
     }

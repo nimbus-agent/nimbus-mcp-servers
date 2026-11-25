@@ -145,7 +145,7 @@ function firstBadCharacter(text: string): { index: number; code: number } | unde
   let i = 0;
   while (i < text.length) {
     const units = allowedUnitsAt(text, i);
-    if (units === 0) return { index: i, code: text.charCodeAt(i) };
+    if (units === 0) return { index: i, code: text.codePointAt(i) ?? 0 };
     i += units;
   }
   return undefined;

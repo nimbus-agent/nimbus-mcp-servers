@@ -105,7 +105,7 @@ async function appGroupIds(appId: string): Promise<Set<string>> {
 async function publicLinkGroupIds(ids: readonly string[]): Promise<string[]> {
   const open: string[] = [];
   for (const id of ids) {
-    const root = asObj(await appstoreGet(`/v1/betaGroups/${encodeURIComponent(id)}`));
+    const root = asObj(await appstoreGet(`/v1/betaGroups/${encodeURIComponent(id)}`)); // NOSONAR S9382: one at a time on purpose; at most 20 groups, and App Store Connect rate-limits each key.
     if (asObj(asObj(root["data"])["attributes"])["publicLinkEnabled"] === true) open.push(id);
   }
   return open;

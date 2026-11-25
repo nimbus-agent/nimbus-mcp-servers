@@ -181,10 +181,11 @@ export function registerNetlifyTools(
         search.set("clear_cache", "true");
       }
       const qs = search.toString();
+      const query = qs === "" ? "" : `?${qs}`;
       const reply = asObj(
         await netlifySend(
           "POST",
-          `/api/v1/sites/${encodeURIComponent(p.siteId)}/builds${qs === "" ? "" : `?${qs}`}`,
+          `/api/v1/sites/${encodeURIComponent(p.siteId)}/builds${query}`,
           undefined,
         ),
       );

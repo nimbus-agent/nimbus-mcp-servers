@@ -782,7 +782,7 @@ describe("apple_calendar_event_get", () => {
     expect(out["calendar"]).toBe("Work");
     expect(out["summary"]).toBe("Standup");
     expect(out["href"]).toBe("https://caldav.icloud.com/calendars/work/e1.ics");
-    expect((out["notes"] as string).length).toBe(CAPPED_NOTES_LEN);
+    expect(out["notes"] as string).toHaveLength(CAPPED_NOTES_LEN);
   });
 
   it("refuses an empty href and propagates the client's refusal", async () => {

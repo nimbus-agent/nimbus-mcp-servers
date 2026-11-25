@@ -169,6 +169,31 @@ export function nestedString(root: Record<string, unknown>, path: readonly strin
 }
 
 /**
+ * {@link fieldsFromKeys} for rows whose fields may nest: each entry is a top-level key
+ * ({@link stringField}) or a key path ({@link nestedString}), read in the order given off each
+ * objectish row, optionally followed by the standard `tags` text.
+ */
+export function fieldsFromPaths(
+  paths: readonly (string | readonly string[])[],
+  opts?: { readonly tags?: boolean },
+): FieldExtractor {
+  const tags = opts?.tags === true;
+  return (item: unknown) => {
+    const row = asObjectish(item);
+    if (row === undefined) {
+      return null;
+    }
+    const parts = paths.map((p) =>
+      typeof p === "string" ? stringField(row, p) : nestedString(row, p),
+    );
+    if (tags) {
+      parts.push(tagText(row));
+    }
+    return parts;
+  };
+}
+
+/**
  * Build a `filter<Thing>(items, options)` search function from a field
  * extractor. Connectors with bespoke extraction pass their own `fieldsOf`;
  * simple ones pair this with {@link fieldsFromKeys}.
