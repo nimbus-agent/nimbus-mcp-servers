@@ -74,6 +74,7 @@ describe("vantage_cost_list", () => {
       start_date: "2026-10-01",
       end_date: "2026-11-12",
       date_bin: "day",
+      filter: "()",
       groupings: "provider,service,account_id",
       limit: "5000",
       page: "1",
@@ -123,6 +124,34 @@ describe("vantage_cost_list", () => {
       { VANTAGE_GROUP_BY: "region" },
     );
     expect(new URL(noReport.only.url).searchParams.get("groupings")).toBe("region");
+  });
+
+  it("sends filter=() when no cost report token is set, with workspace_token when set", async () => {
+    const stub = serve(JSON.stringify(COSTS_LAST_PAGE));
+    await configured(
+      async () => {
+        await tools.call("vantage_cost_list", { sinceMs: SINCE, untilMs: UNTIL });
+      },
+      { VANTAGE_WORKSPACE_TOKEN: "wrkspc_abc" },
+    );
+    expect(stub.only.url).toContain("filter=%28%29");
+    const q = new URL(stub.only.url).searchParams;
+    expect(q.get("filter")).toBe("()");
+    expect(q.get("workspace_token")).toBe("wrkspc_abc");
+    expect(q.has("cost_report_token")).toBe(false);
+  });
+
+  it("sends no filter when a cost report token is set", async () => {
+    const stub = serve(JSON.stringify(COSTS_LAST_PAGE));
+    await configured(
+      async () => {
+        await tools.call("vantage_cost_list", { sinceMs: SINCE, untilMs: UNTIL });
+      },
+      { VANTAGE_COST_REPORT_TOKEN: "rprt_abc" },
+    );
+    const q = new URL(stub.only.url).searchParams;
+    expect(q.has("filter")).toBe(false);
+    expect(q.get("cost_report_token")).toBe("rprt_abc");
   });
 
   it("sends workspace_token when VANTAGE_WORKSPACE_TOKEN is set", async () => {

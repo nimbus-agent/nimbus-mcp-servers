@@ -82,9 +82,11 @@ live account, and no request has been made to one. These facts are therefore unc
 - `start_date` and `end_date` are documented as "ISO 8601 formatted" strings with no declared
   format. The connector sends `YYYY-MM-DD` (UTC). `end_date` is always sent; `start_date` only when
   `sinceMs` is given.
-- Whether `GET /costs` without a report token or filter returns data for the whole workspace by
-  default is not stated by the file. The connector sends `provider,service,account_id` groupings in
-  that case.
+- `GET /costs` with neither a report token nor a filter is rejected with HTTP 400. With no cost
+  report token the connector therefore sends `filter=()` (an empty VQL filter: all costs in the
+  workspace) beside `workspace_token` when set, and `provider,service,account_id` groupings. Verified
+  against one live account whose only data was one provider; not yet seen across several providers.
+  With a report token no `filter` is sent.
 - The `x-rate-limit-reset` header and the 1.2 s pacing assumption come from the rate-limiting docs
   page; a `429` is not listed in the operation's responses.
 - The `vantage_search` tool sees only the first 1000 active recommendations (one request).
