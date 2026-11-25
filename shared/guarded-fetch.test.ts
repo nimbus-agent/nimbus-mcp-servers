@@ -157,3 +157,34 @@ describe("guardedFetch default transport", () => {
     expect(seen?.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+describe("guardedFetch base transport", () => {
+  it.each(["http://localhost:8080/x", "http://127.0.0.1/x", "http://[::1]:9000/x"])(
+    "accepts the loopback http base %s",
+    async (url) => {
+      const t = scripted([ok()]);
+      const res = await guardedFetch("Svc", url, {}, { fetch: t.fetch });
+      expect(res.status).toBe(200);
+      expect(t.calls).toHaveLength(1);
+    },
+  );
+
+  it.each(["http://api.example.com/x", "ftp://api.example.com/x"])(
+    "refuses the base %s before any request",
+    async (url) => {
+      const t = scripted([]);
+      await expect(guardedFetch("Svc", url, {}, { fetch: t.fetch })).rejects.toThrow(
+        "Svc base URL must be https (or loopback http); refused",
+      );
+      expect(t.calls).toHaveLength(0);
+    },
+  );
+
+  it("refuses a redirect to a Location that is not a URL", async () => {
+    const t = scripted([redirect(302, "https://[::1")]);
+    await expect(
+      guardedFetch("Svc", "https://api.example.com/x", {}, { fetch: t.fetch }),
+    ).rejects.toThrow("Svc redirected to an invalid URL; refused");
+    expect(t.calls).toHaveLength(1);
+  });
+});

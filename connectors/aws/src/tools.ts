@@ -55,28 +55,29 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function projectInstance(raw: unknown): Record<string, unknown> {
   const reservations =
     isRecord(raw) && Array.isArray(raw["Reservations"]) ? raw["Reservations"] : [];
-  for (const r of reservations) {
-    const instances = isRecord(r) && Array.isArray(r["Instances"]) ? r["Instances"] : [];
-    for (const i of instances) {
-      if (!isRecord(i) || typeof i["InstanceId"] !== "string") continue;
-      const state = isRecord(i["State"]) ? i["State"]["Name"] : undefined;
-      const profile = isRecord(i["IamInstanceProfile"])
-        ? i["IamInstanceProfile"]["Arn"]
-        : undefined;
-      const tags = (Array.isArray(i["Tags"]) ? i["Tags"] : [])
-        .filter(isRecord)
-        .map((t) => ({ key: t["Key"], value: t["Value"] }));
-      return {
-        instanceId: i["InstanceId"],
-        state: typeof state === "string" ? state : undefined,
-        instanceType: i["InstanceType"],
-        launchTime: i["LaunchTime"],
-        tags,
-        iamProfileArn: typeof profile === "string" ? profile : undefined,
-      };
-    }
-  }
-  throw new Error("instance not found");
+  const instances: unknown[] = reservations.flatMap((r: unknown) =>
+    isRecord(r) && Array.isArray(r["Instances"]) ? r["Instances"] : [],
+  );
+  const first = instances.find((i) => isRecord(i) && typeof i["InstanceId"] === "string");
+  if (!isRecord(first)) throw new Error("instance not found");
+  return instanceView(first);
+}
+
+/** One `Instances[]` entry, whose `InstanceId` is a string, as the tools report it. */
+function instanceView(i: Record<string, unknown>): Record<string, unknown> {
+  const state = isRecord(i["State"]) ? i["State"]["Name"] : undefined;
+  const profile = isRecord(i["IamInstanceProfile"]) ? i["IamInstanceProfile"]["Arn"] : undefined;
+  const tags = (Array.isArray(i["Tags"]) ? i["Tags"] : [])
+    .filter(isRecord)
+    .map((t) => ({ key: t["Key"], value: t["Value"] }));
+  return {
+    instanceId: i["InstanceId"],
+    state: typeof state === "string" ? state : undefined,
+    instanceType: i["InstanceType"],
+    launchTime: i["LaunchTime"],
+    tags,
+    iamProfileArn: typeof profile === "string" ? profile : undefined,
+  };
 }
 
 /**

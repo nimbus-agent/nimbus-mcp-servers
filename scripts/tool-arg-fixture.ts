@@ -107,35 +107,45 @@ export function fixtureFor(
     }
     let repaired = false;
     for (const issue of result.error?.issues ?? []) {
-      const key = issue.path[0];
-      if (typeof key !== "string") {
-        continue;
-      }
-      // One level deeper is an element of an array argument (`[0]`): a list of numbers is first
-      // seeded with the string every list is, and the element's own complaint fixes its type.
-      const index = issue.path[1];
-      const list = args[key];
-      if (issue.path.length === 2 && typeof index === "number" && Array.isArray(list)) {
-        const element = candidate(issue, list[index]);
-        if (element !== undefined && !Object.is(element, list[index])) {
-          list[index] = element;
-          repaired = true;
-        }
-        continue;
-      }
-      if (issue.path.length !== 1) {
-        continue;
-      }
-      const next = candidate(issue, args[key]);
-      if (next === undefined || Object.is(next, args[key])) {
-        continue;
-      }
-      args[key] = next;
-      repaired = true;
+      // Every issue is patched, whether or not an earlier one already was.
+      const patched = repairIssue(args, issue);
+      repaired = repaired || patched;
     }
     if (!repaired) {
       return undefined;
     }
   }
   return undefined;
+}
+
+/** Patch the one value `issue` complains about, in place; true when something changed. */
+function repairIssue(args: Record<string, unknown>, issue: ZodIssue): boolean {
+  const key = issue.path[0];
+  if (typeof key !== "string") {
+    return false;
+  }
+  // One level deeper is an element of an array argument (`[0]`): a list of numbers is first
+  // seeded with the string every list is, and the element's own complaint fixes its type.
+  const index = issue.path[1];
+  const list = args[key];
+  if (issue.path.length === 2 && typeof index === "number" && Array.isArray(list)) {
+    return replaceIfChanged(list, index, candidate(issue, list[index]));
+  }
+  if (issue.path.length !== 1) {
+    return false;
+  }
+  return replaceIfChanged(args, key, candidate(issue, args[key]));
+}
+
+/** Store `next` at `holder[slot]` unless it is undefined or the value already there. */
+function replaceIfChanged<K extends string | number>(
+  holder: { [slot in K]?: unknown },
+  slot: K,
+  next: unknown,
+): boolean {
+  if (next === undefined || Object.is(next, holder[slot])) {
+    return false;
+  }
+  holder[slot] = next;
+  return true;
 }

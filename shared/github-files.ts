@@ -146,50 +146,78 @@ export async function readGithubFilesAt(
   const rootTree = await commitTreeSha(token, owner, repo, commitSha);
   const cache = new Map<string, TreeEntry[]>();
   const out: GithubFileRead[] = [];
-  let used = 0;
-  let exhausted = false;
+  const budget: ReadBudget = { used: 0, exhausted: false };
   for (const path of paths) {
     const entry = await findEntry(token, owner, repo, rootTree, path, cache); // NOSONAR S9382: sequential on purpose; the tree cache makes later paths cheap.
     if (entry === undefined) {
       out.push({ path, exists: false });
       continue;
     }
-    if (entry.type !== "blob" || entry.mode === "120000") {
-      out.push({ path, exists: true, kind: "not-regular", mode: entry.mode, sha: entry.sha });
+    const withheld = readWithoutContent(path, entry, opts, budget);
+    if (withheld !== undefined) {
+      out.push(withheld);
       continue;
     }
-    const size = entry.size ?? 0;
-    if (size > opts.maxReadBytes) {
-      out.push({ path, exists: true, kind: "too-large", mode: entry.mode, sha: entry.sha, size });
-      continue;
-    }
-    if (!opts.withContent) {
-      out.push({ path, exists: true, kind: "text", mode: entry.mode, sha: entry.sha, size });
-      continue;
-    }
-    if (opts.totalBudget !== undefined && (exhausted || used + size > opts.totalBudget)) {
-      exhausted = true;
-      out.push({ path, exists: true, kind: "budget", mode: entry.mode, sha: entry.sha, size });
-      continue;
-    }
-    used += size;
     const blob = await getJson(token, `${ghRepoPath(owner, repo)}/git/blobs/${entry.sha}`); // NOSONAR S9382
-    const b64 = isRecord(blob) && blob["encoding"] === "base64" ? blob["content"] : undefined;
-    if (typeof b64 !== "string") throw new Error(`GitHub returned no base64 content for ${path}`);
-    const decoded = decodeBase64Text(b64);
-    out.push(
-      "binary" in decoded
-        ? { path, exists: true, kind: "binary", mode: entry.mode, sha: entry.sha, size }
-        : {
-            path,
-            exists: true,
-            kind: "text",
-            mode: entry.mode,
-            sha: entry.sha,
-            size,
-            content: decoded.text,
-          },
-    );
+    out.push(blobRead(path, entry, blob));
   }
   return { treeSha: rootTree, files: out };
+}
+
+/** What the files read so far have used of the combined content budget, shared across one read. */
+type ReadBudget = { used: number; exhausted: boolean };
+
+/**
+ * The result for an existing entry that needs no blob fetch (not a regular file, too large, no
+ * content asked for, or over the budget), or undefined when its blob is to be fetched; that file's
+ * size is then counted against the budget.
+ */
+function readWithoutContent(
+  path: string,
+  entry: TreeEntry,
+  opts: {
+    readonly withContent: boolean;
+    readonly maxReadBytes: number;
+    readonly totalBudget?: number;
+  },
+  budget: ReadBudget,
+): GithubFileRead | undefined {
+  if (entry.type !== "blob" || entry.mode === "120000") {
+    return { path, exists: true, kind: "not-regular", mode: entry.mode, sha: entry.sha };
+  }
+  const size = entry.size ?? 0;
+  if (size > opts.maxReadBytes) {
+    return { path, exists: true, kind: "too-large", mode: entry.mode, sha: entry.sha, size };
+  }
+  if (!opts.withContent) {
+    return { path, exists: true, kind: "text", mode: entry.mode, sha: entry.sha, size };
+  }
+  if (
+    opts.totalBudget !== undefined &&
+    (budget.exhausted || budget.used + size > opts.totalBudget)
+  ) {
+    budget.exhausted = true;
+    return { path, exists: true, kind: "budget", mode: entry.mode, sha: entry.sha, size };
+  }
+  budget.used += size;
+  return undefined;
+}
+
+/** A fetched blob as a binary or a text read. */
+function blobRead(path: string, entry: TreeEntry, blob: unknown): GithubFileRead {
+  const size = entry.size ?? 0;
+  const b64 = isRecord(blob) && blob["encoding"] === "base64" ? blob["content"] : undefined;
+  if (typeof b64 !== "string") throw new Error(`GitHub returned no base64 content for ${path}`);
+  const decoded = decodeBase64Text(b64);
+  return "binary" in decoded
+    ? { path, exists: true, kind: "binary", mode: entry.mode, sha: entry.sha, size }
+    : {
+        path,
+        exists: true,
+        kind: "text",
+        mode: entry.mode,
+        sha: entry.sha,
+        size,
+        content: decoded.text,
+      };
 }

@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { LineDiffTooLargeError, unifiedLineDiff } from "../../../shared/line-diff.ts";
+import { unifiedLineDiff } from "../../../shared/line-diff.ts";
 
 /** The `kubectl ... -o name` resource prefix of each allowlisted kind. */
 export const RESOURCE_PREFIX: Readonly<Record<string, string>> = {
@@ -69,31 +69,36 @@ export function compareCodeUnits(a: string, b: string): number {
 export function unpackKubeJson(data: unknown): Map<string, Obj> {
   const out = new Map<string, Obj>();
   if (data === null || data === undefined || data === "") return out;
-  if (!isObj(data)) throw new Error("kubectl returned JSON that is not an object");
-  let items: unknown[];
-  if (data["kind"] === "List") {
-    if (!Array.isArray(data["items"])) throw new Error("kubectl returned a List without items");
-    items = data["items"] as unknown[];
-  } else {
-    items = [data];
-  }
-  for (const item of items) {
+  for (const item of replyItems(data)) {
     if (!isObj(item)) throw new Error("kubectl returned an item that is not an object");
-    const kind = item["kind"];
-    const meta = item["metadata"];
-    const name = isObj(meta) ? meta["name"] : undefined;
-    if (typeof kind !== "string" || kind === "" || typeof name !== "string" || name === "") {
-      throw new Error("kubectl returned an object without a kind and a name");
-    }
-    const prefix = Object.hasOwn(RESOURCE_PREFIX, kind) ? RESOURCE_PREFIX[kind] : undefined;
-    if (prefix === undefined) {
-      throw new Error(`kubectl returned a ${kind}, which is not on the allowlist`);
-    }
-    const key = `${prefix}/${name}`;
+    const key = objectKey(item);
     if (out.has(key)) throw new Error(`kubectl returned ${key} twice`);
     out.set(key, item);
   }
   return out;
+}
+
+/** The items of a non-empty kubectl reply: a List's `items`, or the one object it is. */
+function replyItems(data: unknown): unknown[] {
+  if (!isObj(data)) throw new Error("kubectl returned JSON that is not an object");
+  if (data["kind"] !== "List") return [data];
+  if (!Array.isArray(data["items"])) throw new Error("kubectl returned a List without items");
+  return data["items"] as unknown[];
+}
+
+/** `<resource prefix>/<metadata.name>` of one object; throws without a kind and a name, or off the allowlist. */
+function objectKey(item: Obj): string {
+  const kind = item["kind"];
+  const meta = item["metadata"];
+  const name = isObj(meta) ? meta["name"] : undefined;
+  if (typeof kind !== "string" || kind === "" || typeof name !== "string" || name === "") {
+    throw new Error("kubectl returned an object without a kind and a name");
+  }
+  const prefix = Object.hasOwn(RESOURCE_PREFIX, kind) ? RESOURCE_PREFIX[kind] : undefined;
+  if (prefix === undefined) {
+    throw new Error(`kubectl returned a ${kind}, which is not on the allowlist`);
+  }
+  return `${prefix}/${name}`;
 }
 
 const DROPPED_METADATA = [
@@ -171,15 +176,18 @@ function dropGeneratedTokenVolume(spec: Obj): void {
     spec["ephemeralContainers"],
   ]) {
     if (!Array.isArray(containers)) continue;
-    for (const c of containers) {
-      if (!isObj(c) || !Array.isArray(c["volumeMounts"])) continue;
-      const mounts = (c["volumeMounts"] as unknown[]).filter(
-        (m) => !(isObj(m) && typeof m["name"] === "string" && generated.has(m["name"])),
-      );
-      if (mounts.length === 0) delete c["volumeMounts"];
-      else c["volumeMounts"] = mounts;
-    }
+    for (const c of containers) dropMountsOf(c, generated);
   }
+}
+
+/** Drops, from one container, every volume mount of a volume named in `generated`. */
+function dropMountsOf(c: unknown, generated: ReadonlySet<string>): void {
+  if (!isObj(c) || !Array.isArray(c["volumeMounts"])) return;
+  const mounts = (c["volumeMounts"] as unknown[]).filter(
+    (m) => !(isObj(m) && typeof m["name"] === "string" && generated.has(m["name"])),
+  );
+  if (mounts.length === 0) delete c["volumeMounts"];
+  else c["volumeMounts"] = mounts;
 }
 
 /** `v` with every object's keys in code-unit order (arrays keep their order). */
@@ -247,4 +255,4 @@ export function planDiff(
   return out;
 }
 
-export { LineDiffTooLargeError };
+export { LineDiffTooLargeError } from "../../../shared/line-diff.ts";

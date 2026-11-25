@@ -369,10 +369,8 @@ export function createWriteToolRegistrar(
       }
     }
     for (const entry of expired) {
-      await record(entry.tool, "declined", {
-        reason: "expired unanswered",
-        target: entry.target,
-      });
+      const detail = { reason: "expired unanswered", target: entry.target };
+      await record(entry.tool, "declined", detail); // NOSONAR S9382: audit records are hash-chained, so they are appended one at a time, in order.
     }
   }
 

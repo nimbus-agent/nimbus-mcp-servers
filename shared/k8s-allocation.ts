@@ -211,7 +211,7 @@ export function allocationRows(
 ): { items: AllocationRow[]; nextCursor: string | null; skipped: number } {
   const data = asRecord(root)?.["data"];
   if (!Array.isArray(data)) {
-    throw new Error("the allocation reply has no data array");
+    throw new TypeError("the allocation reply has no data array");
   }
   const rows: AllocationRow[] = [];
   let skipped = 0;

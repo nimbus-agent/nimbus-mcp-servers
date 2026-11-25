@@ -207,6 +207,37 @@ describe("fixtureFor, issue shapes beyond Zod's current ones", () => {
     expect(fixtureFor(custom)).toBeUndefined();
   });
 
+  it("repairs an element of an array argument by its own complaint", () => {
+    // A list of numbers is first seeded with ["x"]; the element's complaint makes it a number.
+    const numbers = z.object({ ns: z.array(z.number()).min(1) });
+    expect(fixtureFor(numbers as unknown as ParsableSchema)).toEqual({ ns: [1] });
+  });
+
+  it("gives up on an element complaint whose repair changes nothing", () => {
+    const stuck = scripted(() => [{ code: "custom", path: ["ns", 0] }]);
+    expect(fixtureFor(stuck, { ns: ["x"] })).toBeUndefined();
+  });
+
+  it("ignores an issue deeper than an array element, or one with no string key", () => {
+    let calls = 0;
+    const deep: ParsableSchema = {
+      safeParse: () => {
+        calls += 1;
+        return {
+          success: false,
+          error: {
+            issues: [
+              { code: "invalid_type", path: ["opts", "inner", "leaf"], expected: "string" },
+              { code: "invalid_type", path: [0], expected: "string" },
+            ],
+          },
+        };
+      },
+    };
+    expect(fixtureFor(deep, { opts: {} })).toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
   it("gives up, rather than looping, on a failure that reports no issues", () => {
     let calls = 0;
     const opaque: ParsableSchema = {

@@ -27,13 +27,20 @@ export const fullShaSchema = z.string().regex(FULL_SHA, "a full 40-hex commit sh
  */
 const UNSHOWABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
 
+/** `segment` with every trailing `.` and space removed: one backwards scan, linear in its length. */
+function withoutTrailingDotsAndSpaces(segment: string): string {
+  let end = segment.length;
+  while (end > 0 && (segment[end - 1] === "." || segment[end - 1] === " ")) end -= 1;
+  return segment.slice(0, end);
+}
+
 /**
  * Whether a path segment spells `.git` on a filesystem that folds it: NTFS and HFS+ ignore trailing
  * dots and spaces and compare case-insensitively, and NTFS also knows the short name `GIT~1`. A
  * segment that is nothing but dots and spaces is refused too, since it folds to the empty name.
  */
 function isGitSpelling(segment: string): boolean {
-  const folded = segment.replace(/[. ]+$/u, "").toLowerCase();
+  const folded = withoutTrailingDotsAndSpaces(segment).toLowerCase();
   return folded === "" || folded === ".git" || folded === "git~1";
 }
 

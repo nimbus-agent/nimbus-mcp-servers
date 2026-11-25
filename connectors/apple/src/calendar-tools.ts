@@ -56,7 +56,7 @@ function isControlCode(code: number): boolean {
  */
 export function hasControlCharacter(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
-    if (isControlCode(value.charCodeAt(i))) return true;
+    if (isControlCode(value.codePointAt(i) ?? 0)) return true;
   }
   return false;
 }

@@ -171,16 +171,7 @@ async function fetchColumnsFor(
 ): Promise<{ byTable: Map<string, SnowflakeColumn[]>; incomplete: Set<string> }> {
   const byTable = new Map<string, SnowflakeColumn[]>();
   const incomplete = new Set<string>();
-  const schemas = new Map<string, { db: string; schema: string }>();
-  for (const t of tables) {
-    const db = t["database_name"];
-    const schema = t["schema_name"];
-    if (typeof db !== "string" || typeof schema !== "string") {
-      incomplete.add(exactTableKey(t));
-      continue;
-    }
-    schemas.set(schemaKey(db, schema), { db, schema });
-  }
+  const schemas = distinctSchemas(tables, incomplete);
   let queried = 0;
   const failed = new Set<string>();
   for (const [key, { db, schema }] of schemas) {
@@ -189,30 +180,10 @@ async function fetchColumnsFor(
       continue;
     }
     queried++;
-    const filter =
-      `WHERE table_catalog = ${sfValueLiteral(db)} AND table_schema = ${sfValueLiteral(schema)}` +
-      (onlyTable === undefined ? "" : ` AND table_name = ${sfValueLiteral(onlyTable)}`);
     try {
-      const parsed = await executeStatement(
-        `${COLUMNS_SQL} ${filter} ORDER BY table_name, ordinal_position LIMIT ${MAX_COLUMNS_PER_SCHEMA + 1}`,
-      );
-      const rows = rowsFromStatementsResponse(parsed);
-      // Only the first result partition comes back in this response; a LIMIT does not prove it holds every row.
-      if (rows.length > MAX_COLUMNS_PER_SCHEMA || hasMorePartitions(parsed)) failed.add(key);
-      for (const r of rows.slice(0, MAX_COLUMNS_PER_SCHEMA)) {
-        if (typeof r["column_name"] !== "string" || r["column_name"] === "") continue;
-        const ordinal = Number(r["ordinal_position"]);
-        const col: SnowflakeColumn = {
-          name: r["column_name"],
-          type: typeof r["data_type"] === "string" ? r["data_type"] : null,
-          nullable: r["is_nullable"] === "YES" ? true : r["is_nullable"] === "NO" ? false : null,
-          ordinal: Number.isFinite(ordinal) ? ordinal : null,
-        };
-        const k = exactTableKey(r);
-        const list = byTable.get(k);
-        if (list === undefined) byTable.set(k, [col]);
-        else list.push(col);
-      }
+      // One statement at a time on purpose: up to 50 schemas, and the warehouse is the owner's.
+      const complete = await readSchemaColumns(db, schema, onlyTable, byTable); // NOSONAR S9382: sequential on purpose, see above.
+      if (!complete) failed.add(key);
     } catch {
       failed.add(key);
     }
@@ -225,6 +196,73 @@ async function fetchColumnsFor(
     }
   }
   return { byTable, incomplete };
+}
+
+/** The distinct (database, schema) pairs of `tables`; a table without both names goes to `incomplete`. */
+function distinctSchemas(
+  tables: Record<string, unknown>[],
+  incomplete: Set<string>,
+): Map<string, { db: string; schema: string }> {
+  const schemas = new Map<string, { db: string; schema: string }>();
+  for (const t of tables) {
+    const db = t["database_name"];
+    const schema = t["schema_name"];
+    if (typeof db !== "string" || typeof schema !== "string") {
+      incomplete.add(exactTableKey(t));
+      continue;
+    }
+    schemas.set(schemaKey(db, schema), { db, schema });
+  }
+  return schemas;
+}
+
+/**
+ * Query one schema's columns into `byTable`. Returns false when the result may be cut (over the cap,
+ * or more partitions than this response holds); a failed query throws.
+ */
+async function readSchemaColumns(
+  db: string,
+  schema: string,
+  onlyTable: string | undefined,
+  byTable: Map<string, SnowflakeColumn[]>,
+): Promise<boolean> {
+  const filter =
+    `WHERE table_catalog = ${sfValueLiteral(db)} AND table_schema = ${sfValueLiteral(schema)}` +
+    (onlyTable === undefined ? "" : ` AND table_name = ${sfValueLiteral(onlyTable)}`);
+  const parsed = await executeStatement(
+    `${COLUMNS_SQL} ${filter} ORDER BY table_name, ordinal_position LIMIT ${MAX_COLUMNS_PER_SCHEMA + 1}`,
+  );
+  const rows = rowsFromStatementsResponse(parsed);
+  for (const r of rows.slice(0, MAX_COLUMNS_PER_SCHEMA)) {
+    const col = columnOf(r);
+    if (col === undefined) continue;
+    const k = exactTableKey(r);
+    const list = byTable.get(k);
+    if (list === undefined) byTable.set(k, [col]);
+    else list.push(col);
+  }
+  // Only the first result partition comes back in this response; a LIMIT does not prove it holds every row.
+  return !(rows.length > MAX_COLUMNS_PER_SCHEMA || hasMorePartitions(parsed));
+}
+
+/** `YES` is true, `NO` is false, anything else is unknown. */
+function nullableOf(value: unknown): boolean | null {
+  if (value === "YES") return true;
+  if (value === "NO") return false;
+  return null;
+}
+
+/** One `information_schema.columns` row as a column, or undefined when it has no name. */
+function columnOf(r: Record<string, unknown>): SnowflakeColumn | undefined {
+  const name = r["column_name"];
+  if (typeof name !== "string" || name === "") return undefined;
+  const ordinal = Number(r["ordinal_position"]);
+  return {
+    name,
+    type: typeof r["data_type"] === "string" ? r["data_type"] : null,
+    nullable: nullableOf(r["is_nullable"]),
+    ordinal: Number.isFinite(ordinal) ? ordinal : null,
+  };
 }
 
 /** Adds `columns` (`{ name, type, nullable, ordinal }[]`) and `columns_complete` to each table row. */
@@ -278,9 +316,20 @@ async function objectMetadata(
     ),
   );
   const tags = tagRows
-    .map((t) => ({ name: String(t["tag_name"] ?? ""), value: t["tag_value"] ?? null }))
-    .sort((a, b) => a.name.localeCompare(b.name) || String(a.value).localeCompare(String(b.value)));
+    .map((t) => ({ name: scalarText(t["tag_name"] ?? ""), value: t["tag_value"] ?? null }))
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name) || scalarText(a.value).localeCompare(scalarText(b.value)),
+    );
   return { object, objectType, comment: row["comment"] ?? "", tags };
+}
+
+/** A cell of a statement reply as text: a scalar as `String` writes it, anything else as its JSON. */
+function scalarText(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") return String(v);
+  if (v === null || v === undefined) return String(v);
+  return JSON.stringify(v) ?? "";
 }
 
 /**

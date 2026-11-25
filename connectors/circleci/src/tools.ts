@@ -48,6 +48,10 @@ function str(v: unknown): string | undefined {
   return typeof v === "string" && v !== "" ? v : undefined;
 }
 
+function num(v: unknown): number | undefined {
+  return typeof v === "number" ? v : undefined;
+}
+
 /**
  * The job fields a cancel preview needs, read defensively: `GET /project/{slug}/job/{n}` is not on
  * the CircleCI v2 reference page (only `GET /jobs/{job_id}`, whose fields are `name, job_number,
@@ -68,14 +72,7 @@ export function projectJob(raw: unknown): Record<string, unknown> {
     if (v !== undefined) out[k] = v;
   };
   set("name", str(r["name"]));
-  set(
-    "number",
-    typeof r["number"] === "number"
-      ? r["number"]
-      : typeof r["job_number"] === "number"
-        ? r["job_number"]
-        : undefined,
-  );
+  set("number", num(r["number"]) ?? num(r["job_number"]));
   set("status", str(r["status"]));
   set("startedAt", str(r["started_at"]));
   set("stoppedAt", str(r["stopped_at"]));
