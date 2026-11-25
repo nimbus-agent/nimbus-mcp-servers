@@ -14,6 +14,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
+import { asObj, type Obj, pathIdArg, str } from "../../../shared/reply-fields.ts";
 import { filterBitriseBuilds } from "./search-filter.ts";
 
 const BITRISE_API = "https://api.bitrise.io";
@@ -38,23 +39,11 @@ export const BITRISE_TOOL_NAMES = [
 ] as const;
 
 /** An app slug: never `.` or `..` (a URL parser collapses them out of the path). */
-const appSlugArg = z
-  .string()
-  .regex(/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}$/, "letters, digits, '.', '_' and '-' only");
+const appSlugArg = pathIdArg;
 
 const workflowArg = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "letters, digits, '.', '_' and '-' only");
-
-type Obj = Record<string, unknown>;
-
-function asObj(v: unknown): Obj {
-  return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Obj) : {};
-}
-
-function str(v: unknown): string | undefined {
-  return typeof v === "string" && v !== "" ? v : undefined;
-}
 
 /**
  * The slug of the build a trigger started. The reply's `build_slug` is deprecated beside `slug`;
