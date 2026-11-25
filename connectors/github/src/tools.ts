@@ -69,6 +69,22 @@ export const GITHUB_TOOL_NAMES = [
   "github_file_commit",
 ] as const;
 
+/** The commit a branch points at now. A bare name is NOT tried as a tag: the commit lands on a branch. */
+async function branchHead(
+  token: string,
+  p: { owner: string; repo: string; branch: string },
+): Promise<string> {
+  return (await resolveCommitSha(token, p.owner, p.repo, `heads/${p.branch}`)).sha;
+}
+
+/** What a read tool reports for one file; `content` only for text. */
+function fileView(f: GithubFileRead): Record<string, unknown> {
+  if (!f.exists) return { path: f.path, exists: false };
+  const base = { path: f.path, exists: true, mode: f.mode, sha: f.sha, size: f.size };
+  if (f.kind === "text") return { ...base, content: f.content };
+  return { ...base, withheld: f.kind };
+}
+
 export function registerGithubTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
 ): void {
@@ -601,22 +617,6 @@ export function registerGithubTools(
   // -------------------------------------------------------------------------------------------
   // Multi-file commit: github_files_get (read), github_commit_prepare (prepare), github_file_commit
   // -------------------------------------------------------------------------------------------
-
-  /** The commit a branch points at now. A bare name is NOT tried as a tag: the commit lands on a branch. */
-  async function branchHead(
-    token: string,
-    p: { owner: string; repo: string; branch: string },
-  ): Promise<string> {
-    return (await resolveCommitSha(token, p.owner, p.repo, `heads/${p.branch}`)).sha;
-  }
-
-  /** What a read tool reports for one file; `content` only for text. */
-  function fileView(f: GithubFileRead): Record<string, unknown> {
-    if (!f.exists) return { path: f.path, exists: false };
-    const base = { path: f.path, exists: true, mode: f.mode, sha: f.sha, size: f.size };
-    if (f.kind === "text") return { ...base, content: f.content };
-    return { ...base, withheld: f.kind };
-  }
 
   const READ_LIMIT = COMMIT_MAX_COMBINED_BYTES;
 

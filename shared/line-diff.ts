@@ -43,39 +43,65 @@ function editScript(a: readonly string[], b: readonly string[]): Op[] {
 }
 
 function myers(a: readonly string[], b: readonly string[]): Op[] {
-  const n = a.length;
-  const m = b.length;
-  if (n === 0) return b.map((text) => ({ kind: "+", text }));
-  if (m === 0) return a.map((text) => ({ kind: "-", text }));
-  const max = Math.min(n + m, MAX_EDIT_DISTANCE);
+  if (a.length === 0) return b.map((text) => ({ kind: "+", text }));
+  if (b.length === 0) return a.map((text) => ({ kind: "-", text }));
+  const { trace, found } = forwardSearch(a, b);
+  return walkBack(a, b, trace, found);
+}
+
+/**
+ * Myers' forward pass: the trace of V windows and the edit distance `found`. trace[d] is V[-d..d]
+ * as it stood BEFORE step d (index k + d), all the walk back reads. Storing the whole V at every
+ * step would hold (max + 1) * (2 * max + 3) values; the window holds about max * max, 16 MB at the
+ * bound. Throws {@link LineDiffTooLargeError} past {@link MAX_EDIT_DISTANCE}.
+ */
+function forwardSearch(
+  a: readonly string[],
+  b: readonly string[],
+): { trace: Int32Array[]; found: number } {
+  const max = Math.min(a.length + b.length, MAX_EDIT_DISTANCE);
   const offset = max + 1;
   const v = new Int32Array(2 * max + 3);
-  // trace[d] is V[-d..d] as it stood BEFORE step d (index k + d), all the walk back reads. Storing
-  // the whole V at every step would hold (max + 1) * (2 * max + 3) values; the window holds about
-  // max * max, 16 MB at the bound.
   const trace: Int32Array[] = [];
-  let found = -1;
-  for (let d = 0; d <= max && found < 0; d += 1) {
+  for (let d = 0; d <= max; d += 1) {
     trace.push(v.slice(offset - d, offset + d + 1));
-    for (let k = -d; k <= d; k += 2) {
-      const down = k === -d || (k !== d && (v[offset + k - 1] ?? 0) < (v[offset + k + 1] ?? 0));
-      let x = down ? (v[offset + k + 1] ?? 0) : (v[offset + k - 1] ?? 0) + 1;
-      let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
-        x += 1;
-        y += 1;
-      }
-      v[offset + k] = x;
-      if (x >= n && y >= m) {
-        found = d;
-        break;
-      }
-    }
+    if (forwardStep(a, b, v, offset, d)) return { trace, found: d };
   }
-  if (found < 0) throw new LineDiffTooLargeError();
+  throw new LineDiffTooLargeError();
+}
+
+/** Step `d` of the forward pass, updating `v` in place; true when it reaches the end of both sides. */
+function forwardStep(
+  a: readonly string[],
+  b: readonly string[],
+  v: Int32Array,
+  offset: number,
+  d: number,
+): boolean {
+  for (let k = -d; k <= d; k += 2) {
+    const down = k === -d || (k !== d && (v[offset + k - 1] ?? 0) < (v[offset + k + 1] ?? 0));
+    let x = down ? (v[offset + k + 1] ?? 0) : (v[offset + k - 1] ?? 0) + 1;
+    let y = x - k;
+    while (x < a.length && y < b.length && a[x] === b[y]) {
+      x += 1;
+      y += 1;
+    }
+    v[offset + k] = x;
+    if (x >= a.length && y >= b.length) return true;
+  }
+  return false;
+}
+
+/** Myers' walk back from the end of both sides through `trace`, as the edit script in order. */
+function walkBack(
+  a: readonly string[],
+  b: readonly string[],
+  trace: readonly Int32Array[],
+  found: number,
+): Op[] {
   const ops: Op[] = [];
-  let x = n;
-  let y = m;
+  let x = a.length;
+  let y = b.length;
   for (let d = found; d > 0; d -= 1) {
     const prev = trace[d];
     if (prev === undefined) throw new LineDiffTooLargeError();
@@ -105,6 +131,35 @@ function myers(a: readonly string[], b: readonly string[]): Op[] {
   return ops.reverse();
 }
 
+/** The changes grouped into hunks: [first, last] indexes into `ops`, widened by `context`. */
+function hunkRanges(ops: readonly Op[], context: number): [number, number][] {
+  const ranges: [number, number][] = [];
+  ops.forEach((op, i) => {
+    if (op.kind === " ") return;
+    const lo = Math.max(0, i - context);
+    const hi = Math.min(ops.length - 1, i + context);
+    const last = ranges.at(-1);
+    if (last !== undefined && lo <= last[1] + 1) last[1] = hi;
+    else ranges.push([lo, hi]);
+  });
+  return ranges;
+}
+
+/** Lines of each side consumed before each op, so a hunk's start is a lookup. */
+function linesBefore(ops: readonly Op[]): { aBefore: number[]; bBefore: number[] } {
+  const aBefore: number[] = [];
+  const bBefore: number[] = [];
+  let ai = 0;
+  let bi = 0;
+  for (const op of ops) {
+    aBefore.push(ai);
+    bBefore.push(bi);
+    if (op.kind !== "+") ai += 1;
+    if (op.kind !== "-") bi += 1;
+  }
+  return { aBefore, bBefore };
+}
+
 export function unifiedLineDiff(
   from: readonly string[],
   to: readonly string[],
@@ -116,33 +171,9 @@ export function unifiedLineDiff(
 ): string {
   const context = opts.context ?? 3;
   const ops = editScript(from, to);
-  const changed: number[] = [];
-  ops.forEach((op, i) => {
-    if (op.kind !== " ") changed.push(i);
-  });
-  if (changed.length === 0) return "";
-
-  // Group the changes into hunks: [first, last] indexes into ops, widened by the context.
-  const ranges: [number, number][] = [];
-  for (const i of changed) {
-    const lo = Math.max(0, i - context);
-    const hi = Math.min(ops.length - 1, i + context);
-    const last = ranges[ranges.length - 1];
-    if (last !== undefined && lo <= last[1] + 1) last[1] = hi;
-    else ranges.push([lo, hi]);
-  }
-
-  // Lines of each side consumed before each op, so a hunk's start is a lookup.
-  const aBefore: number[] = [];
-  const bBefore: number[] = [];
-  let ai = 0;
-  let bi = 0;
-  for (const op of ops) {
-    aBefore.push(ai);
-    bBefore.push(bi);
-    if (op.kind !== "+") ai += 1;
-    if (op.kind !== "-") bi += 1;
-  }
+  const ranges = hunkRanges(ops, context);
+  if (ranges.length === 0) return "";
+  const { aBefore, bBefore } = linesBefore(ops);
 
   const out = [`--- ${opts.fromLabel}`, `+++ ${opts.toLabel}`];
   for (const [lo, hi] of ranges) {

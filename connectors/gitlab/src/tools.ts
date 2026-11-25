@@ -187,6 +187,19 @@ export const GITLAB_TOOL_NAMES = [
   "gitlab_commit_create",
 ] as const;
 
+/** What a read tool reports for one file; `content` only for text. */
+function fileView(f: GitlabFileRead): Record<string, unknown> {
+  if (!f.exists) return { path: f.path, exists: false };
+  const base = {
+    path: f.path,
+    exists: true,
+    lastCommitId: f.lastCommitId,
+    executable: f.executable,
+    size: f.size,
+  };
+  return f.kind === "text" ? { ...base, content: f.content } : { ...base, withheld: f.kind };
+}
+
 export function registerGitlabTools(
   server: ConsentServer & { tool: (...args: never) => unknown },
 ): void {
@@ -752,19 +765,6 @@ export function registerGitlabTools(
 
   const READ_LIMIT = COMMIT_MAX_COMBINED_BYTES;
 
-  /** What a read tool reports for one file; `content` only for text. */
-  function fileView(f: GitlabFileRead): Record<string, unknown> {
-    if (!f.exists) return { path: f.path, exists: false };
-    const base = {
-      path: f.path,
-      exists: true,
-      lastCommitId: f.lastCommitId,
-      executable: f.executable,
-      size: f.size,
-    };
-    return f.kind === "text" ? { ...base, content: f.content } : { ...base, withheld: f.kind };
-  }
-
   reg(
     "gitlab_files_get",
     'Read up to 50 files at a branch, tag or commit: {ref, headSha, files:[{path, exists, lastCommitId, executable, size, content}]}. A binary or over-192-KiB file is reported with `withheld` instead of content, and the content of all the files together is capped at 192 KiB: the first file that does not fit, and every file after it, is reported with `withheld: "budget"` and no content.',
@@ -894,7 +894,7 @@ export function registerGitlabTools(
       let oldBytes = 0;
       const actions = parsed.files.map((f, i) => {
         const existing = read[i];
-        if (existing === undefined || !existing.exists) {
+        if (!existing?.exists) {
           return { action: "create", file_path: f.path, content: f.content, encoding: "text" };
         }
         if (existing.kind !== "text") throw notOverwritable(f.path);

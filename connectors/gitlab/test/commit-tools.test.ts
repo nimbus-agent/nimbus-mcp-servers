@@ -321,7 +321,7 @@ describe("gitlab_commit_prepare", () => {
         files: [{ path: "a", content: "x" }],
       }),
     ).rejects.toThrow();
-    expect(stub.calls.length).toBe(before);
+    expect(stub.calls).toHaveLength(before);
   });
 });
 

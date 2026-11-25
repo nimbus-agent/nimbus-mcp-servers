@@ -668,7 +668,7 @@ describe("readUtf8Tail", () => {
     };
     const out = readUtf8Tail(file, DAILY_NOTE_TAIL_BYTES, counting);
     expect(out.size).toBe(size);
-    expect(out.tail.length).toBe(DAILY_NOTE_TAIL_BYTES);
+    expect(out.tail).toHaveLength(DAILY_NOTE_TAIL_BYTES);
     expect(out.tail.endsWith("THE END")).toBe(true);
     expect(reads.reduce((n, r) => n + r.length, 0)).toBe(DAILY_NOTE_TAIL_BYTES);
     expect(reads.every((r) => r.position >= size - DAILY_NOTE_TAIL_BYTES)).toBe(true);

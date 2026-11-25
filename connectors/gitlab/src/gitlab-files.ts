@@ -95,27 +95,35 @@ async function listTree(
 ): Promise<TreeEntry[]> {
   const out: TreeEntry[] = [];
   for (let page = 1; page <= TREE_MAX_PAGES; page++) {
-    const q = new URLSearchParams();
-    if (dir !== "") q.set("path", dir);
-    q.set("ref", sha);
-    q.set("per_page", String(TREE_PAGE));
-    q.set("page", String(page));
-    const res = await get(`/projects/${project}/repository/tree?${q.toString()}`); // NOSONAR S9382: pages are read in order until a short one.
+    const res = await get(`/projects/${project}/repository/tree?${treeQuery(sha, dir, page)}`); // NOSONAR S9382: pages are read in order until a short one.
     if (res.status === 404) return out;
     if (!res.ok) fail(res);
     const entries = Array.isArray(res.json) ? res.json : [];
     for (const e of entries) {
-      if (isRecord(e) && typeof e["path"] === "string" && typeof e["type"] === "string") {
-        out.push({
-          path: e["path"],
-          type: e["type"],
-          mode: typeof e["mode"] === "string" ? e["mode"] : "",
-        });
-      }
+      const entry = treeEntryOf(e);
+      if (entry !== undefined) out.push(entry);
     }
     if (entries.length < TREE_PAGE) return out;
   }
   throw new Error(`GitLab directory "${dir}" has too many entries to check`);
+}
+
+/** The query of one tree page: `path` (omitted for the root), `ref`, `per_page`, `page`. */
+function treeQuery(sha: string, dir: string, page: number): string {
+  const q = new URLSearchParams();
+  if (dir !== "") q.set("path", dir);
+  q.set("ref", sha);
+  q.set("per_page", String(TREE_PAGE));
+  q.set("page", String(page));
+  return q.toString();
+}
+
+/** One tree listing entry, or undefined when it has no string `path` and `type`. */
+function treeEntryOf(e: unknown): TreeEntry | undefined {
+  if (!isRecord(e) || typeof e["path"] !== "string" || typeof e["type"] !== "string") {
+    return undefined;
+  }
+  return { path: e["path"], type: e["type"], mode: typeof e["mode"] === "string" ? e["mode"] : "" };
 }
 
 /**
@@ -164,8 +172,7 @@ export async function readGitlabFilesAt(
   totalBudget?: number,
 ): Promise<GitlabFileRead[]> {
   const out: GitlabFileRead[] = [];
-  let used = 0;
-  let exhausted = false;
+  const budget: ReadBudget = { used: 0, exhausted: false, total: totalBudget };
   for (const path of paths) {
     const query = new URLSearchParams({ ref: sha }).toString();
     const res = await get(`/projects/${project}/repository/files/${encodeFilePath(path)}?${query}`); // NOSONAR S9382: sequential on purpose; paths are few and an error stops the read.
@@ -174,40 +181,41 @@ export async function readGitlabFilesAt(
       continue;
     }
     if (!res.ok) fail(res);
-    const f = isRecord(res.json) ? res.json : {};
-    const lastCommitId = f["last_commit_id"];
-    const content = f["content"];
-    if (typeof lastCommitId !== "string" || typeof content !== "string") {
-      throw new Error(`GitLab returned an unreadable file for ${path}`);
-    }
-    const size = typeof f["size"] === "number" ? f["size"] : 0;
-    const executable = f["execute_filemode"] === true;
-    if (size > maxReadBytes) {
-      out.push({ path, exists: true, kind: "too-large", lastCommitId, executable, size });
-      continue;
-    }
-    // The combined content of all the files is capped. The first file that does not fit, and every
-    // one after it, is reported `budget` with its metadata and no content.
-    if (totalBudget !== undefined && (exhausted || used + size > totalBudget)) {
-      exhausted = true;
-      out.push({ path, exists: true, kind: "budget", lastCommitId, executable, size });
-      continue;
-    }
-    used += size;
-    const decoded = decodeBase64Text(content);
-    out.push(
-      "binary" in decoded
-        ? { path, exists: true, kind: "binary", lastCommitId, executable, size }
-        : {
-            path,
-            exists: true,
-            kind: "text",
-            lastCommitId,
-            executable,
-            size,
-            content: decoded.text,
-          },
-    );
+    out.push(fileReadOf(path, res.json, maxReadBytes, budget));
   }
   return out;
+}
+
+/** What the files read so far have used of `total` (no cap when undefined), shared across one read. */
+type ReadBudget = { used: number; exhausted: boolean; readonly total: number | undefined };
+
+/** One file of a 200 reply: too large, over the shared budget, binary, or text with its content. */
+function fileReadOf(
+  path: string,
+  json: unknown,
+  maxReadBytes: number,
+  budget: ReadBudget,
+): GitlabFileRead {
+  const f = isRecord(json) ? json : {};
+  const lastCommitId = f["last_commit_id"];
+  const content = f["content"];
+  if (typeof lastCommitId !== "string" || typeof content !== "string") {
+    throw new TypeError(`GitLab returned an unreadable file for ${path}`);
+  }
+  const size = typeof f["size"] === "number" ? f["size"] : 0;
+  const executable = f["execute_filemode"] === true;
+  if (size > maxReadBytes) {
+    return { path, exists: true, kind: "too-large", lastCommitId, executable, size };
+  }
+  // The combined content of all the files is capped. The first file that does not fit, and every
+  // one after it, is reported `budget` with its metadata and no content.
+  if (budget.total !== undefined && (budget.exhausted || budget.used + size > budget.total)) {
+    budget.exhausted = true;
+    return { path, exists: true, kind: "budget", lastCommitId, executable, size };
+  }
+  budget.used += size;
+  const decoded = decodeBase64Text(content);
+  return "binary" in decoded
+    ? { path, exists: true, kind: "binary", lastCommitId, executable, size }
+    : { path, exists: true, kind: "text", lastCommitId, executable, size, content: decoded.text };
 }

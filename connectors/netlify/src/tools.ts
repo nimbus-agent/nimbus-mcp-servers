@@ -14,6 +14,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
+import { asObj, pathIdArg, str } from "../../../shared/reply-fields.ts";
 import { filterNetlifySites } from "./search-filter.ts";
 
 const BASE = "https://api.netlify.com";
@@ -38,19 +39,7 @@ export const NETLIFY_TOOL_NAMES = [
 ] as const;
 
 /** A site id (a UUID) or name: never `.` or `..` (a URL parser collapses them out of the path). */
-const siteIdArg = z
-  .string()
-  .regex(/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}$/, "letters, digits, '.', '_' and '-' only");
-
-type Obj = Record<string, unknown>;
-
-function asObj(v: unknown): Obj {
-  return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Obj) : {};
-}
-
-function str(v: unknown): string | undefined {
-  return typeof v === "string" && v !== "" ? v : undefined;
-}
+const siteIdArg = pathIdArg;
 
 interface TriggerArgs {
   readonly siteId: string;
@@ -181,10 +170,11 @@ export function registerNetlifyTools(
         search.set("clear_cache", "true");
       }
       const qs = search.toString();
+      const query = qs === "" ? "" : `?${qs}`;
       const reply = asObj(
         await netlifySend(
           "POST",
-          `/api/v1/sites/${encodeURIComponent(p.siteId)}/builds${qs === "" ? "" : `?${qs}`}`,
+          `/api/v1/sites/${encodeURIComponent(p.siteId)}/builds${query}`,
           undefined,
         ),
       );

@@ -256,4 +256,39 @@ describe("snowflake table columns", () => {
     expect(names(items[0])).toEqual(["A"]);
     expect(names(items[1])).toEqual(["B"]);
   });
+
+  it("queries at most 50 schemas and marks the tables of the rest incomplete", async () => {
+    const tables = Array.from({ length: 51 }, (_v, i) => [
+      "DB",
+      `S${String(i)}`,
+      "T",
+      "1",
+      "2026-01-01T00:00:00Z",
+    ]);
+    globalThis.fetch = (async (_u: string, init: { body: string }) => {
+      const statement = JSON.parse(init.body).statement as string;
+      statements.push(statement);
+      if (statement.includes("information_schema.columns")) return resp(COLUMN_COLS, []);
+      return resp(TABLE_COLS, tables);
+    }) as unknown as typeof fetch;
+    const items = parsePayload(await tool(captureTools(), "snowflake_list")({ limit: 100 }))
+      .items as Record<string, unknown>[];
+    expect(statements.filter((s) => s.includes("information_schema.columns"))).toHaveLength(50);
+    const incomplete = items.filter((i) => i["columns_complete"] === false);
+    expect(incomplete.map((i) => i["schema_name"])).toEqual(["S50"]);
+  });
+
+  it("reads an unknown IS_NULLABLE as null and skips a column row with no name", async () => {
+    columnRows = [
+      ["DB", "PUBLIC", "USERS", "", "TEXT", "YES", "1"],
+      ["DB", "PUBLIC", "USERS", "ID", "NUMBER", "MAYBE", "x"],
+    ];
+    const items = parsePayload(await tool(captureTools(), "snowflake_list")({})).items as Record<
+      string,
+      unknown
+    >[];
+    expect(items[0]?.["columns"]).toEqual([
+      { name: "ID", type: "NUMBER", nullable: null, ordinal: null },
+    ]);
+  });
 });

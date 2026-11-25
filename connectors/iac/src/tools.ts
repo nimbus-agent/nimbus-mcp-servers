@@ -260,29 +260,45 @@ async function terraformPlan(
 function refreshOnlyProblem(planJson: string): string | undefined {
   const doc: unknown = JSON.parse(planJson);
   const fields = typeof doc === "object" && doc !== null ? (doc as Record<string, unknown>) : {};
-  // Terraform 1.14 stores provider actions apart from resource changes, and applying the file runs
-  // them: any value that is not an empty list is refused, whatever else the plan says.
+  // Two checks, in this order: provider actions, then every resource change.
+  return providerActionsProblem(fields) ?? resourceChangesProblem(fields);
+}
+
+/**
+ * Terraform 1.14 stores provider actions apart from resource changes, and applying the file runs
+ * them: any `action_invocations` value that is not an empty list is refused, whatever else the
+ * plan says.
+ */
+function providerActionsProblem(fields: Record<string, unknown>): string | undefined {
   const invocations = fields["action_invocations"];
   if (invocations !== undefined && (!Array.isArray(invocations) || invocations.length > 0)) {
     return "the plan runs provider actions, so it is not a refresh-only plan";
   }
+  return undefined;
+}
+
+/** Every resource change must be a single `no-op`, or a single `read` of a data source. */
+function resourceChangesProblem(fields: Record<string, unknown>): string | undefined {
   const changes = fields["resource_changes"];
   // Terraform omits the key when a plan has no resource changes at all.
   if (changes === undefined) return undefined;
   if (!Array.isArray(changes)) return "the plan's resource_changes is not a list";
-  for (const c of changes) {
-    const row = typeof c === "object" && c !== null ? (c as Record<string, unknown>) : {};
-    const change = row["change"];
-    const actions =
-      typeof change === "object" && change !== null
-        ? (change as Record<string, unknown>)["actions"]
-        : undefined;
-    const only = Array.isArray(actions) && actions.length === 1 ? actions[0] : undefined;
-    if (only !== "no-op" && !(only === "read" && row["mode"] === "data")) {
-      return "the plan changes infrastructure, so it is not a refresh-only plan";
-    }
+  if (!changes.every(isRefreshOnlyChange)) {
+    return "the plan changes infrastructure, so it is not a refresh-only plan";
   }
   return undefined;
+}
+
+/** True when one `resource_changes[]` entry's actions are exactly `["no-op"]`, or `["read"]` of a data source. */
+function isRefreshOnlyChange(c: unknown): boolean {
+  const row = typeof c === "object" && c !== null ? (c as Record<string, unknown>) : {};
+  const change = row["change"];
+  const actions =
+    typeof change === "object" && change !== null
+      ? (change as Record<string, unknown>)["actions"]
+      : undefined;
+  const only = Array.isArray(actions) && actions.length === 1 ? actions[0] : undefined;
+  return only === "no-op" || (only === "read" && row["mode"] === "data");
 }
 
 /** `terraform apply <planFile>` after the file's hash is proven to be the approved one. */
@@ -514,7 +530,7 @@ async function awaitChangeSet(
     if (iacTimeHooks.now() >= deadline) {
       throw new Error("change set was not ready within 120 seconds");
     }
-    await iacTimeHooks.sleep(CHANGESET_POLL_INTERVAL_MS);
+    await iacTimeHooks.sleep(CHANGESET_POLL_INTERVAL_MS); // NOSONAR S9382: a poll; each wait follows the previous status read.
   }
 }
 
@@ -536,7 +552,7 @@ async function collectChanges(
     if (token === undefined || token === "") return changes;
     if (pages >= CHANGESET_PAGES_MAX) throw new Error("change set too large");
     // U: whether the CLI paginates describe-change-set itself is unconfirmed; see the README.
-    page = parseObject(await describe(token), "describe-change-set");
+    page = parseObject(await describe(token), "describe-change-set"); // NOSONAR S9382: each page needs the previous page's NextToken.
   }
 }
 
