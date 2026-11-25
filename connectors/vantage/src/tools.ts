@@ -172,7 +172,7 @@ export function registerVantageToolsWith(reg: ZodToolRegistrar, deps: VantageDep
 
   reg(
     "vantage_cost_list",
-    "List Vantage costs (`GET /costs`), binned by day, one page per call. `sinceMs` / `untilMs` (epoch milliseconds; UTC dates are sent) bound the range, and `untilMs` defaults to now. Rows are grouped by VANTAGE_GROUP_BY, else by the saved cost report's groupings when VANTAGE_COST_REPORT_TOKEN is set, else by provider, service and account_id. Returns `{ items, nextCursor }`: pass `nextCursor` back as `cursor` for the next page; it is null on the last page. At most one request per 1.2 s; the first 429 ends the call.",
+    "List Vantage costs (`GET /costs`), binned by day, one page per call. `sinceMs` / `untilMs` (epoch milliseconds; UTC dates are sent) bound the range, and `untilMs` defaults to now. Rows are grouped by VANTAGE_GROUP_BY, else by the saved cost report's groupings when VANTAGE_COST_REPORT_TOKEN is set, else by provider, service and account_id. With no cost report token the request sends `filter=()` (all costs in the workspace). Returns `{ items, nextCursor }`: pass `nextCursor` back as `cursor` for the next page; it is null on the last page. At most one request per 1.2 s; the first 429 ends the call.",
     costListSchema,
     async (p) => {
       const page = pageFromCursor(p.cursor);
@@ -182,6 +182,11 @@ export function registerVantageToolsWith(reg: ZodToolRegistrar, deps: VantageDep
       const search = new URLSearchParams();
       if (reportToken !== "") {
         search.set("cost_report_token", reportToken);
+      } else {
+        // Vantage answers 400 ("cost_report_token, filter are missing") when neither is sent.
+        // `filter=()` is an empty VQL filter, i.e. all costs in the workspace. Verified against
+        // one live account whose only data was one provider; not yet seen across several providers.
+        search.set("filter", "()");
       }
       if (workspaceToken !== "") {
         search.set("workspace_token", workspaceToken);
