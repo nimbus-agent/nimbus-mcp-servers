@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.3](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.2...connectors-v0.17.3) (2026-11-25)
+
+
+### Bug Fixes
+
+* **vantage:** send filter=() when no cost report token is set ([#101](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/101)) ([ed7317a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/ed7317af3134dcd3b41cbec4925a85476398dc85))
+
 ## [0.17.2](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.1...connectors-v0.17.2) (2026-11-24)
 
 
