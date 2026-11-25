@@ -14,6 +14,7 @@ import {
   createZodToolRegistrar,
   mcpJsonResult as jsonResult,
 } from "../../../shared/mcp-tool-kit.ts";
+import { asObj, type Obj, pathIdArg, str } from "../../../shared/reply-fields.ts";
 import { filterCodemagicBuilds } from "./search-filter.ts";
 
 const CODEMAGIC_API = "https://api.codemagic.io";
@@ -38,19 +39,7 @@ export const CODEMAGIC_TOOL_NAMES = [
 ] as const;
 
 /** Codemagic app and workflow ids: letters, digits, `.`, `_`, `-`; never a dot segment. */
-const idArg = z
-  .string()
-  .regex(/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}$/, "letters, digits, '.', '_' and '-' only");
-
-type Obj = Record<string, unknown>;
-
-function asObj(v: unknown): Obj {
-  return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Obj) : {};
-}
-
-function str(v: unknown): string | undefined {
-  return typeof v === "string" && v !== "" ? v : undefined;
-}
+const idArg = pathIdArg;
 
 /**
  * A build reduced to a fixed field set. Everything else Codemagic returns (artefacts, config,
