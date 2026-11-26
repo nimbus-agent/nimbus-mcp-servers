@@ -25,9 +25,19 @@ your sandbox or network allow-list yourself; the manifest lists `api.github.com`
 ## Writes
 
 Besides merging, closing and creating, the connector can comment on an issue or a pull request's
-conversation, add labels, add assignees, and open or close an issue. Labels and assignees are
-**add-only**: no tool removes or replaces one. Each write asks for approval, and standalone is limited
-by `NIMBUS_MCP_GITHUB_WRITE_SCOPE=repo:<owner>/<repo>`.
+conversation, add and remove labels, add and remove assignees, edit an issue's title or body, and open
+or close an issue. No tool replaces the whole label or assignee set. Each write asks for approval, and
+standalone is limited by `NIMBUS_MCP_GITHUB_WRITE_SCOPE=repo:<owner>/<repo>`.
+
+| Tool | What it does |
+| --- | --- |
+| `github_issue_labels_remove` | One `DELETE .../issues/{n}/labels/{name}` per label, in order; a name is URL-encoded and `.` or `..` is refused. It stops at the first refusal (a label not on the issue is a 404) and names the labels already removed. The repository's labels are never deleted. |
+| `github_issue_assignees_remove` | `DELETE .../issues/{n}/assignees` with the logins named. |
+| `github_issue_update` | `PATCH .../issues/{n}` with `title` and/or `body` (at least one; refused before the approval prompt otherwise). Works for a pull request too. The old title and body are recorded first. |
+| `github_pr_review_create` | `POST .../pulls/{n}/reviews` with `body`, `event` and optional inline `comments` (`path`, `line`, optional `side` and `startLine`). `event` is `COMMENT` or `REQUEST_CHANGES` only: `APPROVE` is refused at the schema, because an approval can satisfy branch protection. A comment whose `startLine` is not below its `line` is refused before the prompt. The review lands on the current head commit, and a submitted review cannot be deleted, so the pull request's head sha and state are recorded first. |
+
+A fine-grained token needs Issues: write for the label, assignee and issue edits (Pull requests: write
+for a pull request's), and Pull requests: write for a review.
 
 Branches and pull requests: `github_ref_get` reads a branch, tag or commit as a commit sha;
 `github_branch_create` makes a branch from a ref (optionally pinned with `expectedSha`, so a branch

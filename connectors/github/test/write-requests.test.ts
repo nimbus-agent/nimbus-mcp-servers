@@ -949,3 +949,277 @@ describe("github owner and repo (path confusion)", () => {
     expect(stub.only.url).toBe(`${API}/repos/my-org/my_repo.js`);
   });
 });
+
+const APPROVE_REFUSAL =
+  "event is COMMENT or REQUEST_CHANGES: an APPROVE review is never sent, because an approval can satisfy branch protection";
+const NO_ISSUE_EDIT = "github_issue_update needs at least one of title, body";
+const START_LINE_REFUSAL = "comments[0]: startLine must be lower than line";
+
+describe("github review, label and assignee removal, issue edit (gateway mode)", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGithubTools);
+  });
+
+  async function request(name: string, args: Record<string, unknown>): Promise<RecordedRequest> {
+    const stub = serve('{"id":1}');
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await tools.call(name, args);
+    });
+    return stub.only;
+  }
+
+  const PR = { ...REPO_ARGS, pullNumber: 9 };
+  const ISSUE = { ...REPO_ARGS, issueNumber: 12 };
+
+  it("pr_review_create POSTs the body, event and inline comments in GitHub's field names", async () => {
+    const req = await request("github_pr_review_create", {
+      ...PR,
+      body: "Two things.",
+      event: "REQUEST_CHANGES",
+      comments: [
+        { path: "src/a.ts", line: 10, body: "typo" },
+        { path: "src/b.ts", line: 20, side: "LEFT", startLine: 18, body: "this block" },
+      ],
+    });
+    expect(`${req.method} ${req.url}`).toBe(`POST ${API}/repos/acme/api/pulls/9/reviews`);
+    expect(req.headers["authorization"]).toBe("Bearer ghp_test");
+    expect(JSON.parse(req.body ?? "null")).toEqual({
+      body: "Two things.",
+      event: "REQUEST_CHANGES",
+      comments: [
+        { path: "src/a.ts", line: 10, body: "typo" },
+        { path: "src/b.ts", line: 20, side: "LEFT", start_line: 18, body: "this block" },
+      ],
+    });
+  });
+
+  it("pr_review_create sends no comments key when none are given", async () => {
+    const req = await request("github_pr_review_create", {
+      ...PR,
+      body: "LGTM-ish",
+      event: "COMMENT",
+    });
+    expect(JSON.parse(req.body ?? "null")).toEqual({ body: "LGTM-ish", event: "COMMENT" });
+  });
+
+  it("pr_review_create refuses APPROVE at the schema, naming why, and sends nothing", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_pr_review_create", { ...PR, body: "ship it", event: "APPROVE" }),
+      ).rejects.toThrow(APPROVE_REFUSAL);
+    });
+    expect(stub.calls).toEqual([]);
+    const shape = (
+      tools.get("github_pr_review_create").schema as { shape: Record<string, unknown> }
+    ).shape;
+    expect(
+      (shape["event"] as { safeParse: (v: unknown) => { success: boolean } }).safeParse("APPROVE")
+        .success,
+    ).toBe(false);
+  });
+
+  it("pr_review_create refuses a startLine not below line, and an empty body, before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_pr_review_create", {
+          ...PR,
+          body: "b",
+          event: "COMMENT",
+          comments: [{ path: "a.ts", line: 5, startLine: 5, body: "x" }],
+        }),
+      ).rejects.toThrow(START_LINE_REFUSAL);
+      await expect(
+        tools.call("github_pr_review_create", { ...PR, body: "", event: "COMMENT" }),
+      ).rejects.toThrow("too_small");
+      await expect(
+        tools.call("github_pr_review_create", {
+          ...PR,
+          body: "b",
+          event: "COMMENT",
+          comments: [{ path: "../etc/passwd", line: 1, body: "x" }],
+        }),
+      ).rejects.toThrow("not a safe repository file path");
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("issue_labels_remove DELETEs each label by its encoded name, in order", async () => {
+    const stub = serve("[]");
+    const out = await withEnv({ GITHUB_PAT: "ghp_test" }, () =>
+      tools.callJson("github_issue_labels_remove", {
+        ...ISSUE,
+        labels: ["bug", "needs review", "area/api"],
+      }),
+    );
+    expect(log(stub)).toEqual([
+      `DELETE ${API}/repos/acme/api/issues/12/labels/bug`,
+      `DELETE ${API}/repos/acme/api/issues/12/labels/needs%20review`,
+      `DELETE ${API}/repos/acme/api/issues/12/labels/area%2Fapi`,
+    ]);
+    expect(out).toEqual({ ok: true, removed: ["bug", "needs review", "area/api"], labels: [] });
+  });
+
+  it("issue_labels_remove refuses a dot-segment label name at the schema, sending nothing", async () => {
+    const stub = serve("[]");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      for (const bad of [".", ".."]) {
+        await expect(
+          tools.call("github_issue_labels_remove", { ...ISSUE, labels: ["ok", bad] }),
+        ).rejects.toThrow("a label name cannot be . or ..");
+      }
+      await expect(
+        tools.call("github_issue_labels_remove", { ...ISSUE, labels: [] }),
+      ).rejects.toThrow("too_small");
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("issue_labels_remove stops at the first failure and says which labels were already removed", async () => {
+    const stub = serve((req) =>
+      req.url.endsWith("/labels/p1")
+        ? { status: 404, body: '{"message":"Label does not exist"}' }
+        : "[]",
+    );
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_issue_labels_remove", { ...ISSUE, labels: ["bug", "p1", "p2"] }),
+      ).rejects.toThrow(
+        'GitHub 404 removing label "p1" (already removed: ["bug"]): {"message":"Label does not exist"}',
+      );
+    });
+    expect(stub.calls).toHaveLength(2);
+  });
+
+  it("issue_assignees_remove DELETEs the assignees list", async () => {
+    const req = await request("github_issue_assignees_remove", { ...ISSUE, assignees: ["octo"] });
+    expect(`${req.method} ${req.url}`).toBe(`DELETE ${API}/repos/acme/api/issues/12/assignees`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ assignees: ["octo"] });
+    expect(req.headers["content-type"]).toBe("application/json");
+  });
+
+  it("issue_update PATCHes only the title and body it is given, never state", async () => {
+    const req = await request("github_issue_update", { ...ISSUE, title: "New", state: "closed" });
+    expect(`${req.method} ${req.url}`).toBe(`PATCH ${API}/repos/acme/api/issues/12`);
+    expect(JSON.parse(req.body ?? "null")).toEqual({ title: "New" });
+    const both = await request("github_issue_update", { ...ISSUE, title: "t", body: "" });
+    expect(JSON.parse(both.body ?? "null")).toEqual({ title: "t", body: "" });
+  });
+
+  it("issue_update with neither title nor body is refused by the handler before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(tools.call("github_issue_update", ISSUE)).rejects.toThrow(NO_ISSUE_EDIT);
+    });
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("github review and issue edit (standalone mode)", () => {
+  let auditDir: string;
+  let auditLog: string;
+
+  beforeEach(() => {
+    setConnectorMode("standalone");
+    auditDir = mkdtempSync(join(tmpdir(), "nimbus-github-audit-"));
+    auditLog = join(auditDir, "audit.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(auditDir, { recursive: true, force: true });
+  });
+
+  async function standalone(): Promise<ReturnType<typeof captureStandaloneTools>> {
+    let cap: ReturnType<typeof captureStandaloneTools> | undefined;
+    await withEnv(
+      {
+        NIMBUS_MCP_GITHUB_WRITE_SCOPE: "repo:acme/api",
+        NIMBUS_MCP_AUDIT_LOG: auditLog,
+        NIMBUS_MCP_WRITE_BUDGET: undefined,
+      },
+      () => {
+        cap = captureStandaloneTools(registerGithubTools, { elicitation: true });
+      },
+    );
+    if (cap === undefined) throw new Error("registration did not run");
+    return cap;
+  }
+
+  function audited(outcome: string): Record<string, unknown> | undefined {
+    return readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      )
+      .find((e) => e.outcome === outcome)?.detail;
+  }
+
+  it("refuses an issue_update with nothing to change before the prompt", async () => {
+    const cap = await standalone();
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      expect(
+        await cap.tools.callJson("github_issue_update", { ...REPO_ARGS, issueNumber: 3 }),
+      ).toEqual({ ok: false, error: NO_ISSUE_EDIT });
+    });
+    expect(cap.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("refuses a review whose comment range is inverted before the prompt", async () => {
+    const cap = await standalone();
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      expect(
+        await cap.tools.callJson("github_pr_review_create", {
+          ...REPO_ARGS,
+          pullNumber: 9,
+          body: "b",
+          event: "COMMENT",
+          comments: [{ path: "a.ts", line: 4, startLine: 9, body: "x" }],
+        }),
+      ).toEqual({ ok: false, error: START_LINE_REFUSAL });
+    });
+    expect(cap.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("issue_update captures the issue's title and body BEFORE the PATCH", async () => {
+    const cap = await standalone();
+    const issue = JSON.stringify({ title: "Old", body: "old body", state: "open" });
+    const stub = serve((req) => (req.method === "GET" ? issue : '{"number":3}'));
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await cap.tools.call("github_issue_update", { ...REPO_ARGS, issueNumber: 3, body: "new" });
+    });
+    expect(log(stub)).toEqual([
+      `GET ${API}/repos/acme/api/issues/3`,
+      `PATCH ${API}/repos/acme/api/issues/3`,
+    ]);
+    expect(audited("executed")?.["preState"]).toEqual({ title: "Old", body: "old body" });
+  });
+
+  it("pr_review_create records the pull request's head and state BEFORE the review", async () => {
+    const cap = await standalone();
+    const pr = JSON.stringify({ state: "open", head: { sha: SHA }, title: "x" });
+    const stub = serve((req) => (req.method === "GET" ? pr : '{"id":5}'));
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await cap.tools.call("github_pr_review_create", {
+        ...REPO_ARGS,
+        pullNumber: 9,
+        body: "b",
+        event: "COMMENT",
+      });
+    });
+    expect(log(stub)).toEqual([
+      `GET ${API}/repos/acme/api/pulls/9`,
+      `POST ${API}/repos/acme/api/pulls/9/reviews`,
+    ]);
+    expect(audited("executed")?.["preState"]).toEqual({ state: "open", headSha: SHA });
+  });
+});

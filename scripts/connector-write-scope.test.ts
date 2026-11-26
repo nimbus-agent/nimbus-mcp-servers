@@ -363,6 +363,26 @@ const WRITES: Readonly<
       ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
       ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:zeta-labs/quokka"],
       [
+        "github_issue_labels_remove",
+        "github.issue.labels.remove",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      [
+        "github_issue_assignees_remove",
+        "github.issue.assignees.remove",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      // A title: with neither title nor body the tool's refuseBefore refuses ahead of scope.
+      [
+        "github_issue_update",
+        "github.issue.update",
+        { ...GITHUB_REPO, title: "t" },
+        "repo:zeta-labs/quokka",
+      ],
+      ["github_pr_review_create", "github.pr.review.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
         "github_file_commit",
         "github.file.commit",
         {
