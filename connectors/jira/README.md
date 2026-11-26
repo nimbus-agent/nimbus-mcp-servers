@@ -27,6 +27,11 @@ A name, an email or `-1` (Jira's "project default assignee") is refused at the s
 `issueKey` that is not a key like `ENG-7` or a numeric id. The previous assignee's account id is
 recorded first, so an assignment can be put back.
 
+Every tool that puts an issue in the URL (`jira_issue_get`, `jira_issue_update`, `jira_comment_add`,
+`jira_issue_transitions_list`, `jira_issue_transition`, `jira_issue_assign`) takes `issueKey` as an
+issue key like `ENG-7` or a numeric issue id only. A `..`, a slash, a space or anything else is
+refused before any request, not encoded.
+
 Every request to the site goes through the redirect guard: a redirected write is refused (it may or
 may not have been applied), and a read follows only a same-origin redirect, so the Basic credential
 never reaches another host.

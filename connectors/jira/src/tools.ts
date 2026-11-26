@@ -321,7 +321,7 @@ export function registerJiraTools(
     },
   );
 
-  const jiraIssueKeySchema = z.object({ issueKey: z.string().min(1) });
+  const jiraIssueKeySchema = z.object({ issueKey: issueKeyInPathSchema });
 
   reg(
     "jira_issue_get",
@@ -380,7 +380,7 @@ export function registerJiraTools(
   );
 
   const jiraIssueUpdateSchema = z.object({
-    issueKey: z.string().min(1),
+    issueKey: issueKeyInPathSchema,
     summary: z.string().min(1).optional(),
     description: z.string().optional(),
   });
@@ -420,7 +420,7 @@ export function registerJiraTools(
   );
 
   const jiraCommentAddSchema = z.object({
-    issueKey: z.string().min(1),
+    issueKey: issueKeyInPathSchema,
     body: z.string().min(1),
   });
 

@@ -99,11 +99,11 @@ describe("jira tools", () => {
     });
   });
 
-  it("issue_get GETs one encoded issue with its comment field", async () => {
-    const req = await request("jira_issue_get", { issueKey: "OPS 1" });
+  it("issue_get GETs one issue with its comment field", async () => {
+    const req = await request("jira_issue_get", { issueKey: "OPS-1" });
     expect(req.method).toBe("GET");
     expect(req.url).toBe(
-      `${SITE}/rest/api/3/issue/OPS%201?fields=summary,description,updated,status,issuetype,priority,assignee,comment`,
+      `${SITE}/rest/api/3/issue/OPS-1?fields=summary,description,updated,status,issuetype,priority,assignee,comment`,
     );
     // No body, so no Content-Type is claimed.
     expect(req.headers["content-type"]).toBeUndefined();
@@ -195,10 +195,10 @@ describe("jira tools", () => {
     });
   });
 
-  it("comment_add POSTs the comment as ADF to the encoded issue", async () => {
-    const req = await request("jira_comment_add", { issueKey: "OPS/7", body: "Fixed in 1.2" });
+  it("comment_add POSTs the comment as ADF to the issue", async () => {
+    const req = await request("jira_comment_add", { issueKey: "OPS-7", body: "Fixed in 1.2" });
     expect(req.method).toBe("POST");
-    expect(req.url).toBe(`${SITE}/rest/api/3/issue/OPS%2F7/comment`);
+    expect(req.url).toBe(`${SITE}/rest/api/3/issue/OPS-7/comment`);
     expect(JSON.parse(req.body ?? "null")).toEqual({ body: adf("Fixed in 1.2") });
   });
 
@@ -275,9 +275,9 @@ describe("jira transitions", () => {
   const TRANSITIONS = '{"transitions":[{"id":"31","name":"Done","to":{"name":"Done"}}]}';
 
   it("transitions_list GETs the issue's transitions with their fields expanded", async () => {
-    const req = await request("jira_issue_transitions_list", { issueKey: "OPS 1" }, TRANSITIONS);
+    const req = await request("jira_issue_transitions_list", { issueKey: "OPS-1" }, TRANSITIONS);
     expect(`${req.method} ${req.url}`).toBe(
-      `GET ${SITE}/rest/api/3/issue/OPS%201/transitions?expand=transitions.fields`,
+      `GET ${SITE}/rest/api/3/issue/OPS-1/transitions?expand=transitions.fields`,
     );
   });
 
@@ -476,6 +476,41 @@ describe("jira issue assign", () => {
         tools.call("jira_issue_assign", { issueKey: "ENG-7", accountId: ACCOUNT }),
       ).rejects.toThrow('Jira 400: {"errorMessages":["User cannot be assigned issues."]}');
     });
+  });
+});
+
+describe("jira issue keys on every issue tool (path confusion)", () => {
+  const ISSUE_TOOLS: readonly [string, Record<string, unknown>][] = [
+    ["jira_issue_get", {}],
+    ["jira_issue_update", { summary: "s" }],
+    ["jira_comment_add", { body: "b" }],
+    ["jira_issue_transitions_list", {}],
+    ["jira_issue_transition", { transitionId: "31" }],
+    ["jira_issue_assign", { accountId: ACCOUNT }],
+  ];
+
+  it("refuses a dot segment, a slash or any other non-key before any request, on each tool", async () => {
+    const stub = serve("{}");
+    await onSite(async () => {
+      for (const [name, rest] of ISSUE_TOOLS) {
+        for (const issueKey of ["..", "../x", "ENG-7/../../x", "OPS/7", "OPS 1", "%2e%2e", ""]) {
+          await expect(tools.call(name, { ...rest, issueKey })).rejects.toThrow(BAD_KEY);
+        }
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("still accepts a key and a numeric id on each tool", async () => {
+    for (const [name, rest] of ISSUE_TOOLS) {
+      for (const issueKey of ["ENG-7", "MY_PROJ2-42", "10042"]) {
+        const stub = serve({ status: 200, body: '{"fields":{}}' });
+        await onSite(async () => {
+          await tools.call(name, { ...rest, issueKey });
+        });
+        expect(new URL(stub.calls[0]?.url ?? "").pathname).toContain(`/issue/${issueKey}`);
+      }
+    }
   });
 });
 
