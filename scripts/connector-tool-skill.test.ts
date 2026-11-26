@@ -81,6 +81,11 @@ describe("phase 1 file", () => {
       "drops `*_TOOL_NAMES`",
       "connector-gates.test.ts",
       "bun run check",
+      "connector-write-scope.test.ts",
+      "refuseBefore",
+      "CONNECTOR_SERVICE_IDS",
+      "kind:value",
+      "Run the contract test first",
     ]) {
       expect(md()).toContain(rule);
     }
@@ -113,6 +118,19 @@ describe("connector-tool skill", () => {
         "The report",
       ]),
     );
+  });
+
+  test("keeps the rules the first run proved", () => {
+    const md = readSkill("SKILL.md");
+    for (const rule of [
+      "fails for the right reason",
+      "Gateway work predicted",
+      "name, for each tool, what that item needs",
+      "branch off",
+      "nimbus-connector-writes.md",
+    ]) {
+      expect(md).toContain(rule);
+    }
   });
 
   test("skill files contain no control characters", () => {
@@ -150,6 +168,8 @@ describe("phase 2 file", () => {
       "connector-spawns.ts",
       "nimbus-connector-writes.md",
       "preflight:fast",
+      "Walk every item",
+      "or `n/a` with a reason",
     ]) {
       expect(md()).toContain(rule);
     }

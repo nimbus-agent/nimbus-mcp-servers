@@ -21,10 +21,21 @@ are in [SKILL.md](./SKILL.md), not repeated here. Nothing in this phase edits th
   two. A registration in a helper file passes `bun run check` and then makes `nimbus-connector <id>`
   exit 3.
 - `hitlRequired` in `nimbus.extension.json` matches the writes.
+- A write that must be refused for a cross-field rule (`line` only with `path`) or any input the tool
+  is certain to reject passes `refuseBefore` in its registrar config. The registrar takes only a
+  `ZodObjectSchema`, so `.refine()` is unavailable on a write schema, and a check inside the handler
+  runs after the human approved. `refuseBefore` runs first, before scope, budget and prompt, but only
+  standalone: in gateway mode the raw handler is registered, so the handler must refuse the same input
+  too. Test both paths.
+- A new write tool needs a row in the connector's `cases` table in
+  [scripts/connector-write-scope.test.ts](../../../scripts/connector-write-scope.test.ts) (tool,
+  mutates, args, expected scope term). Without it that file's "offers its write tools only to a client
+  that can ask a human" fails for the connector.
 - Each write's `mutates` is `<service>.<noun>.<verb>`, where `<service>` is the gateway's
   `ConnectorServiceId` (for example `google_calendar`, not `gcal`). When the `../Nimbus` checkout
   exists, read `../Nimbus/packages/gateway/src/connectors/connector-catalog.ts` and confirm that each
-  new `mutates` starts with an id it defines. Nothing in this repo checks it, and the gateway's
+  new `mutates` starts with an id it defines (`CONNECTOR_SERVICE_IDS`, an array literal near the top:
+  `grep -n CONNECTOR_SERVICE_IDS`). Nothing in this repo checks it, and the gateway's
   `manifest.sync.test.ts` and `rows.test.ts` reject a mismatch only after release.
 
 ## First write on a read-only connector
@@ -59,8 +70,9 @@ Extra steps.
 
 ## Test fixtures
 
-- A schema the generic fixture cannot satisfy (UUIDs, RFC 3339, regexes, `.refine()`), on any
-  connector, HTTP or CLI, gets an `ARG_OVERRIDES` entry in
+- Run the contract test first and add an override only on failure. A schema the generic fixture
+  cannot satisfy (UUIDs, RFC 3339, regexes), on any connector, HTTP or CLI, then gets an
+  `ARG_OVERRIDES` entry in
   [scripts/connector-tool-contract.test.ts](../../../scripts/connector-tool-contract.test.ts).
 - CLI connectors also get `SWEEP_SEED`, plus `BOUND_TO_STATE` for bound tools, in
   [scripts/cli-argument-guards.test.ts](../../../scripts/cli-argument-guards.test.ts). Removing a tool
@@ -72,7 +84,9 @@ Extra steps.
   (for example `readwise` via `collectionToolNames`) or skipped by `sync-tool-names.ts` is checked by
   hand.
 - Tests assert behaviour, not file contents or paths.
-- The connector README documents the tool, its credential and its write scope.
+- The connector README documents the tool, its credential and its write scope. The scope term is
+  `kind:value` (for example `repo:acme/api`), and an unset variable authorises nothing: see
+  [docs/configuration.md](../../../docs/configuration.md).
 - A `readwise` change bumps `version` in its `nimbus.extension.json` (see
   [docs/publishing.md](../../../docs/publishing.md)).
 

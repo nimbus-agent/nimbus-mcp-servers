@@ -51,14 +51,25 @@ never get ahead of the gateway's pin. The steps are in [phase1-connector.md](./p
 In outline:
 
 1. Branch: on `main`, create `feat/<connector>-<slug>` (or `fix/...`) from `origin/main`. On another
-   branch, use it. Uncommitted changes to tracked files stop the run. Untracked files are left alone.
+   branch, use it, unless the owner's brief names a new branch: then `git switch -c` it from the
+   current one and never branch off `main` behind the brief's back. Uncommitted changes to tracked
+   files stop the run. Untracked files are left alone.
 2. Read [docs/adding-a-connector.md](../../../docs/adding-a-connector.md) and follow the phase file:
    registration, guards, test fixtures, names, tests, docs, and the new-connector extras.
-3. Run the trap check below on your own diff.
-4. `bun run check` passes.
+3. Run the trap check below on your own diff. Write each new test first, and see it fail for the
+   right reason. An assertion that a call is rejected passes just as well when the tool is not
+   registered at all, so assert on the refusal's message. A RED test that fails for the right reason
+   is the only RED that counts: read each failure before going on.
+4. `bun run check` passes. When it fails for a reason outside the diff (a nested `worktrees/`
+   checkout, a Bun older than `.bun-version`), do not wave it through: run its parts by hand
+   (`bun test`, `bunx biome check`, `bun run typecheck`, the `audit:*` scripts) and name in the report
+   which gate was replaced and why.
 5. Commit with Conventional Commits subjects (release-please reads those).
-6. Emit the hand-off in the report: the tools, their classes, the gateway work the phase 2 file
-   predicts, and the owner questions it will ask.
+6. Emit the hand-off in the report: the tools, their classes, the "Gateway work predicted" field, and
+   the owner questions it will ask. For each write, the gateway work is: walk every item of
+   `../Nimbus/.claude/commands/nimbus-connector-writes.md`'s checklist and
+   name, for each tool, what that item needs, or `n/a` with a reason. Do not copy the checklist here; it is the gateway's and
+   drifts. Name an individual gateway test or doc only when that file does not make it findable.
 
 ## Trap check
 
@@ -108,7 +119,8 @@ Asked in one message at the start of Phase 2, before any gateway edit, per write
   (`isModelOfferableRow`), so "not offered" means an entry in `MODEL_NEVER_OFFERED_REASONS` with the
   owner's reason. Every wave 4 row needs a confirm text (`confirm-rows.test.ts`). A wave 4 row offered
   to the model also needs a before-state reader or bound step (`isModelOfferableRow`);
-- **reversibility** and its inverse, when that is a judgement call.
+- **reversibility** and its inverse, when that is a judgement call. Name a candidate inverse only if
+  a tool for it exists, else say there is none.
 
 Also the owner's, asked when they arise: any definition change or removal of a shipped tool (Phase 1,
 before code); whether a new connector is indexed by the gateway; new OAuth scopes, and whether a
@@ -124,6 +136,7 @@ This repo:         branch <name> · commits <sha subject, ...> · gates run: <co
 Gateway:           branch or worktree <name or "not started"> · commits <...> · gates run: <...>
 Landing order:     connectors PR -> release -> gateway PR (soon: a minor gap fails the gateway's
                    version-skew audit)
+Gateway work predicted: <per write tool, each item of the gateway checklist: what it needs, or n/a + reason>
 Open owner decisions: <wave, offered to model, reversibility, indexing, scopes, ... or "none">
 References found and not acted on: <id, file, why left>
 nimbus-dotgithub:  <only for a new connector crossing a round number (100, ...): manual follow-up>

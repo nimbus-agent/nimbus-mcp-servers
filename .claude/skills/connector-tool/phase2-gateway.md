@@ -33,7 +33,7 @@ Rules for the answers:
   needs a before-state reader or bound step.
 - Append the questions that arise only for some changes: whether a new connector is indexed by the
   gateway; new OAuth scopes; whether a connector starts receiving its granted scopes at spawn.
-- Wait for the answers. Do not guess a wave.
+- Wait for the answers. Do not guess a wave. Number the questions so the owner can answer by number.
 
 ## Branch or worktree
 
@@ -88,7 +88,7 @@ Everything below is on top of the gates above.
 | Class | Gateway work |
 |---|---|
 | read tool added | `read-tool-registry.ts` `EXTRA_READ_TOOL_IDS` if the name ends in no read verb and it backs a before-read or share replay; the connector docs page `packages/docs/src/content/docs/connectors/<id>.mdx`; roadmap row tick |
-| write tool added | follow `../Nimbus/.claude/commands/nimbus-connector-writes.md` (row, preview, before-state/confirm, refusals, reversibility, its tests and docs), after the owner's answers. A new refusal goes in a sibling helper module, not in the shared `model-write-refusals.ts`, which is locked by size |
+| write tool added | follow `../Nimbus/.claude/commands/nimbus-connector-writes.md` (row, preview, before-state/confirm, refusals, reversibility, its tests and docs), after the owner's answers. Walk every item of that checklist (and its pitfalls) and name, for each tool, what the item needs, or `n/a` with a reason; an item left unnamed is a gap in the report. A new refusal goes in a sibling helper module, not in the shared `model-write-refusals.ts`, which is locked by size |
 | first write on a read-only connector | as write, plus: the OAuth `defaultScopes` in `connector-catalog.ts` (Google Calendar requests only `calendar.readonly` today); passing the granted scopes at spawn (`auth/oauth-vault-tokens.ts`, `lazy-mesh/connector-spawns.ts`; today only Gmail gets them). An own-key-only service such as `google_calendar` reads its scopes without falling back to `google.oauth`. Plus any scope URL in `connector-host-gaps.json` |
 | prepare tool added | `connector-writes/prepare-tools.ts` `PREPARE_TOOL_ID_BACKING`, and `prepare-tools.test.ts`, whose list equals ours and whose connector-to-`src/tools.ts` map lists only `github`, `gitlab`, `iac` and `kubernetes` today. Also `withBound` on the paired row. Prepare tools are not in `manifest.generated.ts` |
 | behaviour fix | the gates above; roadmap row tick |
