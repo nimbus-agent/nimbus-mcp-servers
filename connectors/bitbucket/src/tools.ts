@@ -12,6 +12,7 @@ import {
 } from "../../../shared/mcp-tool-kit.ts";
 import { type RestFetchResult, toRestFetchResult } from "../../../shared/rest-tool-kit.ts";
 
+const LINE_NEEDS_PATH = "line requires path";
 const BB_API = "https://api.bitbucket.org/2.0";
 
 function basicAuthHeader(): string {
@@ -207,12 +208,16 @@ export function registerBitbucketTools(
       mutates: "bitbucket.pr.comment.create",
       recoverable: true,
       scopeTargetOf: (p) => ({ kind: "repo", value: p.repoFull }),
+      // Standalone only, before scope and the consent prompt: a human is not asked to approve a
+      // call that must fail. Gateway mode never calls it, so the handler checks the same rule.
+      refuseBefore: (p) =>
+        p.line !== undefined && p.path === undefined ? LINE_NEEDS_PATH : undefined,
     },
     "Post a comment on a pull request; inline on a file (and line) when path is given.",
     bitbucketPrCommentCreateSchema,
     async (parsed) => {
       if (parsed.line !== undefined && parsed.path === undefined) {
-        throw new Error("line requires path");
+        throw new Error(LINE_NEEDS_PATH);
       }
       const path = `${repoPath(parsed.repoFull)}/pullrequests/${String(parsed.pullRequestId)}/comments`;
       const body: Record<string, unknown> = { content: { raw: parsed.body } };

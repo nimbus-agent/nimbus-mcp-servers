@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   type FetchStub,
   type StubReply,
   stubFetch,
+  withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerBitbucketTools } from "../src/tools.ts";
@@ -186,7 +188,7 @@ describe("bitbucket_pr_comment_create", () => {
         body: "hi",
         line: 3,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("line requires path");
     expect(stub.calls).toEqual([]);
   });
 
@@ -199,6 +201,29 @@ describe("bitbucket_pr_comment_create", () => {
         body: "hi",
       }),
     ).rejects.toThrow("403");
+  });
+});
+
+describe("bitbucket_pr_comment_create (standalone mode)", () => {
+  it("refuses line without path before any consent prompt, and sends nothing", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = reply("{}");
+    let capture: ReturnType<typeof captureStandaloneTools> | undefined;
+    await withEnv({ NIMBUS_MCP_BITBUCKET_WRITE_SCOPE: "repo:acme/api" }, () => {
+      capture = captureStandaloneTools(registerBitbucketTools, { elicitation: true });
+    });
+    // A refusal before consent is a result, not a thrown error.
+    expect(
+      await capture?.tools.callJson("bitbucket_pr_comment_create", {
+        repoFull: "acme/api",
+        pullRequestId: 7,
+        body: "hi",
+        line: 3,
+      }),
+    ).toEqual({ ok: false, error: "line requires path" });
+    expect(capture?.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
   });
 });
 
