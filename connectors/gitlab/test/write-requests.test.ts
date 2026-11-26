@@ -644,6 +644,29 @@ describe("gitlab label and assignee removal, issue edit (gateway mode)", () => {
     });
   });
 
+  it("issue_assignees_remove refuses a numeric project id, which GraphQL's projectPath cannot take", async () => {
+    const stub = serve(GQL_REMOVED);
+    for (const projectPath of ["42", "007"]) {
+      await expect(
+        tools.call("gitlab_issue_assignees_remove", {
+          projectPath,
+          issueIid: 3,
+          assigneeUsernames: ["ada"],
+        }),
+      ).rejects.toThrow(
+        "projectPath must be the project's full path (group/project): GraphQL takes no numeric id",
+      );
+    }
+    expect(stub.calls).toEqual([]);
+    // A path whose last segment is numeric is still a full path.
+    await tools.call("gitlab_issue_assignees_remove", {
+      projectPath: "group/42",
+      issueIid: 3,
+      assigneeUsernames: ["ada"],
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+
   it("issue_assignees_remove fails on a GraphQL error and refuses any redirect", async () => {
     serve('{"data":{"issueSetAssignees":{"issue":null,"errors":["Issue not found"]}}}');
     await expect(

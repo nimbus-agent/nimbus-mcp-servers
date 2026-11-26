@@ -529,8 +529,15 @@ export function registerGitlabTools(
       recoverable: true,
       scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
     },
-    "Remove assignees (usernames) from an issue in one atomic GraphQL call (issueSetAssignees, operationMode REMOVE); it removes only the usernames named, and cannot add or replace any assignee.",
+    "Remove assignees (usernames) from an issue in one atomic GraphQL call (issueSetAssignees, operationMode REMOVE); it removes only the usernames named, and cannot add or replace any assignee. projectPath is the project's full path (group/project), not a numeric id.",
     gitlabIssueGetSchema.extend({
+      // GraphQL's `projectPath: ID!` is a full path; a numeric REST id would match no project.
+      projectPath: projectPathArg.shape.projectPath
+        .refine(
+          (p) => !/^\d+$/.test(p),
+          "projectPath must be the project's full path (group/project): GraphQL takes no numeric id",
+        )
+        .describe("the project's full path, e.g. group/repo (not a numeric id)"),
       assigneeUsernames: z.array(z.string().min(1).max(255)).min(1).max(20),
     }),
     async (parsed) => {
