@@ -48,6 +48,19 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   [Phase 9.7](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-97--connector-write-enablement-the-acting-roster)
   lists tools it needed and did not find here. Each is a small connector change with its own
   release.
+  - [ ] **Code review and issue writes:** GitHub PR review / line comment, Bitbucket PR comment,
+    GitHub/GitLab label and assignee remove, GitHub/GitLab issue title and body edit, Jira
+    assignee, Linear labels.
+  - [ ] **Google Calendar writes:** create, update, delete. This is the first write on the
+    connector, and the gateway must pass the granted scopes at spawn.
+  - [ ] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
+    `tag_database` and `tag_schema`; `iac_terraform_init`; a read of a stack's change sets.
+  - [ ] **Flag connectors:** Unleash and Split, as new connectors with writes.
+  - [ ] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. It may be
+    impossible upstream.
+
+  Dropped: Opsgenie (replaced by Jira Service Management, OR-W34-7), and REST readers for
+  `az`/`gcloud` (not taken, OR-97-1).
 
 ## How this file works
 

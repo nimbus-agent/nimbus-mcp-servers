@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   type CapturedTools,
+  captureStandaloneTools,
   captureTools,
   type FetchStub,
   type StubReply,
   stubFetch,
+  withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerBitbucketTools } from "../src/tools.ts";
@@ -146,6 +148,85 @@ describe("bitbucket reads", () => {
   }
 });
 
+describe("bitbucket_pr_comment_create", () => {
+  it("posts a general comment as content.raw", async () => {
+    const stub = reply('{"id":1}');
+    await tools.call("bitbucket_pr_comment_create", {
+      repoFull: REPO,
+      pullRequestId: 7,
+      body: "hi",
+    });
+    const req = stub.only;
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe(`${REPO_PATH}/pullrequests/7/comments`);
+    expect(req.headers["authorization"]).toBe(BASIC);
+    expect(req.headers["content-type"]).toBe("application/json");
+    expect(req.body).toBe('{"content":{"raw":"hi"}}');
+  });
+
+  it("posts an inline comment with path and line", async () => {
+    const stub = reply('{"id":2}');
+    await tools.call("bitbucket_pr_comment_create", {
+      repoFull: REPO,
+      pullRequestId: 7,
+      body: "nit",
+      path: "src/a.ts",
+      line: 12,
+    });
+    expect(JSON.parse(stub.only.body ?? "{}")).toEqual({
+      content: { raw: "nit" },
+      inline: { path: "src/a.ts", to: 12 },
+    });
+  });
+
+  it("refuses line without path", async () => {
+    const stub = reply("{}");
+    await expect(
+      tools.call("bitbucket_pr_comment_create", {
+        repoFull: REPO,
+        pullRequestId: 7,
+        body: "hi",
+        line: 3,
+      }),
+    ).rejects.toThrow("line requires path");
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("quotes the upstream status on failure", async () => {
+    reply({ status: 403, body: "forbidden" });
+    await expect(
+      tools.call("bitbucket_pr_comment_create", {
+        repoFull: REPO,
+        pullRequestId: 7,
+        body: "hi",
+      }),
+    ).rejects.toThrow("403");
+  });
+});
+
+describe("bitbucket_pr_comment_create (standalone mode)", () => {
+  it("refuses line without path before any consent prompt, and sends nothing", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = reply("{}");
+    let capture: ReturnType<typeof captureStandaloneTools> | undefined;
+    await withEnv({ NIMBUS_MCP_BITBUCKET_WRITE_SCOPE: "repo:acme/api" }, () => {
+      capture = captureStandaloneTools(registerBitbucketTools, { elicitation: true });
+    });
+    // A refusal before consent is a result, not a thrown error.
+    expect(
+      await capture?.tools.callJson("bitbucket_pr_comment_create", {
+        repoFull: "acme/api",
+        pullRequestId: 7,
+        body: "hi",
+        line: 3,
+      }),
+    ).toEqual({ ok: false, error: "line requires path" });
+    expect(capture?.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
+  });
+});
+
 describe("bitbucket_pr_merge", () => {
   it("POSTs the merge with only the options given", async () => {
     const stub = reply('{"state":"MERGED"}');
@@ -168,5 +249,38 @@ describe("bitbucket_pr_merge", () => {
     const stub = reply("{}");
     await tools.call("bitbucket_pr_merge", { repoFull: REPO, pullRequestId: 7, message: "ship" });
     expect(stub.only.body).toBe('{"type":"pullrequest","message":"ship"}');
+  });
+});
+
+describe("bitbucket redirects", () => {
+  const EVIL = "https://evil.example/steal";
+  const REFUSED = /Bitbucket answered a POST with a redirect \(307\)/;
+
+  it("a cross-origin 307 on the comment POST is refused and nothing goes to the other origin", async () => {
+    const stub = reply({ status: 307, headers: { Location: EVIL } });
+    await expect(
+      tools.call("bitbucket_pr_comment_create", { repoFull: REPO, pullRequestId: 7, body: "hi" }),
+    ).rejects.toThrow(REFUSED);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+
+  it("a cross-origin 307 on the merge POST is refused and nothing goes to the other origin", async () => {
+    const stub = reply({ status: 307, headers: { Location: EVIL } });
+    await expect(
+      tools.call("bitbucket_pr_merge", { repoFull: REPO, pullRequestId: 7 }),
+    ).rejects.toThrow(REFUSED);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+
+  it("a cross-origin 302 on a read is refused and the credential goes nowhere else", async () => {
+    const stub = reply({ status: 302, headers: { Location: EVIL } });
+    await expect(tools.call("bitbucket_repo_list", {})).rejects.toThrow(
+      "Bitbucket redirected to another origin; refused",
+    );
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -12,6 +13,7 @@ import {
 } from "../../../shared/mcp-tool-kit.ts";
 import { type RestFetchResult, toRestFetchResult } from "../../../shared/rest-tool-kit.ts";
 
+const LINE_NEEDS_PATH = "line requires path";
 const BB_API = "https://api.bitbucket.org/2.0";
 
 function basicAuthHeader(): string {
@@ -48,10 +50,9 @@ async function bbFetch(path: string, init?: RequestInit): Promise<RestFetchResul
   };
   const extra = init?.headers as Record<string, string> | undefined;
   const headers = extra === undefined ? baseHeaders : { ...baseHeaders, ...extra };
-  const res = await fetch(url, {
-    ...init,
-    headers,
-  });
+  // guardedFetch: the credential must never follow a redirect to another origin, and a write
+  // that is redirected is refused rather than replayed.
+  const res = await guardedFetch("Bitbucket", url, { ...init, headers });
   return toRestFetchResult(res);
 }
 
@@ -75,6 +76,7 @@ export const BITBUCKET_TOOL_NAMES = [
   "bitbucket_pr_list",
   "bitbucket_pr_get",
   "bitbucket_pr_merge",
+  "bitbucket_pr_comment_create",
   "bitbucket_pipeline_list",
   "bitbucket_pipeline_get",
   "bitbucket_issue_list",
@@ -184,6 +186,46 @@ export function registerBitbucketTools(
       }
       if (parsed.message !== undefined) {
         body["message"] = parsed.message;
+      }
+      return bbResult(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+  );
+
+  const bitbucketPrCommentCreateSchema = repoFullArg.extend({
+    pullRequestId: z.number().int().min(1),
+    body: z.string().min(1).max(32_768),
+    path: z.string().min(1).max(4096).optional(),
+    line: z.number().int().min(1).optional(),
+  });
+
+  registerWriteTool(
+    "bitbucket_pr_comment_create",
+    {
+      mutates: "bitbucket.pr.comment.create",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "repo", value: p.repoFull }),
+      // Standalone only, before scope and the consent prompt: a human is not asked to approve a
+      // call that must fail. Gateway mode never calls it, so the handler checks the same rule.
+      refuseBefore: (p) =>
+        p.line !== undefined && p.path === undefined ? LINE_NEEDS_PATH : undefined,
+    },
+    "Post a comment on a pull request; inline on a file (and line) when path is given.",
+    bitbucketPrCommentCreateSchema,
+    async (parsed) => {
+      if (parsed.line !== undefined && parsed.path === undefined) {
+        throw new Error(LINE_NEEDS_PATH);
+      }
+      const path = `${repoPath(parsed.repoFull)}/pullrequests/${String(parsed.pullRequestId)}/comments`;
+      const body: Record<string, unknown> = { content: { raw: parsed.body } };
+      if (parsed.path !== undefined) {
+        body["inline"] =
+          parsed.line === undefined
+            ? { path: parsed.path }
+            : { path: parsed.path, to: parsed.line };
       }
       return bbResult(path, {
         method: "POST",
