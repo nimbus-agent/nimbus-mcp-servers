@@ -88,8 +88,8 @@ repo with `gateway <version>`. The steps are in [phase2-gateway.md](./phase2-gat
    in this repo. The Phase 1 hand-off is a cross-check only, and any disagreement is reported.
 2. Ask the owner's questions (next section) in one message, before any gateway edit.
 3. `git fetch` in the gateway. If `../Nimbus` is on a clean `main`, run
-   `git switch -c dev/<you>/<topic> origin/main`. Otherwise never switch the owner's checkout: run
-   `git worktree add -b dev/<you>/<topic> ../Nimbus/.claude/worktrees/<slug> origin/main` with a flat
+   `git switch -c dev/asaf/<topic> origin/main`. Otherwise never switch the owner's checkout: run
+   `git worktree add -b dev/asaf/<topic> ../Nimbus/.claude/worktrees/<slug> origin/main` with a flat
    slug (no slashes), then `bun install` there.
 4. Do the gateway work for the change class on that one branch, to a green `bun run preflight:fast` and
    the touched suites.

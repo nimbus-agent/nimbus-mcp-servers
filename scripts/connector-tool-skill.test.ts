@@ -122,3 +122,39 @@ describe("connector-tool skill", () => {
     }
   });
 });
+
+describe("phase 2 file", () => {
+  const md = () => readSkill("phase2-gateway.md");
+  test("has its sections", () => {
+    expect(headings(md())).toEqual(
+      expect.arrayContaining([
+        "Derive what changed",
+        "Ask the owner first",
+        "Branch or worktree",
+        "Gates every class meets",
+        "Per class",
+        "Finish",
+      ]),
+    );
+  });
+  test("keeps the rules that protect the owner", () => {
+    for (const rule of [
+      "git fetch --tags",
+      "floorOf",
+      "isModelOfferableRow",
+      "MODEL_NEVER_OFFERED_REASONS",
+      "git worktree add",
+      "never switch",
+      "audit:file-size --update",
+      "EXTRA_READ_TOOL_IDS",
+      "connector-spawns.ts",
+      "nimbus-connector-writes.md",
+      "preflight:fast",
+    ]) {
+      expect(md()).toContain(rule);
+    }
+  });
+  test("does not follow the stale authoring file", () => {
+    expect(md()).toMatch(/nimbus-connector-authoring\.md[^\n]*(stale|not follow)/i);
+  });
+});
