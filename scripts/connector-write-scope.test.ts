@@ -643,6 +643,13 @@ const WRITES: Readonly<
       ["linear_issue_create", "linear.issue.create", { teamId: "team-eng" }, "team:team-eng"],
       ["linear_issue_update", "linear.issue.update", { issueId: "ENG-7" }, "issue:ENG-7"],
       ["linear_comment_create", "linear.comment.create", { issueId: "ENG-7" }, "issue:ENG-7"],
+      ["linear_issue_labels_add", "linear.issue.labels.add", { issueId: "ENG-7" }, "issue:ENG-7"],
+      [
+        "linear_issue_labels_remove",
+        "linear.issue.labels.remove",
+        { issueId: "ENG-7" },
+        "issue:ENG-7",
+      ],
     ],
   },
   looker: {

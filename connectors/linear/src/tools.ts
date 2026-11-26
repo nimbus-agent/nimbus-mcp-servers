@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -20,7 +21,9 @@ async function linearGraphql<T>(
   query: string,
   variables?: Record<string, unknown>,
 ): Promise<{ ok: true; data: T; text: string } | { ok: false; status: number; text: string }> {
-  const res = await fetch(LINEAR_GQL, {
+  // guardedFetch: every GraphQL call is a POST, so any redirect is refused rather than replayed,
+  // and the API key never follows one to another origin.
+  const res = await guardedFetch("Linear", LINEAR_GQL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -65,6 +68,8 @@ export const LINEAR_TOOL_NAMES = [
   "linear_issue_create",
   "linear_issue_update",
   "linear_comment_create",
+  "linear_issue_labels_add",
+  "linear_issue_labels_remove",
   "linear_project_list",
   "linear_project_get",
   "linear_cycle_list",
@@ -327,6 +332,64 @@ export function registerLinearTools(
       });
       return jsonResult(linearGqlData(res));
     },
+  );
+
+  /**
+   * A label change on one issue: `issueUpdate` with `addedLabelIds` or `removedLabelIds` only, one
+   * atomic request that never sends `labelIds` (which would REPLACE the whole set).
+   */
+  const linearIssueLabelsSchema = z.object({
+    issueId: z.string().min(1).max(255),
+    labelIds: z
+      .array(z.string().min(1).max(255))
+      .min(1)
+      .max(50)
+      .refine((ids) => new Set(ids).size === ids.length, "a label id is named twice"),
+  });
+
+  async function changeIssueLabels(
+    field: "addedLabelIds" | "removedLabelIds",
+    parsed: { issueId: string; labelIds: readonly string[] },
+  ): Promise<ReturnType<typeof jsonResult>> {
+    const apiKey = requireProcessEnv("LINEAR_API_KEY");
+    const q = `
+        mutation IssueLabels($id: String!, $labelIds: [String!]!) {
+          issueUpdate(id: $id, input: { ${field}: $labelIds }) {
+            success
+            issue { id identifier url labels { nodes { id name } } }
+          }
+        }
+      `;
+    type Out = { issueUpdate: { success: boolean; issue: Record<string, unknown> | null } };
+    const res = await linearGraphql<Out>(apiKey, q, {
+      id: parsed.issueId,
+      labelIds: parsed.labelIds,
+    });
+    return jsonResult(linearGqlData(res));
+  }
+
+  registerWriteTool(
+    "linear_issue_labels_add",
+    {
+      mutates: "linear.issue.labels.add",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
+    },
+    "Add labels (by label id) to a Linear issue in one request; it only adds, and cannot remove or replace any label already on the issue.",
+    linearIssueLabelsSchema,
+    (parsed) => changeIssueLabels("addedLabelIds", parsed),
+  );
+
+  registerWriteTool(
+    "linear_issue_labels_remove",
+    {
+      mutates: "linear.issue.labels.remove",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueId }),
+    },
+    "Remove labels (by label id) from a Linear issue in one request; it removes only the labels named, adds none, and never deletes a label from the workspace.",
+    linearIssueLabelsSchema,
+    (parsed) => changeIssueLabels("removedLabelIds", parsed),
   );
 
   const linearFirstOptionalSchema = z.object({

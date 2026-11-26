@@ -215,3 +215,88 @@ describe("linear tools", () => {
     expect(stub.calls).toEqual([]);
   });
 });
+
+describe("linear issue labels", () => {
+  const UPDATED = {
+    issueUpdate: { success: true, issue: { id: "uuid-1", labels: { nodes: [] } } },
+  };
+
+  it("labels_add sends addedLabelIds only, so no label already on the issue is removed", async () => {
+    const { req, out } = await call(
+      "linear_issue_labels_add",
+      { issueId: "uuid-1", labelIds: ["lab-1", "lab-2"] },
+      UPDATED,
+    );
+    expect(out).toEqual(UPDATED);
+    const { query, variables } = gql(req);
+    expect(query).toContain("issueUpdate(id: $id, input: { addedLabelIds: $labelIds })");
+    expect(query).not.toContain("removedLabelIds");
+    expect(query).not.toContain("input: $input");
+    expect(variables).toEqual({ id: "uuid-1", labelIds: ["lab-1", "lab-2"] });
+  });
+
+  it("labels_remove sends removedLabelIds only, so nothing is added or replaced", async () => {
+    const { req } = await call(
+      "linear_issue_labels_remove",
+      { issueId: "ENG-7", labelIds: ["lab-1"] },
+      UPDATED,
+    );
+    const { query, variables } = gql(req);
+    expect(query).toContain("issueUpdate(id: $id, input: { removedLabelIds: $labelIds })");
+    expect(query).not.toContain("addedLabelIds");
+    expect(variables).toEqual({ id: "ENG-7", labelIds: ["lab-1"] });
+  });
+
+  it("refuses an empty, repeated or oversized label list before any request", async () => {
+    const stub = serve("{}");
+    await withEnv({ LINEAR_API_KEY: "k" }, async () => {
+      for (const name of ["linear_issue_labels_add", "linear_issue_labels_remove"]) {
+        await expect(tools.call(name, { issueId: "uuid-1", labelIds: [] })).rejects.toThrow(
+          "too_small",
+        );
+        await expect(tools.call(name, { issueId: "uuid-1", labelIds: ["a", "a"] })).rejects.toThrow(
+          "a label id is named twice",
+        );
+        await expect(
+          tools.call(name, { issueId: "uuid-1", labelIds: Array.from({ length: 51 }, String) }),
+        ).rejects.toThrow("too_big");
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("reports Linear's refusal of a label change", async () => {
+    serve(JSON.stringify({ errors: [{ message: "Label not found" }] }));
+    await withEnv({ LINEAR_API_KEY: "k" }, async () => {
+      await expect(
+        tools.call("linear_issue_labels_add", { issueId: "uuid-1", labelIds: ["nope"] }),
+      ).rejects.toThrow("Linear GraphQL: Label not found");
+    });
+  });
+});
+
+describe("linear never sends its API key across a redirect", () => {
+  const EVIL = "https://evil.example/steal";
+
+  it("a 307 on a label write is refused and nothing goes to the other origin", async () => {
+    const stub = serve({ status: 307, headers: { Location: EVIL } });
+    await withEnv({ LINEAR_API_KEY: "k" }, async () => {
+      await expect(
+        tools.call("linear_issue_labels_add", { issueId: "uuid-1", labelIds: ["lab-1"] }),
+      ).rejects.toThrow(/Linear answered a POST with a redirect \(307\)/);
+    });
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+
+  it("a 307 on an existing write (comment create) is refused the same way", async () => {
+    const stub = serve({ status: 307, headers: { Location: EVIL } });
+    await withEnv({ LINEAR_API_KEY: "k" }, async () => {
+      await expect(
+        tools.call("linear_comment_create", { issueId: "uuid-1", body: "hi" }),
+      ).rejects.toThrow(/Linear answered a POST with a redirect \(307\)/);
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+});
