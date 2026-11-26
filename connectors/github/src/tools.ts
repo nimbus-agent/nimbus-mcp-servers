@@ -460,6 +460,11 @@ export function registerGithubTools(
         "event is COMMENT or REQUEST_CHANGES: an APPROVE review is never sent, because an approval can satisfy branch protection",
     }),
     comments: z.array(reviewCommentSchema).max(50).optional(),
+    // Pins the review to the head the owner approved; GitHub's `commit_id`.
+    commitId: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/i, "commitId is a full 40-character hex commit sha")
+      .optional(),
   });
 
   /** A range whose start is not above its end is certain to be refused: shared by refuseBefore and the handler. */
@@ -488,7 +493,7 @@ export function registerGithubTools(
       },
       refuseBefore: reviewProblem,
     },
-    "Submit a review on a pull request: a body, an event, and optional inline comments on the diff (path, line, optional side LEFT or RIGHT, and startLine for a multi-line range). event is COMMENT or REQUEST_CHANGES; REQUEST_CHANGES blocks merging under a branch protection that requires reviews until it is dismissed. It never approves: APPROVE is refused. The review lands on the pull request's current head commit, and a submitted review cannot be deleted.",
+    "Submit a review on a pull request: a body, an event, and optional inline comments on the diff (path, line, optional side LEFT or RIGHT, and startLine for a multi-line range). event is COMMENT or REQUEST_CHANGES; REQUEST_CHANGES blocks merging under a branch protection that requires reviews until it is dismissed. It never approves: APPROVE is refused. commitId (a full 40-hex sha, sent as commit_id) pins the review to that commit; without it the review lands on the pull request's current head commit. A submitted review cannot be deleted.",
     githubPrReviewCreateSchema,
     (parsed) => `${reviewPrPath(parsed)}/reviews`,
     (parsed) => {
@@ -497,6 +502,7 @@ export function registerGithubTools(
       return jsonInit("POST", {
         body: parsed.body,
         event: parsed.event,
+        ...(parsed.commitId === undefined ? {} : { commit_id: parsed.commitId }),
         ...(parsed.comments === undefined
           ? {}
           : {

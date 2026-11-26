@@ -1005,6 +1005,61 @@ describe("github review, label and assignee removal, issue edit (gateway mode)",
     expect(JSON.parse(req.body ?? "null")).toEqual({ body: "LGTM-ish", event: "COMMENT" });
   });
 
+  it("pr_review_create sends commitId as commit_id only when given", async () => {
+    const pinned = await request("github_pr_review_create", {
+      ...PR,
+      body: "b",
+      event: "COMMENT",
+      commitId: SHA,
+    });
+    expect(JSON.parse(pinned.body ?? "null")).toEqual({
+      body: "b",
+      event: "COMMENT",
+      commit_id: SHA,
+    });
+    const unpinned = await request("github_pr_review_create", {
+      ...PR,
+      body: "b",
+      event: "COMMENT",
+    });
+    expect(unpinned.body).not.toContain("commit_id");
+  });
+
+  it("pr_review_create refuses a commitId that is not a full 40-hex sha, sending nothing", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      for (const commitId of ["abc1234", `${SHA}0`, "main", "", `${SHA.slice(0, 39)}g`]) {
+        await expect(
+          tools.call("github_pr_review_create", { ...PR, body: "b", event: "COMMENT", commitId }),
+        ).rejects.toThrow("commitId is a full 40-character hex commit sha");
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("pr_review_create refuses approve in any case, and forwards no unknown comment field", async () => {
+    const stub = serve("{}");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      for (const event of ["approve", "Approve", "APPROVE "]) {
+        await expect(
+          tools.call("github_pr_review_create", { ...PR, body: "b", event }),
+        ).rejects.toThrow(APPROVE_REFUSAL);
+      }
+    });
+    expect(stub.calls).toEqual([]);
+    const req = await request("github_pr_review_create", {
+      ...PR,
+      body: "b",
+      event: "COMMENT",
+      comments: [{ path: "a.ts", line: 3, body: "x", event: "APPROVE", commit_id: "f".repeat(40) }],
+    });
+    expect(JSON.parse(req.body ?? "null")).toEqual({
+      body: "b",
+      event: "COMMENT",
+      comments: [{ path: "a.ts", line: 3, body: "x" }],
+    });
+  });
+
   it("pr_review_create refuses APPROVE at the schema, naming why, and sends nothing", async () => {
     const stub = serve("{}");
     await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
@@ -1062,6 +1117,22 @@ describe("github review, label and assignee removal, issue edit (gateway mode)",
       `DELETE ${API}/repos/acme/api/issues/12/labels/area%2Fapi`,
     ]);
     expect(out).toEqual({ ok: true, removed: ["bug", "needs review", "area/api"], labels: [] });
+  });
+
+  it("issue_labels_remove encodes an encoded-dot, query or fragment label so it stays one segment", async () => {
+    const stub = serve("[]");
+    await withEnv({ GITHUB_PAT: "ghp_test" }, () =>
+      tools.call("github_issue_labels_remove", {
+        ...ISSUE,
+        labels: ["%2e%2e", "a?b=c", "x#y", "../up"],
+      }),
+    );
+    expect(log(stub)).toEqual([
+      `DELETE ${API}/repos/acme/api/issues/12/labels/%252e%252e`,
+      `DELETE ${API}/repos/acme/api/issues/12/labels/a%3Fb%3Dc`,
+      `DELETE ${API}/repos/acme/api/issues/12/labels/x%23y`,
+      `DELETE ${API}/repos/acme/api/issues/12/labels/..%2Fup`,
+    ]);
   });
 
   it("issue_labels_remove refuses a dot-segment label name at the schema, sending nothing", async () => {
