@@ -171,6 +171,12 @@ describe("phase 2 file", () => {
       "preflight:fast",
       "Walk every item",
       "or `n/a` with a reason",
+      "files and test fixtures count",
+      "HITL_REQUIRED_BACKING",
+      "spread it in the rows index",
+      "BroadcastService",
+      "A tool with no entry is unknown",
+      "security-invariants",
     ]) {
       expect(md()).toContain(rule);
     }

@@ -124,7 +124,11 @@ Asked in one message at the start of Phase 2, before any gateway edit, per write
   owner's reason. Every wave 4 row needs a confirm text (`confirm-rows.test.ts`). A wave 4 row offered
   to the model also needs a before-state reader or bound step (`isModelOfferableRow`);
 - **reversibility** and its inverse, when that is a judgement call. Name a candidate inverse only if
-  a tool for it exists, else say there is none.
+  a tool for it exists, else say there is none. A precedent with no reversibility entry is unknown,
+  not irreversible;
+- **a before-state reader** on a wave 2/3 row, when the precedent rows of its kind have one;
+- **broadcast-mention scanning**, for a write that posts text to a service with no
+  `BroadcastService` rule.
 
 Also the owner's, asked when they arise: any definition change or removal of a shipped tool (Phase 1,
 before code); a tool that writes local state or runs code the caller names (e.g.
