@@ -160,6 +160,8 @@ describe("phase 2 file", () => {
     for (const rule of [
       "git fetch --tags",
       "floorOf",
+      "show origin/main:packages/gateway/package.json",
+      "never from the owner's checkout",
       "isModelOfferableRow",
       "MODEL_NEVER_OFFERED_REASONS",
       "git worktree add",

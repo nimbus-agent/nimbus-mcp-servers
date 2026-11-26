@@ -97,8 +97,9 @@ Anything not a clear "yes" is fixed or reported, never waved through.
 The gateway's half, after the connectors release is published. The owner invokes this skill from this
 repo with `gateway <version>`. The steps are in [phase2-gateway.md](./phase2-gateway.md). In outline:
 
-1. `git fetch --tags` here. Read the pin from `../Nimbus/packages/gateway/package.json`, stripping any
-   leading `^` or `~`. Derive what changed from `git diff connectors-v<pinned>..connectors-v<version>`
+1. `git fetch --tags` here and `git fetch` in the gateway. Read the pin from the branch base,
+   `git -C ../Nimbus show origin/main:packages/gateway/package.json`, never from the owner's
+   checkout, stripping any leading `^` or `~`. A different pin in the checkout is reported first. Derive what changed from `git diff connectors-v<pinned>..connectors-v<version>`
    in this repo. The Phase 1 hand-off is a cross-check only, and any disagreement is reported.
 2. Ask the owner's questions (next section) in one message, before any gateway edit. When there are
    none, say so in the report and go on.

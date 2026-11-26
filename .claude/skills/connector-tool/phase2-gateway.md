@@ -6,9 +6,12 @@ questions and the report format. This file holds the operational detail. Stop at
 
 ## Derive what changed
 
-1. In this repo run `git fetch --tags`.
-2. Read the pin from `../Nimbus/packages/gateway/package.json` and strip any leading `^` or `~`, as
-   `floorOf()` in the gateway's `check-connector-version-skew.ts` does.
+1. In this repo run `git fetch --tags`, and `git fetch` in `../Nimbus`.
+2. Read the pin from the commit the gateway branch starts from, never from the owner's checkout:
+   `git -C ../Nimbus show origin/main:packages/gateway/package.json`. Strip any leading `^` or `~`,
+   as `floorOf()` in the gateway's `check-connector-version-skew.ts` does. If the checkout's
+   `packages/gateway/package.json` pins a different version, report both before any owner question
+   or gateway edit.
 3. List the change with `git diff connectors-v<pinned>..connectors-v<version>` in this repo. That
    diff is the source of truth for tool ids, connector ids and classes.
 4. Compare it with the Phase 1 hand-off. The hand-off is a cross-check only. Report any
