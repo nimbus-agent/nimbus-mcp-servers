@@ -557,13 +557,29 @@ export function registerGitlabTools(
 
   // A plain object, not a `.refine()`d one: the registrar passes `.shape` as the MCP inputSchema and a
   // refined object has none. The at-least-one check is `refuseBefore` (standalone) and the handler's.
+  // GitLab runs quick actions (`/close`, `/assign @x`) in a description on update, which would make a
+  // text edit a state, assignee or label change. Any line that starts with one is refused, inside a
+  // fenced code block too: whether GitLab skips those is not something its docs let us rely on.
+  const quickActionProblem = (description: string): string | undefined => {
+    const lines = description.split(/\r?\n/);
+    for (const [i, line] of lines.entries()) {
+      const action = /^\s*\/([A-Za-z][\w-]*)/.exec(line)?.[1];
+      if (action !== undefined) {
+        return `description line ${String(i + 1)} starts with a GitLab quick action (/${action}), which GitLab would run; wrap it in backticks to keep it as text`;
+      }
+    }
+    return undefined;
+  };
+
   const issueUpdateProblem = (p: {
     title?: string | undefined;
     description?: string | undefined;
-  }): string | undefined =>
-    p.title === undefined && p.description === undefined
-      ? "gitlab_issue_update needs at least one of title, description"
-      : undefined;
+  }): string | undefined => {
+    if (p.title === undefined && p.description === undefined) {
+      return "gitlab_issue_update needs at least one of title, description";
+    }
+    return p.description === undefined ? undefined : quickActionProblem(p.description);
+  };
 
   registerGitlabWriteTool(
     "gitlab_issue_update",
@@ -580,7 +596,7 @@ export function registerGitlabTools(
       },
       refuseBefore: issueUpdateProblem,
     },
-    "Edit an issue's title or description (at least one). It never changes the state, labels or assignees.",
+    "Edit an issue's title or description (at least one). It never changes the state, labels or assignees: a description line that starts with a GitLab quick action (such as /close), even inside a code block, is refused; wrap it in backticks to keep it as text.",
     gitlabIssueGetSchema.extend({
       title: z.string().min(1).max(255).optional(),
       description: z.string().max(65_000).optional(),

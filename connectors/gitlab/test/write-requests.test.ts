@@ -706,7 +706,35 @@ describe("gitlab label and assignee removal, issue edit (gateway mode)", () => {
     );
     expect(stub.calls).toEqual([]);
   });
+
+  it("issue_update refuses a quick-action line in the description, in the handler, sending nothing", async () => {
+    const stub = serve("{}");
+    for (const description of [
+      "Updated\n/close",
+      "  /assign @ada",
+      "text\r\n\t/label ~bug",
+      "```\n/close\n```",
+    ]) {
+      await expect(
+        tools.call("gitlab_issue_update", { ...PROJECT, issueIid: 3, description }),
+      ).rejects.toThrow(QUICK_ACTION_REFUSAL);
+    }
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("issue_update still sends ordinary text, a mid-line slash, a bare slash and an empty description", async () => {
+    for (const description of ["see /usr/bin", "a / b\n/ 2\n//x\n`/close`", ""]) {
+      const stub = serve('{"iid":3}');
+      await tools.call("gitlab_issue_update", { ...PROJECT, issueIid: 3, description });
+      expect(JSON.parse(stub.only.body ?? "null")).toEqual({ description });
+    }
+  });
 });
+
+const QUICK_ACTION_REFUSAL =
+  /description line \d+ starts with a GitLab quick action \(\/[a-z]+\), which GitLab would run; wrap it in backticks to keep it as text/;
+const CLOSE_ON_LINE_2 =
+  "description line 2 starts with a GitLab quick action (/close), which GitLab would run; wrap it in backticks to keep it as text";
 
 describe("gitlab issue_update (standalone mode)", () => {
   let auditDir: string;
@@ -737,6 +765,20 @@ describe("gitlab issue_update (standalone mode)", () => {
     if (cap === undefined) throw new Error("registration did not run");
     return cap;
   }
+
+  it("refuses a quick-action line in the description before the prompt", async () => {
+    const cap = await standalone();
+    const stub = serve("{}");
+    expect(
+      await cap.tools.callJson("gitlab_issue_update", {
+        ...PROJECT,
+        issueIid: 3,
+        description: "Updated\n/close",
+      }),
+    ).toEqual({ ok: false, error: CLOSE_ON_LINE_2 });
+    expect(cap.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
+  });
 
   it("refuses an edit with nothing to change before the prompt", async () => {
     const cap = await standalone();
