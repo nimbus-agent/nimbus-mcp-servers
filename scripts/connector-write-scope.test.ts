@@ -573,6 +573,12 @@ const WRITES: Readonly<
       ["jira_issue_update", "jira.issue.update", { issueKey: "ENG-7" }, "issue:ENG-7"],
       ["jira_comment_add", "jira.comment.add", { issueKey: "ENG-7" }, "issue:ENG-7"],
       [
+        "jira_issue_assign",
+        "jira.issue.assign",
+        { issueKey: "ENG-7", accountId: null },
+        "issue:ENG-7",
+      ],
+      [
         "jira_issue_transition",
         "jira.issue.transition",
         { issueKey: "ENG-7", transitionId: "31" },

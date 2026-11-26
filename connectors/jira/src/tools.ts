@@ -6,9 +6,11 @@ import {
 } from "../../../shared/atlassian-json-fetch.ts";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
+  encodeBasicAuthHeader,
   mcpJsonResult as jsonResult,
   mcpJsonResultFromTextIfOk,
 } from "../../../shared/mcp-tool-kit.ts";
@@ -24,6 +26,12 @@ function requireJiraConfig(): { baseUrl: string; email: string; token: string } 
   };
 }
 
+/**
+ * One request to the Jira site. Through `guardedFetch`: the Basic credential never follows a
+ * redirect to another origin, a redirected write is refused rather than replayed, and a read
+ * follows only a same-origin redirect. The headers are those `fetchAtlassianBasicAuthJsonText`
+ * sends, and a plain-http base is still accepted as given.
+ */
 async function jiraFetch(
   baseUrl: string,
   email: string,
@@ -33,7 +41,21 @@ async function jiraFetch(
 ): Promise<{ ok: boolean; status: number; text: string }> {
   const relativePath = path.startsWith("/") ? path : `/${path}`;
   const url = `${baseUrl}${relativePath}`;
-  return fetchAtlassianBasicAuthJsonText(url, email, token, init);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Authorization: encodeBasicAuthHeader(email, token),
+  };
+  if (init?.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await guardedFetch(
+    "Jira",
+    url,
+    { ...init, headers: { ...headers, ...(init?.headers as Record<string, string> | undefined) } },
+    { requireSecureBase: false },
+  );
+  const text = await res.text();
+  return { ok: res.ok, status: res.status, text };
 }
 
 function plainToAdf(text: string): Record<string, unknown> {
@@ -116,9 +138,14 @@ async function resolveCloudId(cfg: JiraConfig): Promise<string> {
   }
   const res = refuseRedirect(
     "Jira tenant_info",
-    await jiraFetch(cfg.baseUrl, cfg.email, cfg.token, "/_edge/tenant_info", {
-      redirect: "manual",
-    }),
+    await fetchAtlassianBasicAuthJsonText(
+      `${cfg.baseUrl}/_edge/tenant_info`,
+      cfg.email,
+      cfg.token,
+      {
+        redirect: "manual",
+      },
+    ),
   );
   if (!res.ok) {
     throw new Error(
@@ -147,6 +174,30 @@ async function opsFetch(cfg: JiraConfig, path: string, init?: RequestInit): Prom
   );
   return refuseRedirect("Jira Operations", res);
 }
+
+/**
+ * An issue key (`ENG-7`) or numeric issue id: it reaches a URL path, so anything else (a `..`, a
+ * slash, a space) is refused rather than encoded.
+ */
+const issueKeyInPathSchema = z
+  .string()
+  .max(255)
+  .regex(
+    /^(?:[A-Za-z][A-Za-z0-9_]*-[1-9]\d*|[1-9]\d*)$/,
+    "issueKey is an issue key like ENG-7 or a numeric issue id",
+  );
+
+/**
+ * A Jira Cloud account id (`5b10a2844c20165700ede21g`, `557058:f58131cb-...`). A name or email is
+ * not one, and `-1` (Jira's "default assignee") is refused so the tool does only what it says.
+ */
+const accountIdSchema = z
+  .string()
+  .max(128)
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9:_-]*$/,
+    "accountId is a Jira account id, or null to unassign; a name, an email or -1 is refused",
+  );
 
 /** Ids that reach a path: the documented alert id, and request ids, are plain tokens. */
 const opsIdPattern = /^[A-Za-z0-9_-]{1,128}$/;
@@ -204,6 +255,7 @@ export const JIRA_TOOL_NAMES = [
   "jira_comment_add",
   "jira_issue_transitions_list",
   "jira_issue_transition",
+  "jira_issue_assign",
   "jira_board_list",
   "jira_sprint_list",
   "jira_epic_list",
@@ -463,6 +515,48 @@ export function registerJiraTools(
         issueKey: parsed.issueKey,
         transitionId: parsed.transitionId,
       });
+    },
+  );
+
+  registerWriteTool(
+    "jira_issue_assign",
+    {
+      mutates: "jira.issue.assign",
+      // An assignment replaces the previous assignee; putting it back needs that account id, so it
+      // is captured first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const { baseUrl, email, token } = requireJiraConfig();
+        const key = encodeURIComponent(parsed.issueKey);
+        const res = await jiraFetch(
+          baseUrl,
+          email,
+          token,
+          `/rest/api/3/issue/${key}?fields=assignee`,
+        );
+        if (!res.ok) {
+          throw new Error(`Jira ${String(res.status)}: ${res.text.slice(0, 200)}`);
+        }
+        const json = JSON.parse(res.text) as {
+          fields?: { assignee?: { accountId?: string } | null };
+        };
+        return { assigneeAccountId: json.fields?.assignee?.accountId ?? null };
+      },
+      scopeTargetOf: (p) => ({ kind: "issue", value: p.issueKey }),
+    },
+    "Assign a Jira issue to an account, or unassign it (PUT /rest/api/3/issue/{key}/assignee). accountId is required: a Jira account id assigns the issue to that account, and null unassigns it. A name, an email or -1 (the project default) is refused. It changes only the assignee; the previous one is recorded first.",
+    z.object({ issueKey: issueKeyInPathSchema, accountId: accountIdSchema.nullable() }),
+    async (parsed) => {
+      const { baseUrl, email, token } = requireJiraConfig();
+      const key = encodeURIComponent(parsed.issueKey);
+      const res = await jiraFetch(baseUrl, email, token, `/rest/api/3/issue/${key}/assignee`, {
+        method: "PUT",
+        body: JSON.stringify({ accountId: parsed.accountId }),
+      });
+      if (!res.ok) {
+        throw new Error(`Jira ${String(res.status)}: ${res.text.slice(0, 400)}`);
+      }
+      return jsonResult({ ok: true, issueKey: parsed.issueKey, accountId: parsed.accountId });
     },
   );
 

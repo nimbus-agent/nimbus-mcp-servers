@@ -400,3 +400,164 @@ describe("jira transition (standalone mode)", () => {
     });
   });
 });
+
+const ACCOUNT = "5b10a2844c20165700ede21g";
+const BAD_KEY = "issueKey is an issue key like ENG-7 or a numeric issue id";
+const BAD_ACCOUNT =
+  "accountId is a Jira account id, or null to unassign; a name, an email or -1 is refused";
+
+describe("jira issue assign", () => {
+  it("PUTs the account id to the issue's assignee and reports it", async () => {
+    const stub = serve({ status: 204, body: "" });
+    await onSite(async () => {
+      expect(
+        await tools.callJson("jira_issue_assign", { issueKey: "ENG-7", accountId: ACCOUNT }),
+      ).toEqual({ ok: true, issueKey: "ENG-7", accountId: ACCOUNT });
+    });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(
+      `PUT ${SITE}/rest/api/3/issue/ENG-7/assignee`,
+    );
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({ accountId: ACCOUNT });
+    expect(stub.only.headers["authorization"]).toBe(BASIC);
+    expect(stub.only.headers["content-type"]).toBe("application/json");
+  });
+
+  it("unassigns with accountId null, sending null rather than leaving the field out", async () => {
+    const stub = serve({ status: 204, body: "" });
+    await onSite(async () => {
+      expect(
+        await tools.callJson("jira_issue_assign", { issueKey: "ENG-7", accountId: null }),
+      ).toEqual({ ok: true, issueKey: "ENG-7", accountId: null });
+    });
+    expect(stub.only.body).toBe('{"accountId":null}');
+  });
+
+  it("requires accountId to be stated: leaving it out is refused, not read as unassign", async () => {
+    const stub = serve("{}");
+    await onSite(async () => {
+      await expect(tools.call("jira_issue_assign", { issueKey: "ENG-7" })).rejects.toThrow(
+        /"accountId"/,
+      );
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("refuses a hostile issue key or a non-id account before any request", async () => {
+    const stub = serve("{}");
+    await onSite(async () => {
+      for (const issueKey of ["..", "../x", "ENG-7/../../x", "ENG 7", "", "ENG-", "-7"]) {
+        await expect(
+          tools.call("jira_issue_assign", { issueKey, accountId: ACCOUNT }),
+        ).rejects.toThrow(BAD_KEY);
+      }
+      for (const accountId of ["-1", "ada@acme.io", "Ada Lovelace", "", "a/b"]) {
+        await expect(
+          tools.call("jira_issue_assign", { issueKey: "ENG-7", accountId }),
+        ).rejects.toThrow(BAD_ACCOUNT);
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("accepts a numeric issue id and a prefixed account id", async () => {
+    const stub = serve({ status: 204, body: "" });
+    const prefixed = "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077";
+    await onSite(async () => {
+      await tools.call("jira_issue_assign", { issueKey: "10042", accountId: prefixed });
+    });
+    expect(stub.only.url).toBe(`${SITE}/rest/api/3/issue/10042/assignee`);
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({ accountId: prefixed });
+  });
+
+  it("throws Jira's status and body when the assignment is refused", async () => {
+    serve({ status: 400, body: '{"errorMessages":["User cannot be assigned issues."]}' });
+    await onSite(async () => {
+      await expect(
+        tools.call("jira_issue_assign", { issueKey: "ENG-7", accountId: ACCOUNT }),
+      ).rejects.toThrow('Jira 400: {"errorMessages":["User cannot be assigned issues."]}');
+    });
+  });
+});
+
+describe("jira never sends its credential across a redirect", () => {
+  const EVIL = "https://evil.example/steal";
+
+  it("a 307 on the assign PUT is refused and nothing goes to the other origin", async () => {
+    const stub = serve({ status: 307, headers: { Location: EVIL } });
+    await onSite(async () => {
+      await expect(
+        tools.call("jira_issue_assign", { issueKey: "ENG-7", accountId: ACCOUNT }),
+      ).rejects.toThrow(/Jira answered a PUT with a redirect \(307\)/);
+    });
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+
+  it("a 307 on an existing write (comment add) is refused the same way", async () => {
+    const stub = serve({ status: 307, headers: { Location: EVIL } });
+    await onSite(async () => {
+      await expect(
+        tools.call("jira_comment_add", { issueKey: "ENG-7", body: "hi" }),
+      ).rejects.toThrow(/Jira answered a POST with a redirect \(307\)/);
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("a cross-origin 302 on a read is refused and the credential goes nowhere else", async () => {
+    const stub = serve({ status: 302, headers: { Location: EVIL } });
+    await onSite(async () => {
+      await expect(tools.call("jira_issue_get", { issueKey: "ENG-7" })).rejects.toThrow(
+        "Jira redirected to another origin; refused",
+      );
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+});
+
+describe("jira issue assign (standalone mode)", () => {
+  let dir: string;
+  let auditLog: string;
+
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    dir = mkdtempSync(join(tmpdir(), "nimbus-jira-audit-"));
+    auditLog = join(dir, "audit.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("records the previous assignee before the PUT, so the assignment can be put back", async () => {
+    let standalone: CapturedTools | undefined;
+    await withEnv(
+      { NIMBUS_MCP_JIRA_WRITE_SCOPE: "issue:ENG-7", NIMBUS_MCP_AUDIT_LOG: auditLog },
+      () => {
+        standalone = captureStandaloneTools(registerJiraTools, { elicitation: true }).tools;
+      },
+    );
+    const stub = serve((req) =>
+      req.method === "GET"
+        ? '{"fields":{"assignee":{"accountId":"old-1","displayName":"Ada"}}}'
+        : { status: 204, body: "" },
+    );
+    await onSite(async () => {
+      await standalone?.call("jira_issue_assign", { issueKey: "ENG-7", accountId: null });
+    });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${SITE}/rest/api/3/issue/ENG-7?fields=assignee`,
+      `PUT ${SITE}/rest/api/3/issue/ENG-7/assignee`,
+    ]);
+    const executed = readFileSync(auditLog, "utf8")
+      .trim()
+      .split(String.fromCharCode(10))
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      )
+      .find((e) => e.outcome === "executed");
+    expect(executed?.detail["preState"]).toEqual({ assigneeAccountId: "old-1" });
+  });
+});

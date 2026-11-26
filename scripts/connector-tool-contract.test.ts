@@ -152,8 +152,9 @@ const NEEDS_COLLABORATORS = new Map<string, string>([
 const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
   // Google Calendar's event window is two RFC 3339 times with an offset, the second after the first.
   ["google-calendar", { timeMin: "2026-11-11T00:00:00Z", timeMax: "2026-11-12T00:00:00Z" }],
-  // Jira's transition id is a numeric string (`/^\d+$/`), which no generic string satisfies.
-  ["jira", { transitionId: "31" }],
+  // Jira's transition id is a numeric string (`/^\d+$/`), which no generic string satisfies; the
+  // assign tool's issue key is `ENG-7` or a numeric id, and its account id a Jira account id.
+  ["jira", { transitionId: "31", issueKey: "ENG-7", accountId: "5b10a2844c20165700ede21g" }],
   // Discord channel ids are snowflakes (17-20 digits).
   ["discord", { channelId: "123456789012345678" }],
   // LaunchDarkly rollout weights are a list of objects that must total exactly 100 percent.
