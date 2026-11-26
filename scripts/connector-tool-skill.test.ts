@@ -51,6 +51,42 @@ function hasControlCharacter(text: string): boolean {
   return false;
 }
 
+describe("phase 1 file", () => {
+  const md = () => readSkill("phase1-connector.md");
+
+  test("has its sections", () => {
+    expect(headings(md())).toEqual(
+      expect.arrayContaining([
+        "Registration",
+        "First write on a read-only connector",
+        "Guards",
+        "Test fixtures",
+        "Names, tests, docs",
+        "New connector only",
+        "Finish",
+      ]),
+    );
+  });
+
+  test("keeps the rules that bite after release", () => {
+    for (const rule of [
+      "createWriteToolRegistrar",
+      "registerPrepareTool",
+      "registersWriteTool",
+      "src/tools.ts",
+      "ConnectorServiceId",
+      "resolveUrlWithBase",
+      "ARG_OVERRIDES",
+      "BOUND_TO_STATE",
+      "drops `*_TOOL_NAMES`",
+      "connector-gates.test.ts",
+      "bun run check",
+    ]) {
+      expect(md()).toContain(rule);
+    }
+  });
+});
+
 describe("connector-tool skill", () => {
   test("declares its name and when to use it", () => {
     const fm = frontmatter(readSkill("SKILL.md"));
