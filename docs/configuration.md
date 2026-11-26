@@ -103,7 +103,7 @@ Do not derive it from a connector's tool names or action types — `monte-carlo`
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
 
 **Redirects.** A credential header is never sent to another origin. The `gitlab` connector, the flag
-connectors, the JSM Operations tools and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
+connectors, the JSM Operations tools, `bitbucket` and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
 redirects, only to the same origin or the same host's http -> https upgrade (never https -> http).
 A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the token is then sent in
 clear.

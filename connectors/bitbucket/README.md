@@ -9,7 +9,7 @@ MCP server for Bitbucket Cloud (REST API 2.0), run over stdio by any MCP client.
 | `bitbucket_repo_list` | read | Repositories where the authenticated user is a member. |
 | `bitbucket_pr_list` | read | Pull requests of a repository, optionally by state. |
 | `bitbucket_pr_get` | read | One pull request by numeric id. |
-| `bitbucket_pipeline_list` | read | Pipelines runs of a repository. |
+| `bitbucket_pipeline_list` | read | Pipeline runs of a repository. |
 | `bitbucket_pipeline_get` | read | One pipeline run by UUID. |
 | `bitbucket_issue_list` | read | Issues of a repository (the issue tracker must be enabled). |
 | `bitbucket_pr_merge` | write | Merge a pull request. |

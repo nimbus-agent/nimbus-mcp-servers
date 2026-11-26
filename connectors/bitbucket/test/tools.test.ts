@@ -251,3 +251,36 @@ describe("bitbucket_pr_merge", () => {
     expect(stub.only.body).toBe('{"type":"pullrequest","message":"ship"}');
   });
 });
+
+describe("bitbucket redirects", () => {
+  const EVIL = "https://evil.example/steal";
+  const REFUSED = /Bitbucket answered a POST with a redirect \(307\)/;
+
+  it("a cross-origin 307 on the comment POST is refused and nothing goes to the other origin", async () => {
+    const stub = reply({ status: 307, headers: { Location: EVIL } });
+    await expect(
+      tools.call("bitbucket_pr_comment_create", { repoFull: REPO, pullRequestId: 7, body: "hi" }),
+    ).rejects.toThrow(REFUSED);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls[0]?.redirect).toBe("manual");
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+
+  it("a cross-origin 307 on the merge POST is refused and nothing goes to the other origin", async () => {
+    const stub = reply({ status: 307, headers: { Location: EVIL } });
+    await expect(
+      tools.call("bitbucket_pr_merge", { repoFull: REPO, pullRequestId: 7 }),
+    ).rejects.toThrow(REFUSED);
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+
+  it("a cross-origin 302 on a read is refused and the credential goes nowhere else", async () => {
+    const stub = reply({ status: 302, headers: { Location: EVIL } });
+    await expect(tools.call("bitbucket_repo_list", {})).rejects.toThrow(
+      "Bitbucket redirected to another origin; refused",
+    );
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls.some((c) => new URL(c.url).host === "evil.example")).toBe(false);
+  });
+});

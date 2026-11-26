@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -49,10 +50,9 @@ async function bbFetch(path: string, init?: RequestInit): Promise<RestFetchResul
   };
   const extra = init?.headers as Record<string, string> | undefined;
   const headers = extra === undefined ? baseHeaders : { ...baseHeaders, ...extra };
-  const res = await fetch(url, {
-    ...init,
-    headers,
-  });
+  // guardedFetch: the credential must never follow a redirect to another origin, and a write
+  // that is redirected is refused rather than replayed.
+  const res = await guardedFetch("Bitbucket", url, { ...init, headers });
   return toRestFetchResult(res);
 }
 
