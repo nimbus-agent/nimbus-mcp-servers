@@ -75,6 +75,7 @@ export const BITBUCKET_TOOL_NAMES = [
   "bitbucket_pr_list",
   "bitbucket_pr_get",
   "bitbucket_pr_merge",
+  "bitbucket_pr_comment_create",
   "bitbucket_pipeline_list",
   "bitbucket_pipeline_get",
   "bitbucket_issue_list",
@@ -184,6 +185,42 @@ export function registerBitbucketTools(
       }
       if (parsed.message !== undefined) {
         body["message"] = parsed.message;
+      }
+      return bbResult(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+  );
+
+  const bitbucketPrCommentCreateSchema = repoFullArg.extend({
+    pullRequestId: z.number().int().min(1),
+    body: z.string().min(1).max(32_768),
+    path: z.string().min(1).max(4096).optional(),
+    line: z.number().int().min(1).optional(),
+  });
+
+  registerWriteTool(
+    "bitbucket_pr_comment_create",
+    {
+      mutates: "bitbucket.pr.comment.create",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "repo", value: p.repoFull }),
+    },
+    "Post a comment on a pull request; inline on a file (and line) when path is given.",
+    bitbucketPrCommentCreateSchema,
+    async (parsed) => {
+      if (parsed.line !== undefined && parsed.path === undefined) {
+        throw new Error("line requires path");
+      }
+      const path = `${repoPath(parsed.repoFull)}/pullrequests/${String(parsed.pullRequestId)}/comments`;
+      const body: Record<string, unknown> = { content: { raw: parsed.body } };
+      if (parsed.path !== undefined) {
+        body["inline"] =
+          parsed.line === undefined
+            ? { path: parsed.path }
+            : { path: parsed.path, to: parsed.line };
       }
       return bbResult(path, {
         method: "POST",

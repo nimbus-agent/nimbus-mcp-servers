@@ -146,6 +146,62 @@ describe("bitbucket reads", () => {
   }
 });
 
+describe("bitbucket_pr_comment_create", () => {
+  it("posts a general comment as content.raw", async () => {
+    const stub = reply('{"id":1}');
+    await tools.call("bitbucket_pr_comment_create", {
+      repoFull: REPO,
+      pullRequestId: 7,
+      body: "hi",
+    });
+    const req = stub.only;
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe(`${REPO_PATH}/pullrequests/7/comments`);
+    expect(req.headers["authorization"]).toBe(BASIC);
+    expect(req.headers["content-type"]).toBe("application/json");
+    expect(req.body).toBe('{"content":{"raw":"hi"}}');
+  });
+
+  it("posts an inline comment with path and line", async () => {
+    const stub = reply('{"id":2}');
+    await tools.call("bitbucket_pr_comment_create", {
+      repoFull: REPO,
+      pullRequestId: 7,
+      body: "nit",
+      path: "src/a.ts",
+      line: 12,
+    });
+    expect(JSON.parse(stub.only.body ?? "{}")).toEqual({
+      content: { raw: "nit" },
+      inline: { path: "src/a.ts", to: 12 },
+    });
+  });
+
+  it("refuses line without path", async () => {
+    const stub = reply("{}");
+    await expect(
+      tools.call("bitbucket_pr_comment_create", {
+        repoFull: REPO,
+        pullRequestId: 7,
+        body: "hi",
+        line: 3,
+      }),
+    ).rejects.toThrow();
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("quotes the upstream status on failure", async () => {
+    reply({ status: 403, body: "forbidden" });
+    await expect(
+      tools.call("bitbucket_pr_comment_create", {
+        repoFull: REPO,
+        pullRequestId: 7,
+        body: "hi",
+      }),
+    ).rejects.toThrow("403");
+  });
+});
+
 describe("bitbucket_pr_merge", () => {
   it("POSTs the merge with only the options given", async () => {
     const stub = reply('{"state":"MERGED"}');

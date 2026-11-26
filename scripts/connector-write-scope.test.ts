@@ -242,6 +242,12 @@ const WRITES: Readonly<
     register: registerBitbucketTools,
     cases: [
       ["bitbucket_pr_merge", "bitbucket.pr.merge", { repoFull: "acme/api" }, "repo:acme/api"],
+      [
+        "bitbucket_pr_comment_create",
+        "bitbucket.pr.comment.create",
+        { repoFull: "acme/api" },
+        "repo:acme/api",
+      ],
     ],
   },
   circleci: {
