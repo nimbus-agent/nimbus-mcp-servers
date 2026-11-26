@@ -586,3 +586,163 @@ describe("gitlab project path (path confusion)", () => {
     ]);
   });
 });
+
+const NO_GITLAB_ISSUE_EDIT = "gitlab_issue_update needs at least one of title, description";
+const GQL_REMOVED =
+  '{"data":{"issueSetAssignees":{"issue":{"assignees":{"nodes":[]}},"errors":[]}}}';
+
+describe("gitlab label and assignee removal, issue edit (gateway mode)", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerGitlabTools);
+  });
+
+  it("issue_labels_remove PUTs remove_labels only, so nothing is added or replaced", async () => {
+    const stub = serve('{"iid":3}');
+    await tools.call("gitlab_issue_labels_remove", {
+      ...PROJECT,
+      issueIid: 3,
+      labels: ["a", "b c"],
+    });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`PUT ${ENC}/issues/3`);
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({ remove_labels: "a,b c" });
+  });
+
+  it("issue_labels_remove refuses a comma inside a label and an empty list, before any request", async () => {
+    const stub = serve("{}");
+    await expect(
+      tools.call("gitlab_issue_labels_remove", { ...PROJECT, issueIid: 3, labels: ["a,b"] }),
+    ).rejects.toThrow("a label cannot contain a comma");
+    await expect(
+      tools.call("gitlab_issue_labels_remove", { ...PROJECT, issueIid: 3, labels: [] }),
+    ).rejects.toThrow("too_small");
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("issue_assignees_remove REMOVEs through GraphQL: one atomic removal that cannot add or replace", async () => {
+    const stub = serve(GQL_REMOVED);
+    expect(
+      await tools.callJson("gitlab_issue_assignees_remove", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada"],
+      }),
+    ).toEqual({ ok: true, removed: ["ada"] });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe("POST https://gitlab.com/api/graphql");
+    expect(stub.only.headers["authorization"]).toBe("Bearer glpat-test");
+    expect(stub.only.headers["private-token"]).toBeUndefined();
+    const sent = JSON.parse(stub.only.body ?? "null") as { query: string; variables: unknown };
+    expect(sent.query).toContain("operationMode: REMOVE");
+    expect(sent.query).not.toContain("APPEND");
+    expect(sent.query).not.toContain("REPLACE");
+    expect(sent.variables).toEqual({
+      projectPath: "group/repo",
+      iid: "3",
+      assigneeUsernames: ["ada"],
+    });
+  });
+
+  it("issue_assignees_remove fails on a GraphQL error and refuses any redirect", async () => {
+    serve('{"data":{"issueSetAssignees":{"issue":null,"errors":["Issue not found"]}}}');
+    await expect(
+      tools.call("gitlab_issue_assignees_remove", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada"],
+      }),
+    ).rejects.toThrow("GitLab GraphQL: Issue not found");
+    const stub = serve({ status: 307, headers: { Location: "https://evil.example/x" } });
+    await expect(
+      tools.call("gitlab_issue_assignees_remove", {
+        ...PROJECT,
+        issueIid: 3,
+        assigneeUsernames: ["ada"],
+      }),
+    ).rejects.toThrow(/answered a POST with a redirect \(307\)/);
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("issue_update PUTs only the title and description it is given, never a state event", async () => {
+    const stub = serve('{"iid":3}');
+    await tools.call("gitlab_issue_update", {
+      ...PROJECT,
+      issueIid: 3,
+      description: "new text",
+      stateEvent: "close",
+    });
+    expect(`${stub.only.method} ${stub.only.url}`).toBe(`PUT ${ENC}/issues/3`);
+    expect(JSON.parse(stub.only.body ?? "null")).toEqual({ description: "new text" });
+  });
+
+  it("issue_update with neither title nor description is refused by the handler before any request", async () => {
+    const stub = serve("{}");
+    await expect(tools.call("gitlab_issue_update", { ...PROJECT, issueIid: 3 })).rejects.toThrow(
+      NO_GITLAB_ISSUE_EDIT,
+    );
+    expect(stub.calls).toEqual([]);
+  });
+});
+
+describe("gitlab issue_update (standalone mode)", () => {
+  let auditDir: string;
+  let auditLog: string;
+
+  beforeEach(() => {
+    setConnectorMode("standalone");
+    auditDir = mkdtempSync(join(tmpdir(), "nimbus-gitlab-audit-"));
+    auditLog = join(auditDir, "audit.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(auditDir, { recursive: true, force: true });
+  });
+
+  async function standalone(): Promise<ReturnType<typeof captureStandaloneTools>> {
+    let cap: ReturnType<typeof captureStandaloneTools> | undefined;
+    await withEnv(
+      {
+        NIMBUS_MCP_GITLAB_WRITE_SCOPE: "repo:group/repo",
+        NIMBUS_MCP_AUDIT_LOG: auditLog,
+        NIMBUS_MCP_WRITE_BUDGET: undefined,
+      },
+      () => {
+        cap = captureStandaloneTools(registerGitlabTools, { elicitation: true });
+      },
+    );
+    if (cap === undefined) throw new Error("registration did not run");
+    return cap;
+  }
+
+  it("refuses an edit with nothing to change before the prompt", async () => {
+    const cap = await standalone();
+    const stub = serve("{}");
+    expect(await cap.tools.callJson("gitlab_issue_update", { ...PROJECT, issueIid: 3 })).toEqual({
+      ok: false,
+      error: NO_GITLAB_ISSUE_EDIT,
+    });
+    expect(cap.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
+  });
+
+  it("captures the issue's title and description BEFORE the PUT", async () => {
+    const cap = await standalone();
+    const issue = JSON.stringify({ title: "Old", description: "old text", state: "opened" });
+    const stub = serve((req) => (req.method === "GET" ? issue : "{}"));
+    await cap.tools.call("gitlab_issue_update", { ...PROJECT, issueIid: 3, title: "New" });
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${ENC}/issues/3`,
+      `PUT ${ENC}/issues/3`,
+    ]);
+    const executed = readFileSync(auditLog, "utf8")
+      .trim()
+      .split("\n")
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      )
+      .find((e) => e.outcome === "executed");
+    expect(executed?.detail["preState"]).toEqual({ title: "Old", description: "old text" });
+  });
+});

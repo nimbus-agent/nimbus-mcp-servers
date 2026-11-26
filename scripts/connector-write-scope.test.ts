@@ -458,6 +458,8 @@ const WRITES: Readonly<
           ["gitlab_issue_labels_add", "gitlab.issue.labels.add"],
           ["gitlab_issue_assignees_add", "gitlab.issue.assignees.add"],
           ["gitlab_issue_state_set", "gitlab.issue.state.set"],
+          ["gitlab_issue_labels_remove", "gitlab.issue.labels.remove"],
+          ["gitlab_issue_assignees_remove", "gitlab.issue.assignees.remove"],
         ] as const
       ).map(
         ([tool, mutates]): WriteCase => [
@@ -467,6 +469,13 @@ const WRITES: Readonly<
           "repo:zeta-group/quokka",
         ],
       ),
+      // A title: with neither title nor description the tool's refuseBefore refuses ahead of scope.
+      [
+        "gitlab_issue_update",
+        "gitlab.issue.update",
+        { projectPath: "zeta-group/quokka", title: "t" },
+        "repo:zeta-group/quokka",
+      ],
     ],
   },
   gmail: {

@@ -119,6 +119,12 @@ const SET_ASSIGNEES_APPEND =
   " issueSetAssignees(input: { projectPath: $projectPath, iid: $iid," +
   " assigneeUsernames: $assigneeUsernames, operationMode: APPEND }) { errors } }";
 
+/** REMOVE drops only the usernames named, atomically on the server: no read-then-replace race. */
+const SET_ASSIGNEES_REMOVE =
+  "mutation($projectPath: ID!, $iid: String!, $assigneeUsernames: [String!]!) {" +
+  " issueSetAssignees(input: { projectPath: $projectPath, iid: $iid," +
+  " assigneeUsernames: $assigneeUsernames, operationMode: REMOVE }) { errors } }";
+
 /** The first GraphQL failure in a response (transport-level or the mutation's own), if any. */
 function graphqlFailure(json: unknown): string | undefined {
   const body = json as {
@@ -135,6 +141,48 @@ function graphqlFailure(json: unknown): string | undefined {
   return inner.errors !== undefined && inner.errors.length > 0
     ? inner.errors.join("; ")
     : undefined;
+}
+
+/**
+ * One `issueSetAssignees` mutation; throws on a non-ok status or any GraphQL failure. GitLab
+ * documents `Authorization: Bearer` for /api/graphql (PRIVATE-TOKEN is the REST header), so this
+ * request bypasses glFetch. Never the private_token query parameter: a token in a URL is logged.
+ */
+async function setIssueAssignees(
+  query: string,
+  parsed: {
+    readonly projectPath: string;
+    readonly issueIid: number;
+    readonly assigneeUsernames: readonly string[];
+  },
+): Promise<void> {
+  const token = requireProcessEnv("GITLAB_PAT");
+  const res = await toRestFetchResult(
+    await guardedFetch(
+      "GitLab",
+      graphqlUrl(),
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          variables: {
+            projectPath: parsed.projectPath,
+            iid: String(parsed.issueIid),
+            assigneeUsernames: parsed.assigneeUsernames,
+          },
+        }),
+      },
+      { requireSecureBase: false },
+    ),
+  );
+  if (!res.ok) {
+    throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);
+  }
+  const failure = graphqlFailure(res.json);
+  if (failure !== undefined) {
+    throw new Error(`GitLab GraphQL: ${failure}`);
+  }
 }
 
 /** A CI job's whole plain-text trace; throws, quoting GitLab, on a non-ok status. */
@@ -170,8 +218,11 @@ export const GITLAB_TOOL_NAMES = [
   "gitlab_issue_note_create",
   "gitlab_mr_note_create",
   "gitlab_issue_labels_add",
+  "gitlab_issue_labels_remove",
   "gitlab_issue_assignees_add",
+  "gitlab_issue_assignees_remove",
   "gitlab_issue_state_set",
+  "gitlab_issue_update",
   "gitlab_branch_create",
   "gitlab_mr_create",
   "gitlab_mr_update",
@@ -441,6 +492,15 @@ export function registerGitlabTools(
     (parsed) => jsonBody("PUT", { add_labels: parsed.labels.join(",") }),
   );
 
+  registerGitlabWriteTool(
+    "gitlab_issue_labels_remove",
+    { mutates: "gitlab.issue.labels.remove", recoverable: true },
+    "Remove labels from an issue; it removes only the labels named, adds none, and never deletes a label from the project. A label not on the issue is ignored by GitLab.",
+    gitlabIssueGetSchema.extend({ labels: z.array(labelSchema).min(1).max(50) }),
+    issuePath,
+    (parsed) => jsonBody("PUT", { remove_labels: parsed.labels.join(",") }),
+  );
+
   // REST "Update an issue" can only REPLACE assignees (`assignee_ids`), so the add goes through
   // GraphQL's issueSetAssignees in APPEND mode: one atomic server-side add that removes nobody.
   registerWriteTool(
@@ -455,37 +515,27 @@ export function registerGitlabTools(
       assigneeUsernames: z.array(z.string().min(1).max(255)).min(1).max(20),
     }),
     async (parsed) => {
-      const token = requireProcessEnv("GITLAB_PAT");
-      // GitLab documents `Authorization: Bearer` for /api/graphql (PRIVATE-TOKEN is the REST
-      // header), so this one request bypasses glFetch. Never the private_token query parameter:
-      // a token in a URL is logged.
-      const res = await toRestFetchResult(
-        await guardedFetch(
-          "GitLab",
-          graphqlUrl(),
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query: SET_ASSIGNEES_APPEND,
-              variables: {
-                projectPath: parsed.projectPath,
-                iid: String(parsed.issueIid),
-                assigneeUsernames: parsed.assigneeUsernames,
-              },
-            }),
-          },
-          { requireSecureBase: false },
-        ),
-      );
-      if (!res.ok) {
-        throw new Error(`GitLab ${String(res.status)}: ${res.text.slice(0, 300)}`);
-      }
-      const failure = graphqlFailure(res.json);
-      if (failure !== undefined) {
-        throw new Error(`GitLab GraphQL: ${failure}`);
-      }
+      await setIssueAssignees(SET_ASSIGNEES_APPEND, parsed);
       return jsonResult({ ok: true, assignees: parsed.assigneeUsernames });
+    },
+  );
+
+  // The inverse of gitlab_issue_assignees_add, by the same usernames: issueSetAssignees in REMOVE
+  // mode is one server-side removal, so nobody assigned meanwhile is dropped by a stale list.
+  registerWriteTool(
+    "gitlab_issue_assignees_remove",
+    {
+      mutates: "gitlab.issue.assignees.remove",
+      recoverable: true,
+      scopeTargetOf: (p) => ({ kind: "repo", value: p.projectPath }),
+    },
+    "Remove assignees (usernames) from an issue in one atomic GraphQL call (issueSetAssignees, operationMode REMOVE); it removes only the usernames named, and cannot add or replace any assignee.",
+    gitlabIssueGetSchema.extend({
+      assigneeUsernames: z.array(z.string().min(1).max(255)).min(1).max(20),
+    }),
+    async (parsed) => {
+      await setIssueAssignees(SET_ASSIGNEES_REMOVE, parsed);
+      return jsonResult({ ok: true, removed: parsed.assigneeUsernames });
     },
   );
 
@@ -496,6 +546,47 @@ export function registerGitlabTools(
     gitlabIssueGetSchema.extend({ stateEvent: z.enum(["close", "reopen"]) }),
     issuePath,
     (parsed) => jsonBody("PUT", { state_event: parsed.stateEvent }),
+  );
+
+  // A plain object, not a `.refine()`d one: the registrar passes `.shape` as the MCP inputSchema and a
+  // refined object has none. The at-least-one check is `refuseBefore` (standalone) and the handler's.
+  const issueUpdateProblem = (p: {
+    title?: string | undefined;
+    description?: string | undefined;
+  }): string | undefined =>
+    p.title === undefined && p.description === undefined
+      ? "gitlab_issue_update needs at least one of title, description"
+      : undefined;
+
+  registerGitlabWriteTool(
+    "gitlab_issue_update",
+    {
+      mutates: "gitlab.issue.update",
+      // An edit overwrites text; its inverse needs the old text, so capture it first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITLAB_PAT");
+        const res = await glFetch(token, issuePath(parsed));
+        const issue = res.json as { title?: unknown; description?: unknown } | null;
+        if (!res.ok || issue === null) return { resolved: false, status: res.status };
+        return { title: issue.title, description: issue.description };
+      },
+      refuseBefore: issueUpdateProblem,
+    },
+    "Edit an issue's title or description (at least one). It never changes the state, labels or assignees.",
+    gitlabIssueGetSchema.extend({
+      title: z.string().min(1).max(255).optional(),
+      description: z.string().max(65_000).optional(),
+    }),
+    issuePath,
+    (parsed) => {
+      const problem = issueUpdateProblem(parsed);
+      if (problem !== undefined) throw new Error(problem);
+      return jsonBody("PUT", {
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
+        ...(parsed.description === undefined ? {} : { description: parsed.description }),
+      });
+    },
   );
 
   /**
