@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.3...connectors-v0.18.0) (2026-11-26)
+
+
+### Features
+
+* **bitbucket:** add bitbucket_pr_comment_create and the connector-tool skill ([#105](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/105)) ([243da97](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/243da97a590b22a85727e9640ca44e72a9d473ba))
+
 ## [0.17.3](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.2...connectors-v0.17.3) (2026-11-25)
 
 
