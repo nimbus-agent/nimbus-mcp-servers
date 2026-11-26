@@ -1166,6 +1166,25 @@ describe("github review, label and assignee removal, issue edit (gateway mode)",
     expect(stub.calls).toHaveLength(2);
   });
 
+  it("issue_labels_remove keeps its progress when a request throws, and calls that label uncertain", async () => {
+    const stub = serve((req) =>
+      req.url.endsWith("/labels/p1")
+        ? { status: 307, headers: { Location: "https://evil.example/x" } }
+        : "[]",
+    );
+    await withEnv({ GITHUB_PAT: "ghp_test" }, async () => {
+      await expect(
+        tools.call("github_issue_labels_remove", { ...ISSUE, labels: ["bug", "p1", "p2"] }),
+      ).rejects.toThrow(
+        'removing label "p1" failed (already removed: ["bug"]; "p1" may or may not have been removed): GitHub answered a DELETE with a redirect (307)',
+      );
+    });
+    expect(log(stub)).toEqual([
+      `DELETE ${API}/repos/acme/api/issues/12/labels/bug`,
+      `DELETE ${API}/repos/acme/api/issues/12/labels/p1`,
+    ]);
+  });
+
   it("issue_assignees_remove DELETEs the assignees list", async () => {
     const req = await request("github_issue_assignees_remove", { ...ISSUE, assignees: ["octo"] });
     expect(`${req.method} ${req.url}`).toBe(`DELETE ${API}/repos/acme/api/issues/12/assignees`);

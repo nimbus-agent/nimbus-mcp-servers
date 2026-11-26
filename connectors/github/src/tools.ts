@@ -373,7 +373,16 @@ export function registerGithubTools(
       let remaining: unknown = null;
       for (const label of parsed.labels) {
         const path = `${issuePath(parsed)}/labels/${encodeURIComponent(label)}`;
-        const res = await ghFetch(token, path, { method: "DELETE" }); // NOSONAR S9382: sequential on purpose; the first refusal stops the rest.
+        let res: Awaited<ReturnType<typeof ghFetch>>;
+        try {
+          res = await ghFetch(token, path, { method: "DELETE" }); // NOSONAR S9382: sequential on purpose; the first refusal stops the rest.
+        } catch (e) {
+          // A thrown request (a refused redirect, a timeout) may still have reached GitHub.
+          const why = e instanceof Error ? e.message : String(e);
+          throw new Error(
+            `removing label "${label}" failed (already removed: ${JSON.stringify(removed)}; "${label}" may or may not have been removed): ${why.slice(0, 300)}`,
+          );
+        }
         if (!res.ok) {
           throw new Error(
             `GitHub ${String(res.status)} removing label "${label}" (already removed: ${JSON.stringify(removed)}): ${res.text.slice(0, 300)}`,
