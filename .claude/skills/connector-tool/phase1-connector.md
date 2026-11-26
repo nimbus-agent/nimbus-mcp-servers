@@ -6,6 +6,8 @@ are in [SKILL.md](./SKILL.md), not repeated here. Nothing in this phase edits th
 
 ## Registration
 
+- A tool that writes local state or runs code the caller names (e.g. `iac_terraform_init`) is
+  classified with the owner before any code is written.
 - Choose the registrar per tool, by hand. The consent audit is per connector, so it cannot see a
   mutating tool registered through the read registrar beside gated ones.
   - Anything that mutates: `createWriteToolRegistrar` from
@@ -31,9 +33,12 @@ are in [SKILL.md](./SKILL.md), not repeated here. Nothing in this phase edits th
   [scripts/connector-write-scope.test.ts](../../../scripts/connector-write-scope.test.ts) (tool,
   mutates, args, expected scope term). Without it that file's "offers its write tools only to a client
   that can ask a human" fails for the connector.
-- Each write's `mutates` is `<service>.<noun>.<verb>`, where `<service>` is the gateway's
-  `ConnectorServiceId` (for example `google_calendar`, not `gcal`). When the `../Nimbus` checkout
-  exists, read `../Nimbus/packages/gateway/src/connectors/connector-catalog.ts` and confirm that each
+- Each write's `mutates` is `<service>.<noun>.<verb>`, or `<service>.<noun>.<sub>.<verb>` (four
+  segments are common, e.g. `bitbucket.pr.comment.create`), where `<service>` is the gateway's
+  `ConnectorServiceId` (for example `google_calendar`, not `gcal`). For a new connector `<service>`
+  cannot be in the gateway's `CONNECTOR_SERVICE_IDS` yet: derive it from the directory name with `-`
+  turned into `_`, record "add `<id>` to `CONNECTOR_SERVICE_IDS`" in the hand-off, and do not edit the
+  gateway. For an existing connector, when the `../Nimbus` checkout exists, read `../Nimbus/packages/gateway/src/connectors/connector-catalog.ts` and confirm that each
   new `mutates` starts with an id it defines (`CONNECTOR_SERVICE_IDS`, an array literal near the top:
   `grep -n CONNECTOR_SERVICE_IDS`). Nothing in this repo checks it, and the gateway's
   `manifest.sync.test.ts` and `rows.test.ts` reject a mismatch only after release.
@@ -62,7 +67,13 @@ Extra steps.
 ## Guards
 
 - A model-chosen URL goes through `resolveUrlWithBase`. A model-chosen path segment is encoded, with
-  `..` refused. Writes refuse redirects (see [docs/configuration.md](../../../docs/configuration.md)).
+  `..` refused.
+- Requests go through `guardedFetch` from
+  [shared/guarded-fetch.ts](../../../shared/guarded-fetch.ts): a write refuses any redirect, and a
+  read follows only same-origin ones. Behaviour: "Redirects" in
+  [docs/configuration.md](../../../docs/configuration.md); usage: the `gitlab`, `circleci` and
+  `pagerduty` connectors. When a connector's writes start refusing redirects, add it to the list in
+  that "Redirects" paragraph.
 - A model-chosen CLI value goes through a `cli-json-kit` schema, in the tool's schema.
 - A prepare tool is registered in `src/tools.ts`, which the gateway's `prepare-tools.test.ts` reads,
   with `registerPrepareTool("<id>"`. Its prefix maps to its directory, or is added to
@@ -74,7 +85,9 @@ Extra steps.
   cannot satisfy (UUIDs, RFC 3339, regexes), on any connector, HTTP or CLI, then gets an
   `ARG_OVERRIDES` entry in
   [scripts/connector-tool-contract.test.ts](../../../scripts/connector-tool-contract.test.ts).
-- CLI connectors also get `SWEEP_SEED`, plus `BOUND_TO_STATE` for bound tools, in
+- CLI connectors also get `BOUND_TO_STATE` for bound tools, and `SWEEP_SEED` (a shared record of
+  field values, added only when the generic fixture fails, under the same "override on failure" rule
+  as `ARG_OVERRIDES`), in
   [scripts/cli-argument-guards.test.ts](../../../scripts/cli-argument-guards.test.ts). Removing a tool
   removes its stale `BOUND_TO_STATE` entry.
 
@@ -99,9 +112,11 @@ Extra steps.
   `CLI_BACKED`, `NOT_HTTP`, `KEYLESS` and `ARG_OVERRIDES` (`connector-tool-contract.test.ts`);
   `bootEnv` (`connector-boot.test.ts`).
 - This repo's prose counts are updated, each derived by a command quoted in the commit message (the
-  count of `connectors/*/src/server.ts`): `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`,
-  `docs/architecture.md`, `docs/adding-a-connector.md`, `docs/configuration.md` and
-  `standalone/src/launcher.ts`.
+  count of `connectors/*/src/server.ts`). Find every prose count with `git grep -nw <old count>` (it
+  also catches `docs/standalone-launcher.md`, whose split is pinned by
+  `standalone/src/launcher.test.ts`).
+- The connector's `<service>` id and the hand-off line "add `<id>` to `CONNECTOR_SERVICE_IDS`": see
+  Registration.
 
 ## Finish
 

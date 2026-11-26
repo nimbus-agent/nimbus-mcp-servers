@@ -30,9 +30,9 @@ Rules that always apply:
 | Class | Example |
 |---|---|
 | read tool added | `aws_lambda_get` |
-| write tool added | `bitbucket_pr_comment_create`, `gcal_event_create` |
-| first write on a read-only connector | anything in Google Calendar (today `calendar.readonly`) |
-| prepare tool added | a `*_prepare` read the gateway calls before approval |
+| write tool added | `bitbucket_pr_comment_create` |
+| first write on a read-only connector | anything in Google Calendar (today `calendar.readonly`); supersedes "write tool added" and includes all of it |
+| prepare tool added | a read the gateway calls before approval (listed in `shared/prepare-tool-ids.ts`; named `*_commit_prepare`, `*_plan`, `*_show_json` or `*_changeset_create`) |
 | behaviour fix, definition unchanged | Snowflake `TAG_REFERENCES` columns |
 | definition change: description, input schema, or name | any edit to what a tool lists |
 | tool removed | none |
@@ -52,7 +52,9 @@ In outline:
 
 1. Branch: on `main`, create `feat/<connector>-<slug>` (or `fix/...`) from `origin/main`. On another
    branch, use it, unless the owner's brief names a new branch: then `git switch -c` it from the
-   current one and never branch off `main` behind the brief's back. Uncommitted changes to tracked
+   current one. If the current branch is a `feat/` or `fix/` branch for a *different* connector or
+   tool, do not reuse it: branch from `origin/main`, or ask if unsure. One item, one branch, one
+   release. Never branch off `main` behind the brief's back. Uncommitted changes to tracked
    files stop the run. Untracked files are left alone.
 2. Read [docs/adding-a-connector.md](../../../docs/adding-a-connector.md) and follow the phase file:
    registration, guards, test fixtures, names, tests, docs, and the new-connector extras.
@@ -67,7 +69,7 @@ In outline:
 5. Commit with Conventional Commits subjects (release-please reads those).
 6. Emit the hand-off in the report: the tools, their classes, the "Gateway work predicted" field, and
    the owner questions it will ask. For each write, the gateway work is: walk every item of
-   `../Nimbus/.claude/commands/nimbus-connector-writes.md`'s checklist and
+   `../Nimbus/.claude/commands/nimbus-connector-writes.md`'s checklist (and its pitfalls) and
    name, for each tool, what that item needs, or `n/a` with a reason. Do not copy the checklist here; it is the gateway's and
    drifts. Name an individual gateway test or doc only when that file does not make it findable.
 
@@ -77,9 +79,10 @@ Before Phase 1 ends, read your own diff and answer, per added or changed tool. E
 so that "yes" passes:
 
 1. If it mutates, is it registered through the write registrar, in `server.ts`/`tools.ts`, with a
-   `mutates` whose service prefix matches the gateway's `ConnectorServiceId`?
+   `mutates` whose service prefix matches the gateway's `ConnectorServiceId` (for a new connector,
+   the directory name with `-` as `_`, with "add `<id>` to `CONNECTOR_SERVICE_IDS`" in the hand-off)?
 2. Is every model-chosen value that reaches a URL, path segment, header, host or CLI guarded at the
-   schema?
+   schema, and does the connector refuse redirects on writes?
 3. Do its error paths avoid echoing credentials, auth headers, unbounded bodies or local paths, while
    still surfacing the status and a bounded upstream snippet (`mcpJsonResultIfOk`, or stderr for CLI
    tools)? The contract tests **require** that upstream text, so the goal is bounded and
@@ -97,7 +100,8 @@ repo with `gateway <version>`. The steps are in [phase2-gateway.md](./phase2-gat
 1. `git fetch --tags` here. Read the pin from `../Nimbus/packages/gateway/package.json`, stripping any
    leading `^` or `~`. Derive what changed from `git diff connectors-v<pinned>..connectors-v<version>`
    in this repo. The Phase 1 hand-off is a cross-check only, and any disagreement is reported.
-2. Ask the owner's questions (next section) in one message, before any gateway edit.
+2. Ask the owner's questions (next section) in one message, before any gateway edit. When there are
+   none, say so in the report and go on.
 3. `git fetch` in the gateway. If `../Nimbus` is on a clean `main`, run
    `git switch -c dev/asaf/<topic> origin/main`. Otherwise never switch the owner's checkout: run
    `git worktree add -b dev/asaf/<topic> ../Nimbus/.claude/worktrees/<slug> origin/main` with a flat
@@ -123,8 +127,10 @@ Asked in one message at the start of Phase 2, before any gateway edit, per write
   a tool for it exists, else say there is none.
 
 Also the owner's, asked when they arise: any definition change or removal of a shipped tool (Phase 1,
-before code); whether a new connector is indexed by the gateway; new OAuth scopes, and whether a
-connector starts receiving its granted scopes at spawn.
+before code); a tool that writes local state or runs code the caller names (e.g.
+`iac_terraform_init`), which is classified with the owner before code; whether a new connector is
+indexed by the gateway; a new connector's service id (to be added to `CONNECTOR_SERVICE_IDS`); new
+OAuth scopes, and whether a connector starts receiving its granted scopes at spawn.
 
 ## The report
 

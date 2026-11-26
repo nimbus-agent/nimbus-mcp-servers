@@ -126,7 +126,8 @@ describe("connector-tool skill", () => {
       "fails for the right reason",
       "Gateway work predicted",
       "name, for each tool, what that item needs",
-      "branch off",
+      "for a *different* connector or",
+      "do not reuse it",
       "nimbus-connector-writes.md",
     ]) {
       expect(md).toContain(rule);

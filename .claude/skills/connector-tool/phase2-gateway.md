@@ -1,7 +1,7 @@
 # Phase 2: the gateway's half
 
 Runs only after the connectors release is published, when the owner invokes the skill with
-`gateway <version>`. Everything here happens in `../Nimbus`. SKILL.md holds the outline, the owner
+`gateway <version>`. The gateway work happens in `../Nimbus`; the derive step runs in this repo. SKILL.md holds the outline, the owner
 questions and the report format. This file holds the operational detail. Stop at local commits.
 
 ## Derive what changed
@@ -32,7 +32,11 @@ Rules for the answers:
 - A wave 4 row needs a confirm text (`confirm-rows.test.ts`). A wave 4 row offered to the model also
   needs a before-state reader or bound step.
 - Append the questions that arise only for some changes: whether a new connector is indexed by the
-  gateway; new OAuth scopes; whether a connector starts receiving its granted scopes at spawn.
+  gateway; new OAuth scopes; whether a connector starts receiving its granted scopes at spawn; for a
+  new connector, confirmation of its service id and that `<id>` is added to
+  `CONNECTOR_SERVICE_IDS`.
+- When the release has no writes and no conditional questions, say so in the report and go on. Do not
+  send an empty message.
 - Wait for the answers. Do not guess a wave. Number the questions so the owner can answer by number.
 
 ## Branch or worktree
@@ -57,8 +61,10 @@ These gates scan the installed package, whatever the class:
   subcommand array needs `first-party-manifests.ts` or `connector-host-gaps.json`.
 - `connector-code-execution-sync.test.ts`: every tool of a process-spawning connector (`athena`,
   `aws`, `azure`, `bigquery`, `cloud-logging`, `cloudwatch`, `gcp`, `iac`, `kubernetes`,
-  `sagemaker`, `vertex-ai`) is classified. A new read goes in `REVIEWED_PROCESS_CONNECTORS.<id>.reads`
-  (or the code-execution list for `az`/`gcloud`/`iac` reads).
+  `sagemaker`, `vertex-ai`) is classified. A new read goes in `REVIEWED_PROCESS_CONNECTORS.<id>.reads`.
+  Terraform/pulumi tools that run on a directory go in the code-execution list; an aws-backed iac read
+  is a reviewed read in `REVIEWED_PROCESS_CONNECTORS.iac.reads` (precedent:
+  `iac_cloudformation_stack_get`).
 - `remote-content.sync.test.ts`: it pins handler code shapes of existing writes, so even a
   behaviour-preserving refactor there can break it.
 - `read-tool-registry.test.ts`: any `*_latest` string anywhere in the installed package must be in
@@ -93,12 +99,10 @@ Everything below is on top of the gates above.
 | prepare tool added | `connector-writes/prepare-tools.ts` `PREPARE_TOOL_ID_BACKING`, and `prepare-tools.test.ts`, whose list equals ours and whose connector-to-`src/tools.ts` map lists only `github`, `gitlab`, `iac` and `kubernetes` today. Also `withBound` on the paired row. Prepare tools are not in `manifest.generated.ts` |
 | behaviour fix | the gates above; roadmap row tick |
 | definition change / removal | every reference to the id (rows, tests, docs); `packages/cli/src/agent-kits/steer-table.ts` plus `STEER_TABLE_VERSION` if the tool is steered; tell the owner which approvals are suspended or orphaned |
-| new connector | the generated bundled registry; `connector-catalog.ts`, `connector-secrets-manifest.ts`, `first-party-manifests.ts` and the enumerated list in `first-party-manifests.test.ts`; spawn wiring in `lazy-mesh/` (a `phase3-*.ts` group plus `phase3-config.ts`; without it the gateway bundles the connector and never starts it); the docs page; sync/indexing reported as an owner decision |
+| new connector | add `<id>` (the directory name, `-` as `_`) to `CONNECTOR_SERVICE_IDS`; the generated bundled registry; `connector-catalog.ts`, `connector-secrets-manifest.ts`, `first-party-manifests.ts` and the enumerated list in `first-party-manifests.test.ts`; spawn wiring in `lazy-mesh/` (a `phase3-*.ts` group plus `phase3-config.ts`; without it the gateway bundles the connector and never starts it); the docs page; sync/indexing reported as an owner decision |
 
-`../Nimbus/.claude/commands/nimbus-connector-authoring.md` is stale until refreshed (separate gateway
-change), and this skill does not follow it. It requires `assertHitlRequired()`, which no longer
-exists, and a mandatory list/get/search triple, and it names none of the new-connector targets above.
-Until it is fixed, the new-connector row is the source.
+`../Nimbus/.claude/commands/nimbus-connector-authoring.md` may be stale or refreshed at any time, and
+this skill does not follow it: the new-connector row above is its source.
 
 ## Finish
 
