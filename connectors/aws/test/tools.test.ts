@@ -369,6 +369,163 @@ describe("aws_ec2_instance_get", () => {
   });
 });
 
+describe("aws_lambda_get", () => {
+  const SECRET = "fake-secret-51NotARealSecretButShapedLikeOne";
+  const OTHER_SECRET = "postgres://admin:hunter2@db.internal/prod";
+  const REPLY = JSON.stringify({
+    FunctionName: "resize",
+    FunctionArn: "arn:aws:lambda:us-east-1:123456789012:function:resize",
+    Runtime: "nodejs20.x",
+    Role: "arn:aws:iam::123456789012:role/resize",
+    Handler: "index.handler",
+    CodeSize: 1024,
+    Description: "Resizes images",
+    Timeout: 30,
+    MemorySize: 512,
+    LastModified: "2026-11-01T10:00:00.000+0000",
+    CodeSha256: "abc=",
+    Version: "$LATEST",
+    KMSKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k1",
+    TracingConfig: { Mode: "PassThrough" },
+    RevisionId: "r1",
+    Layers: [{ Arn: "arn:aws:lambda:us-east-1:123456789012:layer:sharp:3", CodeSize: 9 }],
+    State: "Active",
+    LastUpdateStatus: "Successful",
+    PackageType: "Zip",
+    Architectures: ["arm64"],
+    EphemeralStorage: { Size: 512 },
+    Environment: {
+      Variables: { STRIPE_KEY: SECRET, DATABASE_URL: OTHER_SECRET },
+      Error: { ErrorCode: "KMSAccessDenied", Message: `could not decrypt ${SECRET}` },
+    },
+    ImageConfigResponse: { ImageConfig: { Command: [SECRET] }, Error: { Message: SECRET } },
+    // Not part of get-function-configuration's reply, but get-function's: never passed through.
+    Code: {
+      Location: "https://awslambda-us-east-1-tasks.s3.amazonaws.com/presigned?X-Amz-Signature=s",
+    },
+  });
+
+  it("runs get-function-configuration for exactly that function and projects the allow-list", async () => {
+    const stub = cli({ stdout: REPLY });
+    expect(await tools.callJson("aws_lambda_get", { functionName: "resize" })).toEqual({
+      functionName: "resize",
+      functionArn: "arn:aws:lambda:us-east-1:123456789012:function:resize",
+      runtime: "nodejs20.x",
+      handler: "index.handler",
+      role: "arn:aws:iam::123456789012:role/resize",
+      description: "Resizes images",
+      memorySize: 512,
+      timeout: 30,
+      codeSize: 1024,
+      codeSha256: "abc=",
+      version: "$LATEST",
+      lastModified: "2026-11-01T10:00:00.000+0000",
+      revisionId: "r1",
+      packageType: "Zip",
+      architectures: ["arm64"],
+      state: "Active",
+      lastUpdateStatus: "Successful",
+      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k1",
+      tracingMode: "PassThrough",
+      ephemeralStorageSize: 512,
+      layers: ["arn:aws:lambda:us-east-1:123456789012:layer:sharp:3"],
+      environmentVariableNames: ["DATABASE_URL", "STRIPE_KEY"],
+    });
+    expect(stub.calls.map((c) => c.command)).toEqual([
+      [
+        "aws",
+        "lambda",
+        "get-function-configuration",
+        "--function-name",
+        "resize",
+        "--output",
+        "json",
+      ],
+    ]);
+  });
+
+  it("never surfaces an environment value, an image config or a code URL anywhere in the answer", async () => {
+    cli({ stdout: REPLY });
+    const text = JSON.stringify(await tools.callJson("aws_lambda_get", { functionName: "resize" }));
+    for (const leaked of [SECRET, OTHER_SECRET, "hunter2", "presigned", "X-Amz-Signature"]) {
+      expect(text).not.toContain(leaked);
+    }
+  });
+
+  it("never quotes the reply back when it is not JSON", async () => {
+    cli({ stdout: `{"Environment":{"Variables":{"STRIPE_KEY":"${SECRET}"` });
+    const err = await tools
+      .call("aws_lambda_get", { functionName: "resize" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("invalid JSON from aws lambda get-function-configuration");
+  });
+
+  it("a failing call reports aws's exit code and stderr, never the stdout it printed", async () => {
+    cli({ exitCode: 254, stdout: SECRET, stderr: "ResourceNotFoundException: Function not found" });
+    const err = await tools
+      .call("aws_lambda_get", { functionName: "resize" })
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "aws exited 254: ResourceNotFoundException: Function not found",
+    );
+    expect((err as Error).message).not.toContain(SECRET);
+  });
+
+  it("a reply with no FunctionName is refused without quoting it", async () => {
+    cli({ stdout: JSON.stringify({ Environment: { Variables: { K: SECRET } } }) });
+    const err = await tools
+      .call("aws_lambda_get", { functionName: "resize" })
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "unexpected reply from aws lambda get-function-configuration",
+    );
+  });
+
+  it("keeps a function with no environment, layers or optional fields to what it has", async () => {
+    cli({ stdout: JSON.stringify({ FunctionName: "f", PackageType: "Image" }) });
+    expect(await tools.callJson("aws_lambda_get", { functionName: "f" })).toEqual({
+      functionName: "f",
+      packageType: "Image",
+      layers: [],
+      environmentVariableNames: [],
+    });
+  });
+
+  it("accepts a name, a qualified name, a partial ARN and a full ARN", async () => {
+    for (const functionName of [
+      "resize",
+      "resize:prod",
+      "resize:$LATEST",
+      "123456789012:function:resize",
+      "arn:aws:lambda:us-east-1:123456789012:function:resize",
+      "arn:aws-us-gov:lambda:us-gov-west-1:123456789012:function:resize:7",
+    ]) {
+      const stub = cli({ stdout: REPLY });
+      await tools.call("aws_lambda_get", { functionName });
+      expect(stub.calls[0]?.command[4]).toBe(functionName);
+    }
+  });
+
+  it("refuses anything that is not one function name or ARN before spawning", async () => {
+    const stub = cli({ stdout: REPLY });
+    for (const [functionName, refusal] of [
+      ["--profile=x", 'must not start with "-"'],
+      ["file:///etc/passwd", 'must not start with "file://"'],
+      ["https://example.invalid/f", 'must not start with "https://"'],
+      ["a b", "not a Lambda function name or ARN"],
+      ["fn,other", "not a Lambda function name or ARN"],
+      ["x".repeat(65), "not a Lambda function name or ARN"],
+      ["arn:aws:s3:::bucket", "not a Lambda function name or ARN"],
+    ] as const) {
+      await expect(tools.call("aws_lambda_get", { functionName })).rejects.toThrow(
+        refusalSaying(refusal),
+      );
+    }
+    expect(stub.calls).toEqual([]);
+  });
+});
+
 describe("aws_ecs_service_get", () => {
   const ARGS = { cluster: "prod", service: "web" };
   const FOUND = JSON.stringify({

@@ -20,6 +20,15 @@ nimbus ask "Summarize my recent activity in Aws"
 - `aws_ec2_instance_get {instanceId}` (one `i-...` id) runs `aws ec2 describe-instances` and returns
   `{instanceId, state, instanceType, launchTime, tags, iamProfileArn}`, the before-state of a start or a
   stop. No instance in the reply, or the `InvalidInstanceID.NotFound` error, is "instance not found".
+- `aws_lambda_get {functionName}` (a name, `name:qualifier`, a partial or a full Lambda ARN) runs
+  `aws lambda get-function-configuration --function-name <f>`, chosen over `get-function` because
+  its reply has no `Code.Location` (a presigned URL to the deployment package). The answer is an
+  explicit allow-list: `functionName, functionArn, runtime, handler, role, description, memorySize,
+  timeout, codeSize, codeSha256, version, lastModified, revisionId, packageType, architectures,
+  state(+Reason/ReasonCode), lastUpdateStatus(+Reason/ReasonCode), kmsKeyArn, tracingMode,
+  ephemeralStorageSize`, `layers` (their ARNs) and `environmentVariableNames` (sorted). Environment
+  variable **values** are never returned, nor `Environment.Error` or `ImageConfigResponse`, whose text
+  can quote them; a reply that is not JSON is refused without being quoted. A read.
 - `aws_ecs_service_get {cluster, service}` runs `aws ecs describe-services` and returns
   `{serviceName, status, desiredCount, runningCount, taskDefinition, launchType}` (absent fields omitted),
   the before-state of `aws_ecs_service_update`. A service in `failures` (reason MISSING), or no entry in
