@@ -119,7 +119,7 @@ describe("google calendar write requests (gateway mode)", () => {
   }
 
   describe("gcal_event_create", () => {
-    it("POSTs the event to the primary calendar, telling nobody by default", async () => {
+    it("POSTs the event to the primary calendar, asking Google to notify nobody by default", async () => {
       const req = await request("gcal_event_create", TIMED);
       expect(`${req.method} ${req.url}`).toBe(
         `POST ${API}/calendars/primary/events?sendUpdates=none`,
@@ -318,7 +318,7 @@ describe("google calendar write requests (gateway mode)", () => {
   });
 
   describe("gcal_event_update", () => {
-    it("PATCHes only the fields it is given, at the encoded event, telling nobody by default", async () => {
+    it("PATCHes only the fields it is given, at the encoded event, asking Google to notify nobody by default", async () => {
       const req = await request("gcal_event_update", {
         eventId: "abc_20261201T080000Z",
         summary: "Renamed",
@@ -424,7 +424,7 @@ describe("google calendar write requests (gateway mode)", () => {
   });
 
   describe("gcal_event_delete", () => {
-    it("DELETEs the encoded event, telling nobody by default, and reports the deletion", async () => {
+    it("DELETEs the encoded event, asking Google to notify nobody by default, and reports the deletion", async () => {
       const stub = serve({ status: 204, body: "" });
       let answer: unknown;
       await withEnv({ GOOGLE_OAUTH_ACCESS_TOKEN: TOKEN }, async () => {

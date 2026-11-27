@@ -65,9 +65,11 @@ request (a standalone update or delete first reads the event, below): the connec
 - **Recurring events.** Update and delete act on exactly the `eventId` given: a series id changes or
   deletes every occurrence, and an instance id (as `gcal_event_list` returns, since it expands
   recurring events) changes or deletes that one occurrence.
-- **`sendUpdates`** decides who Google emails about the change, on all three writes: `none` (the
-  default) emails nobody, `externalOnly` emails only guests who do not use Google Calendar, and
-  `all` emails every guest. It is always sent as a query parameter, so Google's own default never
+- **`sendUpdates`** is the notification policy Google is asked to follow, on all three writes:
+  `none` (the default) asks for no notifications, though Google's reference says some emails may
+  still be sent and that guests on other calendar systems may then not see the change;
+  `externalOnly` notifies only guests who do not use Google Calendar; and `all` notifies every
+  guest. It is always sent as a query parameter, so Google's own default never
   applies.
 - No Meet link is added: `conferenceData` is never sent, and neither is `conferenceDataVersion`.
 

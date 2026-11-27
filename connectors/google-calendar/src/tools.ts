@@ -370,7 +370,7 @@ function calendarTarget(args: { calendarId?: string | undefined }): {
 }
 
 const SEND_UPDATES_TEXT =
-  "sendUpdates decides who Google emails: none (the default) emails nobody, externalOnly emails only guests who do not use Google Calendar, all emails every guest.";
+  "sendUpdates is the notification policy Google is asked to follow: none (the default) asks it to send no notifications, though Google says some emails may still be sent and guests on other calendar systems may not see the change; externalOnly notifies only guests who do not use Google Calendar; all notifies every guest.";
 const EXACT_ID_TEXT =
   "It acts on exactly the eventId given: a recurring series' id affects every occurrence, an instance id (as gcal_event_list returns, since it expands recurring events) affects that one occurrence.";
 
