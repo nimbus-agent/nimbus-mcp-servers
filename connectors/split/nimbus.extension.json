@@ -1,0 +1,15 @@
+{
+  "id": "com.nimbus.split",
+  "displayName": "Split",
+  "version": "0.1.0",
+  "description": "Split (Harness Feature Management & Experimentation) feature-flag connector. Surfaces split definitions per workspace — name, description, traffic type, tags, rollout status, and creation time — for indexing as `split:feature_flag` items, useful for incident correlation (\"was this flag killed when the alert fired?\"). Admin API key auth (`Authorization: Bearer <key>`) against the fixed host api.split.io (no override). Per-environment treatments, targeting rules and the killed state are read live with `split_definition_get`. Write tools (each needs owner approval): `split.flag.kill` kills a split in ONE environment, so it serves its default treatment, and `split.flag.restore` restores it; each is the other's inverse.",
+  "author": "Nimbus",
+  "entrypoint": "dist/server.js",
+  "runtime": "bun",
+  "permissions": {
+    "network": ["api.split.io"]
+  },
+  "hitlRequired": ["write"],
+  "syncInterval": 600,
+  "minNimbusVersion": "0.2.0"
+}
