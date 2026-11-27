@@ -165,7 +165,7 @@ const recurrenceLine = z
   .refine(
     (line) =>
       // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses.
-      /^(?:(?:RRULE|EXRULE)|(?:RDATE|EXDATE)(?:;(?:TZID=[^;:\u0000-\u001f\u007f]+|VALUE=(?:DATE|DATE-TIME|PERIOD)))*):[^\u0000-\u001f\u007f]+$/.test(
+      /^(?:(?:RRULE|EXRULE)|(?:RDATE|EXDATE)(?:;(?:TZID=[^;:\u0000-\u001f\u007f-\u009f\u2028\u2029]+|VALUE=(?:DATE|DATE-TIME|PERIOD)))*):[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/.test(
         line,
       ),
     "must start with RRULE:, EXRULE:, RDATE or EXDATE (only RDATE and EXDATE take TZID or VALUE parameters) and hold no control character",
@@ -458,7 +458,7 @@ export function registerGoogleCalendarTools(
       scopeTargetOf: calendarTarget,
       refuseBefore: updateProblem,
     },
-    `Change an event: only the fields given change, and at least one of summary, description, location, start and end, attendees, recurrence is required. start and end are given together, with gcal_event_create's rules. attendees REPLACES the whole guest list: anyone not named is removed, and [] removes every guest. ${EXACT_ID_TEXT} ${SEND_UPDATES_TEXT}`,
+    `Change an event: only the fields given change, and at least one of summary, description, location, start and end, attendees, recurrence is required. start and end are given together, with gcal_event_create's rules. Adding recurrence to a timed event without a timeZone fails at Google, so give start and end with timeZone then. attendees REPLACES the whole guest list: anyone not named is removed, and [] removes every guest. ${EXACT_ID_TEXT} ${SEND_UPDATES_TEXT}`,
     eventUpdateArgs,
     (args) => withSendUpdates(eventPath(args), args.sendUpdates),
     (args) => {

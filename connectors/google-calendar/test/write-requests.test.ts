@@ -255,6 +255,10 @@ describe("google calendar write requests (gateway mode)", () => {
         ["RRULE:FREQ=DAILY\r\nATTENDEE:mailto:x@example.com", "must not contain a line break"],
         ["RRULE:FREQ=DAILY\nX", "must not contain a line break"],
         ["RRULE:FREQ=DAILY\tX", prefix],
+        ["RRULE:FREQ=DAILY\u0085X", prefix],
+        ["RRULE:FREQ=DAILY\u2028X", prefix],
+        ["RRULE:FREQ=DAILY\u2029X", prefix],
+        ["EXDATE;TZID=Europe/Berlin\u0085:20261208T100000", prefix],
       ] as const) {
         await refusedBeforeRequest("gcal_event_create", { ...TIMED, recurrence: [line] }, why);
       }
