@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.20.0...connectors-v0.21.0) (2026-11-27)
+
+
+### Features
+
+* aws_lambda_get, iac_terraform_init and CloudFormation change-set reads ([#112](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/112)) ([869f760](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/869f76028d76020d7d5b31d89ee63cab4e2964f6))
+
 ## [0.20.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.19.0...connectors-v0.20.0) (2026-11-27)
 
 
