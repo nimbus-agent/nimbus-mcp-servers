@@ -150,8 +150,18 @@ const NEEDS_COLLABORATORS = new Map<string, string>([
  * the assertions for everyone.
  */
 const ARG_OVERRIDES = new Map<string, Record<string, unknown>>([
-  // Google Calendar's event window is two RFC 3339 times with an offset, the second after the first.
-  ["google-calendar", { timeMin: "2026-11-11T00:00:00Z", timeMax: "2026-11-12T00:00:00Z" }],
+  // Google Calendar's event window is two RFC 3339 times with an offset, the second after the first;
+  // an event's start and end are the same, as objects, and an update needs a field to change.
+  [
+    "google-calendar",
+    {
+      timeMin: "2026-11-11T00:00:00Z",
+      timeMax: "2026-11-12T00:00:00Z",
+      start: { dateTime: "2026-11-11T09:00:00Z" },
+      end: { dateTime: "2026-11-11T10:00:00Z" },
+      summary: "contract",
+    },
+  ],
   // Jira's transition id is a numeric string (`/^\d+$/`), which no generic string satisfies; the
   // assign tool's issue key is `ENG-7` or a numeric id, and its account id a Jira account id.
   ["jira", { transitionId: "31", issueKey: "ENG-7", accountId: "5b10a2844c20165700ede21g" }],
@@ -301,6 +311,8 @@ for (const id of connectorIds()) {
  */
 const REGISTRATION_ENV = new Map<string, Record<string, string>>([
   ["obsidian", { OBSIDIAN_VAULT_PATHS_JSON: '["/tmp/nimbus-contract-vault"]' }],
+  // Google Calendar registers its writes only for a token holding a calendar write scope.
+  ["google-calendar", { GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/calendar" }],
 ]);
 
 function capture(surface: ConnectorToolSurface): CapturedTools {
