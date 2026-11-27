@@ -138,7 +138,12 @@ describe("google calendar write requests (gateway mode)", () => {
         description: "Agenda",
         location: "Room 4",
         attendees: ["ada@example.com", "grace@example.org"],
-        recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4", "EXDATE:20261208T080000Z"],
+        recurrence: [
+          "RRULE:FREQ=WEEKLY;COUNT=4",
+          "EXDATE:20261208T080000Z",
+          "EXDATE;TZID=Europe/Berlin:20261215T090000",
+          "RDATE;VALUE=DATE:20261224",
+        ],
         sendUpdates: "all",
       });
       expect(req.url).toBe(
@@ -151,7 +156,12 @@ describe("google calendar write requests (gateway mode)", () => {
         start: START,
         end: END,
         attendees: [{ email: "ada@example.com" }, { email: "grace@example.org" }],
-        recurrence: ["RRULE:FREQ=WEEKLY;COUNT=4", "EXDATE:20261208T080000Z"],
+        recurrence: [
+          "RRULE:FREQ=WEEKLY;COUNT=4",
+          "EXDATE:20261208T080000Z",
+          "EXDATE;TZID=Europe/Berlin:20261215T090000",
+          "RDATE;VALUE=DATE:20261224",
+        ],
       });
     });
 
@@ -230,14 +240,18 @@ describe("google calendar write requests (gateway mode)", () => {
 
     it("refuses a recurrence line that is not RRULE, EXRULE, RDATE or EXDATE, or holds a line break", async () => {
       const prefix =
-        "must start with RRULE:, EXRULE:, RDATE: or EXDATE: and hold no control character";
+        "must start with RRULE:, EXRULE:, RDATE or EXDATE (only RDATE and EXDATE take TZID or VALUE parameters) and hold no control character";
       for (const [line, why] of [
         ["FREQ=DAILY", prefix],
         ["rrule:FREQ=DAILY", prefix],
         ["DTSTART:20261201T100000Z", prefix],
         ["ATTENDEE:mailto:x@example.com", prefix],
         ["RRULE:", prefix],
-        ["EXDATE;TZID=Europe/Berlin:20261208T100000", prefix],
+        ["RRULE;TZID=Europe/Berlin:FREQ=DAILY", prefix],
+        ["EXDATE;X-FOO=1:20261208T100000", prefix],
+        ["EXDATE;TZID=:20261208T100000", prefix],
+        ["EXDATE;VALUE=TEXT:x", prefix],
+        ["EXDATE;TZID=Europe/Berlin", prefix],
         ["RRULE:FREQ=DAILY\r\nATTENDEE:mailto:x@example.com", "must not contain a line break"],
         ["RRULE:FREQ=DAILY\nX", "must not contain a line break"],
         ["RRULE:FREQ=DAILY\tX", prefix],

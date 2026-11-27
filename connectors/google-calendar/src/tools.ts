@@ -153,18 +153,22 @@ const eventTime = z
 type EventTime = z.infer<typeof eventTime>;
 
 /**
- * An RFC 5545 recurrence line Google accepts in `recurrence`: RRULE, EXRULE, RDATE or EXDATE, with a
- * value and no parameters. A line break is refused first and by name: it would start another
- * iCalendar property inside the line.
+ * An RFC 5545 recurrence line Google accepts in `recurrence`: RRULE or EXRULE with a value and no
+ * parameters, or RDATE or EXDATE with optional `TZID=` and `VALUE=DATE|DATE-TIME|PERIOD` parameters
+ * (`EXDATE;TZID=Europe/Berlin:20261215T090000`). Any other parameter is refused. A line break is
+ * refused first and by name: it would start another iCalendar property inside the line.
  */
 const recurrenceLine = z
   .string()
   .max(1024)
   .refine((line) => !/[\r\n]/.test(line), "must not contain a line break")
   .refine(
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses.
-    (line) => /^(?:RRULE|EXRULE|RDATE|EXDATE):[^\u0000-\u001f\u007f]+$/.test(line),
-    "must start with RRULE:, EXRULE:, RDATE: or EXDATE: and hold no control character",
+    (line) =>
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses.
+      /^(?:(?:RRULE|EXRULE)|(?:RDATE|EXDATE)(?:;(?:TZID=[^;:\u0000-\u001f\u007f]+|VALUE=(?:DATE|DATE-TIME|PERIOD)))*):[^\u0000-\u001f\u007f]+$/.test(
+        line,
+      ),
+    "must start with RRULE:, EXRULE:, RDATE or EXDATE (only RDATE and EXDATE take TZID or VALUE parameters) and hold no control character",
   );
 
 const recurrence = z.array(recurrenceLine).min(1).max(MAX_RECURRENCE_LINES);
@@ -434,7 +438,7 @@ export function registerGoogleCalendarTools(
       scopeTargetOf: calendarTarget,
       refuseBefore: createProblem,
     },
-    `Create an event in a calendar (calendarId defaults to primary). start and end are both { dateTime: RFC 3339 with offset, timeZone?: IANA name } for a timed event, or both { date: YYYY-MM-DD } for an all-day one, and end must be after start; an all-day end date is exclusive, so a one-day event on 2026-12-01 ends on 2026-12-02. Optional description, location, attendees (guest emails) and recurrence (RRULE:, EXRULE:, RDATE: or EXDATE: lines; a recurring timed event needs timeZone on both ends). No Meet link is added. ${SEND_UPDATES_TEXT}`,
+    `Create an event in a calendar (calendarId defaults to primary). start and end are both { dateTime: RFC 3339 with offset, timeZone?: IANA name } for a timed event, or both { date: YYYY-MM-DD } for an all-day one, and end must be after start; an all-day end date is exclusive, so a one-day event on 2026-12-01 ends on 2026-12-02. Optional description, location, attendees (guest emails) and recurrence (RRULE:, EXRULE:, RDATE or EXDATE lines, RDATE and EXDATE optionally with TZID or VALUE parameters; a recurring timed event needs timeZone on both ends). No Meet link is added. ${SEND_UPDATES_TEXT}`,
     eventCreateArgs,
     (args) => withSendUpdates(eventsPath(args.calendarId), args.sendUpdates),
     (args) => {

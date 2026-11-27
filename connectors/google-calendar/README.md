@@ -57,9 +57,10 @@ request (a standalone update or delete first reads the event, below): the connec
 - **Attendees** are guest emails, at most 100, sent as `[{ email }]`. A repeated email (ignoring
   case) is refused rather than merged. On update the list **replaces** the whole guest list: anyone
   not named is removed, and `[]` removes every guest.
-- **Recurrence** is up to 10 RFC 5545 lines, each starting `RRULE:`, `EXRULE:`, `RDATE:` or
-  `EXDATE:`. Any other property, a parameter (`EXDATE;TZID=…`), a line break or another control
-  character is refused. A recurring timed event needs `timeZone` on both ends, since Google expands
+- **Recurrence** is up to 10 RFC 5545 lines, each `RRULE:`, `EXRULE:`, `RDATE` or `EXDATE`.
+  `RDATE` and `EXDATE` may carry `TZID=` and `VALUE=DATE|DATE-TIME|PERIOD` parameters
+  (`EXDATE;TZID=Europe/Berlin:20261215T090000`). Any other property or parameter, a line break or
+  another control character is refused. A recurring timed event needs `timeZone` on both ends, since Google expands
   the recurrence in that zone.
 - **Recurring events.** Update and delete act on exactly the `eventId` given: a series id changes or
   deletes every occurrence, and an instance id (as `gcal_event_list` returns, since it expands
