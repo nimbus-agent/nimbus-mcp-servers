@@ -363,6 +363,26 @@ const WRITES: Readonly<
       ["github_pr_create", "github.pr.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
       ["github_pr_update", "github.pr.update", GITHUB_REPO, "repo:zeta-labs/quokka"],
       [
+        "github_issue_labels_remove",
+        "github.issue.labels.remove",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      [
+        "github_issue_assignees_remove",
+        "github.issue.assignees.remove",
+        GITHUB_REPO,
+        "repo:zeta-labs/quokka",
+      ],
+      // A title: with neither title nor body the tool's refuseBefore refuses ahead of scope.
+      [
+        "github_issue_update",
+        "github.issue.update",
+        { ...GITHUB_REPO, title: "t" },
+        "repo:zeta-labs/quokka",
+      ],
+      ["github_pr_review_create", "github.pr.review.create", GITHUB_REPO, "repo:zeta-labs/quokka"],
+      [
         "github_file_commit",
         "github.file.commit",
         {
@@ -438,6 +458,8 @@ const WRITES: Readonly<
           ["gitlab_issue_labels_add", "gitlab.issue.labels.add"],
           ["gitlab_issue_assignees_add", "gitlab.issue.assignees.add"],
           ["gitlab_issue_state_set", "gitlab.issue.state.set"],
+          ["gitlab_issue_labels_remove", "gitlab.issue.labels.remove"],
+          ["gitlab_issue_assignees_remove", "gitlab.issue.assignees.remove"],
         ] as const
       ).map(
         ([tool, mutates]): WriteCase => [
@@ -447,6 +469,13 @@ const WRITES: Readonly<
           "repo:zeta-group/quokka",
         ],
       ),
+      // A title: with neither title nor description the tool's refuseBefore refuses ahead of scope.
+      [
+        "gitlab_issue_update",
+        "gitlab.issue.update",
+        { projectPath: "zeta-group/quokka", title: "t" },
+        "repo:zeta-group/quokka",
+      ],
     ],
   },
   gmail: {
@@ -544,6 +573,12 @@ const WRITES: Readonly<
       ["jira_issue_update", "jira.issue.update", { issueKey: "ENG-7" }, "issue:ENG-7"],
       ["jira_comment_add", "jira.comment.add", { issueKey: "ENG-7" }, "issue:ENG-7"],
       [
+        "jira_issue_assign",
+        "jira.issue.assign",
+        { issueKey: "ENG-7", accountId: null },
+        "issue:ENG-7",
+      ],
+      [
         "jira_issue_transition",
         "jira.issue.transition",
         { issueKey: "ENG-7", transitionId: "31" },
@@ -608,6 +643,13 @@ const WRITES: Readonly<
       ["linear_issue_create", "linear.issue.create", { teamId: "team-eng" }, "team:team-eng"],
       ["linear_issue_update", "linear.issue.update", { issueId: "ENG-7" }, "issue:ENG-7"],
       ["linear_comment_create", "linear.comment.create", { issueId: "ENG-7" }, "issue:ENG-7"],
+      ["linear_issue_labels_add", "linear.issue.labels.add", { issueId: "ENG-7" }, "issue:ENG-7"],
+      [
+        "linear_issue_labels_remove",
+        "linear.issue.labels.remove",
+        { issueId: "ENG-7" },
+        "issue:ENG-7",
+      ],
     ],
   },
   looker: {

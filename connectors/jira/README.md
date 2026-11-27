@@ -15,6 +15,27 @@ nimbus connector auth jira
 nimbus ask "Summarize my recent activity in Jira"
 ```
 
+## Issue writes
+
+`jira_issue_create`, `jira_issue_update`, `jira_comment_add`, `jira_issue_transition` and
+`jira_issue_assign` each ask for approval; standalone they are limited by
+`NIMBUS_MCP_JIRA_WRITE_SCOPE=issue:<KEY>` (or `project:<KEY>` for a create).
+
+`jira_issue_assign` sends `PUT /rest/api/3/issue/{key}/assignee` with `{accountId}`. `accountId` is
+required and nullable, so the intent is always stated: a Jira account id assigns, `null` unassigns.
+A name, an email or `-1` (Jira's "project default assignee") is refused at the schema, and so is an
+`issueKey` that is not a key like `ENG-7` or a numeric id. The previous assignee's account id is
+recorded first, so an assignment can be put back.
+
+Every tool that puts an issue in the URL (`jira_issue_get`, `jira_issue_update`, `jira_comment_add`,
+`jira_issue_transitions_list`, `jira_issue_transition`, `jira_issue_assign`) takes `issueKey` as an
+issue key like `ENG-7` or a numeric issue id only. A `..`, a slash, a space or anything else is
+refused before any request, not encoded.
+
+Every request to the site goes through the redirect guard: a redirected write is refused (it may or
+may not have been applied), and a read follows only a same-origin redirect, so the Basic credential
+never reaches another host.
+
 ## JSM Operations alerts (successor to Opsgenie)
 
 Opsgenie reaches end of sale on 2025-06-04 and end of support on 2027-04-05 (Atlassian's

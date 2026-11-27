@@ -54,6 +54,10 @@ export const GITHUB_TOOL_NAMES = [
   "github_issue_labels_add",
   "github_issue_assignees_add",
   "github_issue_state_set",
+  "github_issue_labels_remove",
+  "github_issue_assignees_remove",
+  "github_issue_update",
+  "github_pr_review_create",
   "github_ci_runs",
   "github_ci_run_get",
   "github_branch_delete",
@@ -343,6 +347,184 @@ export function registerGithubTools(
     githubIssueNumberSchema.extend({ state: z.enum(["open", "closed"]) }),
     issuePath,
     (parsed) => jsonInit("PATCH", { state: parsed.state }),
+  );
+
+  /** A label name that reaches a URL path segment: encoded, and never a dot segment a URL parser collapses. */
+  const labelInPathSchema = z
+    .string()
+    .min(1)
+    .max(50)
+    .refine((l) => l !== "." && l !== "..", "a label name cannot be . or ..");
+
+  registerWriteTool(
+    "github_issue_labels_remove",
+    { mutates: "github.issue.labels.remove", recoverable: true, scopeTargetOf: repoScope },
+    "Remove labels from an issue or pull request, one request per label in the order given. It removes only the labels named, never deletes a label from the repository, and adds nothing. It stops at the first label GitHub refuses (one not on the issue is refused with a 404), and the error names the labels already removed.",
+    githubIssueNumberSchema.extend({
+      labels: z
+        .array(labelInPathSchema)
+        .min(1)
+        .max(100)
+        .refine((l) => new Set(l).size === l.length, "a label is named twice"),
+    }),
+    async (parsed) => {
+      const token = requireProcessEnv("GITHUB_PAT");
+      const removed: string[] = [];
+      let remaining: unknown = null;
+      for (const label of parsed.labels) {
+        const path = `${issuePath(parsed)}/labels/${encodeURIComponent(label)}`;
+        let res: Awaited<ReturnType<typeof ghFetch>>;
+        try {
+          res = await ghFetch(token, path, { method: "DELETE" }); // NOSONAR S9382: sequential on purpose; the first refusal stops the rest.
+        } catch (e) {
+          // A thrown request (a refused redirect, a timeout) may still have reached GitHub.
+          const why = e instanceof Error ? e.message : String(e);
+          throw new Error(
+            `removing label "${label}" failed (already removed: ${JSON.stringify(removed)}; "${label}" may or may not have been removed): ${why.slice(0, 300)}`,
+          );
+        }
+        if (!res.ok) {
+          throw new Error(
+            `GitHub ${String(res.status)} removing label "${label}" (already removed: ${JSON.stringify(removed)}): ${res.text.slice(0, 300)}`,
+          );
+        }
+        removed.push(label);
+        remaining = res.json;
+      }
+      return jsonResult({ ok: true, removed, labels: remaining });
+    },
+  );
+
+  registerGithubWriteTool(
+    "github_issue_assignees_remove",
+    { mutates: "github.issue.assignees.remove", recoverable: true },
+    "Remove assignees from an issue or pull request; it removes only the logins named and adds nobody. A login that is not assigned is ignored by GitHub.",
+    githubIssueNumberSchema.extend({
+      assignees: z.array(z.string().min(1).max(39)).min(1).max(10),
+    }),
+    (parsed) => `${issuePath(parsed)}/assignees`,
+    (parsed) => jsonInit("DELETE", { assignees: parsed.assignees }),
+  );
+
+  // A plain object, not a `.refine()`d one: the registrar passes `.shape` as the MCP inputSchema and a
+  // refined object has none. The at-least-one check is `refuseBefore` (standalone) and the handler's.
+  const githubIssueUpdateSchema = githubIssueNumberSchema.extend({
+    title: z.string().min(1).max(500).optional(),
+    body: z.string().max(65_000).optional(),
+  });
+  const issueUpdateProblem = (p: {
+    title?: string | undefined;
+    body?: string | undefined;
+  }): string | undefined =>
+    p.title === undefined && p.body === undefined
+      ? "github_issue_update needs at least one of title, body"
+      : undefined;
+
+  registerGithubWriteTool(
+    "github_issue_update",
+    {
+      mutates: "github.issue.update",
+      // An edit overwrites text; its inverse needs the old text, so capture it first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITHUB_PAT");
+        const res = await ghFetch(token, issuePath(parsed));
+        const issue = res.json as { title?: unknown; body?: unknown } | null;
+        if (!res.ok || issue === null) return { resolved: false, status: res.status };
+        return { title: issue.title, body: issue.body };
+      },
+      refuseBefore: issueUpdateProblem,
+    },
+    "Edit an issue's or a pull request's title or body (at least one); pull requests are issues to GitHub. It never changes the state, labels or assignees.",
+    githubIssueUpdateSchema,
+    issuePath,
+    (parsed) => {
+      const problem = issueUpdateProblem(parsed);
+      if (problem !== undefined) throw new Error(problem);
+      return jsonInit("PATCH", {
+        ...(parsed.title === undefined ? {} : { title: parsed.title }),
+        ...(parsed.body === undefined ? {} : { body: parsed.body }),
+      });
+    },
+  );
+
+  const reviewPrPath = (p: { owner: string; repo: string; pullNumber: number }): string =>
+    `${ghRepoPath(p.owner, p.repo)}/pulls/${String(p.pullNumber)}`;
+
+  /** One inline comment of a review, on the diff's lines. `startLine` makes it a multi-line range. */
+  const reviewCommentSchema = z.object({
+    path: commitFilePathSchema,
+    line: z.number().int().min(1),
+    side: z.enum(["LEFT", "RIGHT"]).optional(),
+    startLine: z.number().int().min(1).optional(),
+    body: z.string().min(1).max(65_000),
+  });
+
+  const githubPrReviewCreateSchema = githubPrNumberSchema.extend({
+    // GitHub requires a body for both COMMENT and REQUEST_CHANGES.
+    body: z.string().min(1).max(65_000),
+    // APPROVE is not in the enum: an approval can satisfy branch protection.
+    event: z.enum(["COMMENT", "REQUEST_CHANGES"], {
+      error:
+        "event is COMMENT or REQUEST_CHANGES: an APPROVE review is never sent, because an approval can satisfy branch protection",
+    }),
+    comments: z.array(reviewCommentSchema).max(50).optional(),
+    // Pins the review to the head the owner approved; GitHub's `commit_id`.
+    commitId: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/i, "commitId is a full 40-character hex commit sha")
+      .optional(),
+  });
+
+  /** A range whose start is not above its end is certain to be refused: shared by refuseBefore and the handler. */
+  const reviewProblem = (p: {
+    comments?: readonly { line: number; startLine?: number | undefined }[] | undefined;
+  }): string | undefined => {
+    const i = (p.comments ?? []).findIndex(
+      (c) => c.startLine !== undefined && c.startLine >= c.line,
+    );
+    return i === -1 ? undefined : `comments[${String(i)}]: startLine must be lower than line`;
+  };
+
+  registerGithubWriteTool(
+    "github_pr_review_create",
+    {
+      mutates: "github.pr.review.create",
+      // A submitted review cannot be deleted through the API (only a pending one can), and a
+      // COMMENT review cannot be dismissed, so the pull request's head and state are recorded first.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const token = requireProcessEnv("GITHUB_PAT");
+        const res = await ghFetch(token, reviewPrPath(parsed));
+        const pr = res.json as { state?: unknown; head?: { sha?: unknown } } | null;
+        if (!res.ok || pr === null) return { resolved: false, status: res.status };
+        return { state: pr.state, headSha: pr.head?.sha };
+      },
+      refuseBefore: reviewProblem,
+    },
+    "Submit a review on a pull request: a body, an event, and optional inline comments on the diff (path, line, optional side LEFT or RIGHT, and startLine for a multi-line range). event is COMMENT or REQUEST_CHANGES; REQUEST_CHANGES blocks merging under a branch protection that requires reviews until it is dismissed. It never approves: APPROVE is refused. commitId (a full 40-hex sha, sent as commit_id) pins the review to that commit; without it the review lands on the pull request's current head commit. A submitted review cannot be deleted.",
+    githubPrReviewCreateSchema,
+    (parsed) => `${reviewPrPath(parsed)}/reviews`,
+    (parsed) => {
+      const problem = reviewProblem(parsed);
+      if (problem !== undefined) throw new Error(problem);
+      return jsonInit("POST", {
+        body: parsed.body,
+        event: parsed.event,
+        ...(parsed.commitId === undefined ? {} : { commit_id: parsed.commitId }),
+        ...(parsed.comments === undefined
+          ? {}
+          : {
+              comments: parsed.comments.map((c) => ({
+                path: c.path,
+                line: c.line,
+                ...(c.side === undefined ? {} : { side: c.side }),
+                ...(c.startLine === undefined ? {} : { start_line: c.startLine }),
+                body: c.body,
+              })),
+            }),
+      });
+    },
   );
 
   const githubCiRunsSchema = repoSlugArgs.extend({

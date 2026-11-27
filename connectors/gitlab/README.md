@@ -23,6 +23,14 @@ request's title, description or target branch (the old values are recorded first
 touched). Each write asks for approval; standalone is limited by
 `NIMBUS_MCP_GITLAB_WRITE_SCOPE=repo:<group/project>`.
 
+Issue edits, each the counterpart of an add-only tool or of `gitlab_mr_update`:
+
+| Tool | What it does |
+| --- | --- |
+| `gitlab_issue_labels_remove` | `PUT .../issues/{iid}` with `remove_labels` only, so nothing is added or replaced. A label cannot contain a comma (GitLab splits the list on commas). |
+| `gitlab_issue_assignees_remove` | GraphQL `issueSetAssignees` in `REMOVE` mode, by username (the same identifiers `gitlab_issue_assignees_add` takes): one server-side removal, so there is no read-then-replace race and nobody assigned meanwhile is dropped. GraphQL's `projectPath` is a full path, so a numeric project id is refused before any request. (`gitlab_issue_assignees_add` accepts a numeric id but GitLab cannot resolve one; give it the full path too.) |
+| `gitlab_issue_update` | `PUT .../issues/{iid}` with `title` and/or `description` (at least one; refused before the approval prompt otherwise). The old title and description are recorded first; the state, labels and assignees are never touched. GitLab runs quick actions in a description, so any line whose first non-space characters are `/` and a letter (`/close`, `/assign @x`) is refused, before the prompt and again in the handler, even inside a fenced code block, since GitLab's docs give no guarantee those are skipped. Wrap the line in backticks to keep it as text. `gitlab_issue_create` (shipped) has no such check, which is a known bound. |
+
 `PRIVATE-TOKEN` is never sent to another origin: a redirect on a write is refused, and a read
 follows at most 3 redirects, only to the same origin or the same host's http -> https upgrade
 (never https -> http). A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the
