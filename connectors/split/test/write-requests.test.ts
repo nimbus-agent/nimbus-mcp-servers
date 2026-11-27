@@ -118,7 +118,16 @@ describe("split kill and restore (gateway mode)", () => {
       const stub = serve("{}");
       await configured(async () => {
         for (const key of ["workspaceId", "splitName", "environment"] as const) {
-          for (const bad of ["..", ".", "a/b", "a?b", "a#b", "a b", ""]) {
+          // An inner space is allowed in the environment only (tested below), so " a" stands in.
+          for (const bad of [
+            "..",
+            ".",
+            "a/b",
+            "a?b",
+            "a#b",
+            key === "environment" ? " a" : "a b",
+            "",
+          ]) {
             await expect(tools.call(w.tool, { ...ARGS, [key]: bad })).rejects.toThrow(
               /letters, digits/,
             );
@@ -198,5 +207,99 @@ describe("split kill and restore (standalone mode)", () => {
       });
       expect(stub.calls.map((c) => c.method)).toEqual(["PUT", "GET"]);
     });
+
+    it(`${w.tool} takes an environment name with a space, scoped by that exact name`, async () => {
+      const spaced = { ...ARGS, environment: "Production EU" };
+      const stub = serve(answered(w.killed));
+      await configured(async () => {
+        const run = await approvedStandaloneWrite(
+          registerSplitTools,
+          { NIMBUS_MCP_SPLIT_WRITE_SCOPE: "flag:ws-1234/Production EU/new_checkout" },
+          w.tool,
+          spaced,
+        );
+        expect(run.answer).toMatchObject({
+          ok: true,
+          confirmed: true,
+          environment: "Production EU",
+        });
+      });
+      expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+        `PUT ${API}/splits/ws/ws-1234/new_checkout/environments/Production%20EU/${w.verb}`,
+        `GET ${API}/splits/ws/ws-1234/new_checkout/environments/Production%20EU`,
+      ]);
+    });
+
+    it(`${w.tool} with "Production EU" is out of a scope naming only "Production"`, async () => {
+      const stub = serve("{}");
+      await configured(async () => {
+        const run = await approvedStandaloneWrite(
+          registerSplitTools,
+          { NIMBUS_MCP_SPLIT_WRITE_SCOPE: "flag:ws-1234/Production/new_checkout" },
+          w.tool,
+          { ...ARGS, environment: "Production EU" },
+        );
+        expect(run.answer).toEqual({
+          ok: false,
+          error:
+            "out of scope: flag:ws-1234/Production EU/new_checkout is not in NIMBUS_MCP_SPLIT_WRITE_SCOPE",
+        });
+      });
+      expect(stub.calls).toEqual([]);
+    });
   }
+});
+
+describe("split environment argument", () => {
+  let tools: CapturedTools;
+
+  beforeEach(() => {
+    setConnectorMode("gateway");
+    tools = captureTools(registerSplitTools);
+  });
+
+  it("accepts single inner spaces in the environment, and nowhere else", async () => {
+    const stub = serve(answered(true));
+    await configured(async () => {
+      await tools.call("split_kill", { ...ARGS, environment: "Prod EU West-1" });
+      await expect(
+        tools.call("split_kill", { ...ARGS, splitName: "new checkout" }),
+      ).rejects.toThrow(/letters, digits/);
+      await expect(tools.call("split_kill", { ...ARGS, workspaceId: "ws 1234" })).rejects.toThrow(
+        /letters, digits/,
+      );
+    });
+    expect(stub.calls[0]?.url).toContain("/environments/Prod%20EU%20West-1/kill");
+  });
+
+  it("refuses a hostile or malformed environment, sending nothing", async () => {
+    const stub = serve("{}");
+    await configured(async () => {
+      for (const bad of [
+        " Production",
+        "Production ",
+        "Production  EU",
+        ".",
+        "..",
+        "a/b",
+        "a\\b",
+        "a%2Fb",
+        "a?b",
+        "a#b",
+        "a@b",
+        "a:b",
+        "a\tb",
+        "a\nb",
+        "a\u0000b",
+        "",
+        "x".repeat(129),
+      ]) {
+        await expect(
+          tools.call("split_definition_get", { ...ARGS, environment: bad }),
+          JSON.stringify(bad),
+        ).rejects.toThrow(/letters, digits/);
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
 });

@@ -229,10 +229,48 @@ describe("split read tools", () => {
     expect(stub.only.url).toBe(`${API}/splits/ws/${WS}/new_checkout/environments/Production`);
   });
 
+  it("definition caps each treatment's keys and segments, with a short or a long configuration", async () => {
+    const keys = Array.from({ length: 5000 }, (_, i) => `user-${String(i)}`);
+    const segments = Array.from({ length: 60 }, (_, i) => `seg-${String(i)}`);
+    serve(
+      JSON.stringify({
+        name: "new_checkout",
+        killed: false,
+        treatments: [
+          { name: "on", configurations: "{}", keys, segments },
+          { name: "off", configurations: "c".repeat(3000), keys, segments },
+          { name: "plain" },
+        ],
+      }),
+    );
+    await configured(async () => {
+      const out = (await tools.callJson("split_definition_get", {
+        workspaceId: WS,
+        splitName: "new_checkout",
+        environment: "Production",
+      })) as { treatments: Array<Record<string, unknown>> };
+      for (const t of out.treatments.slice(0, 2)) {
+        expect(t["keys"]).toHaveLength(20);
+        expect(t["keysNotShown"]).toBe(4980);
+        expect(t["segments"]).toHaveLength(20);
+        expect(t["segmentsNotShown"]).toBe(40);
+      }
+      expect(out.treatments[0]?.["configurations"]).toBe("{}");
+      expect(out.treatments[0]).not.toHaveProperty("configurationsTruncated");
+      expect(out.treatments[1]?.["configurations"]).toHaveLength(2000);
+      expect(out.treatments[1]?.["configurationsTruncated"]).toBe(true);
+      expect(out.treatments[2]).toEqual({ name: "plain" });
+    });
+  });
+
   it("refuses a dot segment or path character in any id, sending nothing", async () => {
     const stub = serve("{}");
     await configured(async () => {
-      for (const bad of ["..", ".", "a/b", "a?b", "a b", "a%2F", ""]) {
+      // "a b" is refused here only by the workspace id: an environment name may hold an inner space.
+      for (const bad of ["..", ".", "a/b", "a?b", " a", "a%2F", ""]) {
+        await expect(
+          tools.call("split_get", { workspaceId: "a b", splitName: "f" }),
+        ).rejects.toThrow(/letters, digits/);
         await expect(tools.call("split_get", { workspaceId: bad, splitName: "f" })).rejects.toThrow(
           /letters, digits/,
         );

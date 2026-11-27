@@ -44,13 +44,15 @@ Tools exposed:
 | `split_list` | List workspaces (no `workspaceId`), one page of a workspace's splits (`offset`, `limit` up to 50; the reply's `totalCount` says how many exist), or with `collection: "environments"` its environments. |
 | `split_get` | Fetch one split's definition by `workspaceId` + `splitName`; every list in it (tags, flag sets) is capped at 50, the rest counted. |
 | `split_search` | Substring search across a workspace's splits (name, description, tags). Split has no search endpoint, so this walks the list, at most 1,000 splits, and says `truncated: true` beyond that. |
-| `split_definition_get` | Read one split in ONE environment (by id or case-sensitive name): `killed`, default and baseline treatment, traffic allocation, treatments (capped at 50, each configuration cut at 2,000 characters), targeting rules (capped at 20, each matcher's lists capped at 20) and the default rule. |
+| `split_definition_get` | Read one split in ONE environment (by id or case-sensitive name): `killed`, default and baseline treatment, traffic allocation, treatments (capped at 50, each configuration cut at 2,000 characters, each treatment's targeted `keys` and `segments` capped at 20), targeting rules (capped at 20, each matcher's lists capped at 20) and the default rule. |
 | `split_kill` (write) | Kill a split in ONE environment (`PUT .../environments/{environment}/kill`): every evaluation serves its default treatment. |
 | `split_restore` (write) | Restore a killed split in ONE environment (`PUT .../environments/{environment}/restore`): its rules apply again. |
 
 Workspace ids, split names and environment ids or names must be letters, digits,
-`.`, `_`, `~` or `-`, at most 128 characters, and never `.` or `..`; anything
-else is refused before a request.
+`.`, `_`, `~` or `-`, at most 128 characters, and never `.` or `..`. An
+environment name may also hold single inner spaces (`Production EU`; no leading,
+trailing or repeated space), which is percent-encoded in the path. Anything else
+is refused before a request.
 
 ### The writes
 

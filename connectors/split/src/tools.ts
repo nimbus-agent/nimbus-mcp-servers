@@ -53,9 +53,24 @@ const idArg = z
     "letters, digits, '.', '_', '~' and '-' only, 1 to 128 characters; not '.' or '..'",
   );
 
+/**
+ * An environment id or case-sensitive name. Split environment names may hold spaces
+ * (`Production EU`), so this is {@link idArg}'s set plus single inner spaces: no leading,
+ * trailing or repeated space, never `.` or `..`, and still no `/`, `\`, `%`, `?`, `#`, `@`, `:` or
+ * control character. The space is percent-encoded in the path; the write scope names the
+ * environment exactly as given.
+ */
+const ENVIRONMENT_RULE =
+  "letters, digits, '.', '_', '~', '-' and single inner spaces only, 1 to 128 characters; not '.' or '..'";
+
+const environmentArg = z
+  .string()
+  .max(128, ENVIRONMENT_RULE)
+  .regex(/^(?!\.{1,2}$)[A-Za-z0-9._~-]+(?: [A-Za-z0-9._~-]+)*$/, ENVIRONMENT_RULE);
+
 const splitArgs = z.object({ workspaceId: idArg, splitName: idArg });
 
-const definitionArgs = splitArgs.extend({ environment: idArg });
+const definitionArgs = splitArgs.extend({ environment: environmentArg });
 
 type DefinitionArgs = z.infer<typeof definitionArgs>;
 
@@ -109,16 +124,23 @@ function boundSplit(raw: unknown): unknown {
   return out;
 }
 
+/**
+ * A treatment with its individual-target `keys` and `segments` capped (a key list can hold
+ * thousands of ids) and a long dynamic configuration cut.
+ */
 function boundTreatment(raw: unknown): unknown {
   const t = asRecord(raw);
-  const config = t?.["configurations"];
-  if (t === undefined || typeof config !== "string" || config.length <= MAX_CONFIGURATION_CHARS) {
-    return raw;
-  }
+  if (t === undefined) return raw;
+  const config = t["configurations"];
+  const keys = t["keys"];
+  const segments = t["segments"];
   return {
     ...t,
-    configurations: config.slice(0, MAX_CONFIGURATION_CHARS),
-    configurationsTruncated: true,
+    ...(Array.isArray(keys) ? capped("keys", keys, MAX_MATCHER_VALUES) : {}),
+    ...(Array.isArray(segments) ? capped("segments", segments, MAX_MATCHER_VALUES) : {}),
+    ...(typeof config === "string" && config.length > MAX_CONFIGURATION_CHARS
+      ? { configurations: config.slice(0, MAX_CONFIGURATION_CHARS), configurationsTruncated: true }
+      : {}),
   };
 }
 
@@ -298,7 +320,7 @@ export function registerSplitTools(
 
   reg(
     "split_definition_get",
-    "Read one split in ONE environment (`GET /splits/ws/{workspaceId}/{splitName}/environments/{environment}`, the environment by id or case-sensitive name): `killed`, `defaultTreatment`, `baselineTreatment`, `trafficAllocation`, the treatments (capped at 50, each configuration cut at 2,000 characters), the targeting `rules` (capped at 20, each matcher's lists capped at 20, the rest counted in `*NotShown`) and the `defaultRule`.",
+    "Read one split in ONE environment (`GET /splits/ws/{workspaceId}/{splitName}/environments/{environment}`, the environment by id or case-sensitive name): `killed`, `defaultTreatment`, `baselineTreatment`, `trafficAllocation`, the treatments (capped at 50, each configuration cut at 2,000 characters, each treatment's `keys` and `segments` capped at 20), the targeting `rules` (capped at 20, each matcher's lists capped at 20, the rest counted in `*NotShown`) and the `defaultRule`.",
     definitionArgs,
     async (p) => jsonResult(await readDefinition(p)),
   );
