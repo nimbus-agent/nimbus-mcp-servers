@@ -56,8 +56,13 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   - [ ] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
     `tag_database` and `tag_schema`; `iac_terraform_init`; a read of a stack's change sets.
   - [ ] **Flag connectors:** Unleash and Split, as new connectors with writes.
-  - [ ] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. It may be
-    impossible upstream.
+  - [x] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. *Closed
+    2026-11-27: impossible upstream.* Bitbucket Cloud's merge body
+    (`pullrequest_merge_parameters`) has only `type`, `message`, `close_source_branch` and
+    `merge_strategy`, the endpoint's one parameter is `async`, and no `If-Match` or ETag
+    precondition is documented (Atlassian's published OpenAPI spec, `swagger.v3.json`). A
+    re-read before the merge would only narrow the race, so `bitbucket_pr_merge` stays never
+    offered to the model.
 
   Dropped: Opsgenie (replaced by Jira Service Management, OR-W34-7), and REST readers for
   `az`/`gcloud` (not taken, OR-97-1).
