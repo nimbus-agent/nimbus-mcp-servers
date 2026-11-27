@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.19.0...connectors-v0.20.0) (2026-11-27)
+
+
+### Features
+
+* **google-calendar:** event create, update and delete writes ([#110](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/110)) ([f023e75](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/f023e757ec27dca1c40b9370339862cd639b85fd))
+
 ## [0.19.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.18.0...connectors-v0.19.0) (2026-11-27)
 
 
