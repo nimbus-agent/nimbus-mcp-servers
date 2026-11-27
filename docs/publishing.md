@@ -322,6 +322,7 @@ To rotate the key, repeat steps 1 to 4 with a new key.
 The Nimbus gateway consumes this package from npm. It pins it in `packages/gateway/package.json`,
 generates its bundled-connector registry as `@nimbus-dev/connectors/<id>` specifiers, and its
 connector-boot smoke test starts every connector out of the compiled binary. Its
-`audit:connector-version-skew` gate compares the pin with npm's `latest`: falling a minor version
-behind fails the gateway's build, a patch only warns. So a `feat` release here — a minor bump,
-pre-1.0 — needs a gateway PR that raises the pin.
+`bun run report:connector-version-skew` compares the pin with npm's `latest` and says what is
+published but unpinned. It never fails: since Nimbus#2192 (2026-11-27) a publish here never blocks
+the gateway's CI or its releases. The gateway still uses a new version only once a gateway PR raises
+the pin, so a `feat` release here — a minor bump, pre-1.0 — needs that PR before its tools ship.
