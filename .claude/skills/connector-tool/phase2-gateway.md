@@ -36,6 +36,10 @@ Rules for the answers:
   therefore means an entry in `MODEL_NEVER_OFFERED_REASONS` with the owner's reason.
 - A wave 4 row needs a confirm text (`confirm-rows.test.ts`). A wave 4 row offered to the model also
   needs a before-state reader or bound step.
+- A confirm text must name the target, so it must not use the tail of an id with internal
+  structure: a Google Calendar occurrence id is `<seriesId>_<timestamp>`, and `{eventId:tail8}`
+  named only the time of day. Confirm on the whole id unless the id is known to be opaque or
+  random; propose the whole id in the question.
 - A before-state reader is optional on a wave 2/3 row, but ask when the precedent rows of the same
   kind have one (the GitHub and GitLab comment rows do). Adding one can mean editing a locked test
   such as `before-reader.test.ts`; say so in the question.
@@ -117,7 +121,7 @@ Everything below is on top of the gates above.
 |---|---|
 | read tool added | `read-tool-registry.ts` `EXTRA_READ_TOOL_IDS` if the name ends in no read verb and it backs a before-read or share replay; the connector docs page `packages/docs/src/content/docs/connectors/<id>.mdx`; roadmap row tick |
 | write tool added | follow `../Nimbus/.claude/commands/nimbus-connector-writes.md` (row, preview, before-state/confirm, refusals, reversibility, its tests and docs), after the owner's answers. Walk every item of that checklist (and its pitfalls) and name, for each tool, what the item needs, or `n/a` with a reason; an item left unnamed is a gap in the report. Then the write-row placement rules below the table |
-| first write on a read-only connector | as write, plus: the OAuth `defaultScopes` in `connector-catalog.ts` (Google Calendar requests only `calendar.readonly` today); passing the granted scopes at spawn (`auth/oauth-vault-tokens.ts`, `lazy-mesh/connector-spawns.ts`; today only Gmail gets them). An own-key-only service such as `google_calendar` reads its scopes without falling back to `google.oauth`. Plus any scope URL in `connector-host-gaps.json` |
+| first write on a read-only connector | as write, plus: the OAuth `defaultScopes` in `connector-catalog.ts` (the Google lists live in `google-oauth-scopes.ts`; since gateway connectors 0.20.0 Google Calendar requests `calendar.readonly` plus `calendar`); passing the granted scopes at spawn (`auth/oauth-vault-tokens.ts`, `lazy-mesh/connector-spawns.ts`; since 0.20.0 Gmail and Google Calendar (from its own key) get them, every other service none). An own-key-only service such as `google_calendar` reads its scopes without falling back to `google.oauth`. The model door's listing and credential tables, `lazy-mesh/mesh/listing-table.ts` and `lazy-mesh/service-credential.ts`, need the service too (own key only, for an own-key-only service), or the model door never lists the tools. The consent (`nimbus connector auth <service>`) is saved to the service's own vault key, never the shared provider key: it used to write `google.oauth` and copy it, which would have left a write token on the key every other Google service reads. Plus any scope URL in `connector-host-gaps.json` |
 | prepare tool added | `connector-writes/prepare-tools.ts` `PREPARE_TOOL_ID_BACKING`, and `prepare-tools.test.ts`, whose list equals ours and whose connector-to-`src/tools.ts` map lists only `github`, `gitlab`, `iac` and `kubernetes` today. Also `withBound` on the paired row. Prepare tools are not in `manifest.generated.ts` |
 | behaviour fix | the gates above; roadmap row tick |
 | definition change / removal | every reference to the id (rows, tests, docs); `packages/cli/src/agent-kits/steer-table.ts` plus `STEER_TABLE_VERSION` if the tool is steered; tell the owner which approvals are suspended or orphaned |

@@ -554,6 +554,72 @@ describe("iac terraform (gateway mode)", () => {
       ).rejects.toThrow();
     }
   });
+
+  describe("init", () => {
+    it("runs exactly terraform init, non-interactive, in automation mode, and says initialized", async () => {
+      const stub = script(() => ({ stdout: "Terraform has been successfully initialized!" }));
+      expect(
+        await tools.callJson("iac_terraform_init", { workingDirectory: "infra/prod" }),
+      ).toEqual({ ok: true, status: "initialized" });
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        ["terraform", "-chdir=infra/prod", "init", "-input=false", "-no-color"],
+      ]);
+      expect(stub.calls[0]?.env["TF_IN_AUTOMATION"]).toBe("1");
+      expect(stub.calls[0]?.env["TF_INPUT"]).toBe("0");
+    });
+
+    it("needs no NIMBUS_IAC_PLAN_DIR: it saves no plan", async () => {
+      delete process.env["NIMBUS_IAC_PLAN_DIR"];
+      const stub = script(() => ({ stdout: "" }));
+      expect(await tools.callJson("iac_terraform_init", { workingDirectory: "w" })).toEqual({
+        ok: true,
+        status: "initialized",
+      });
+      expect(stub.calls).toHaveLength(1);
+    });
+
+    it("throws terraform's exit code and at most 500 characters of its stderr", async () => {
+      script(() => ({
+        exitCode: 1,
+        stderr: `Error: Backend configuration changed${"x".repeat(900)}`,
+      }));
+      const err = await tools
+        .call("iac_terraform_init", { workingDirectory: "w" })
+        .catch((e: unknown) => e);
+      expect((err as Error).message).toStartWith(
+        "terraform exited 1: Error: Backend configuration changed",
+      );
+      expect((err as Error).message).toHaveLength("terraform exited 1: ".length + 500);
+    });
+
+    it("takes no flag from the caller: an extra field never reaches argv", async () => {
+      const stub = script(() => ({ stdout: "" }));
+      await tools.call("iac_terraform_init", {
+        workingDirectory: "w",
+        upgrade: true,
+        reconfigure: true,
+        args: ["-upgrade", "-migrate-state", "-backend-config=bucket=evil"],
+        backendConfig: "bucket=evil",
+      });
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        ["terraform", "-chdir=w", "init", "-input=false", "-no-color"],
+      ]);
+    });
+
+    it("refuses a flag-shaped or control-character directory at the schema", async () => {
+      const stub = script(() => ({ stdout: "" }));
+      for (const [workingDirectory, refusal] of [
+        ["-upgrade", 'must not start with "-"'],
+        ["-backend-config=bucket=evil", 'must not start with "-"'],
+        ["w\n-reconfigure", "must not contain control characters"],
+      ] as const) {
+        await expect(tools.call("iac_terraform_init", { workingDirectory })).rejects.toThrow(
+          refusalSaying(refusal),
+        );
+      }
+      expect(stub.calls).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1144,6 +1210,301 @@ describe("iac cloudformation (gateway mode)", () => {
       "aws exited 255",
     );
   });
+
+  describe("changesets_list", () => {
+    const SUMMARY = {
+      StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/web/${UUID}`,
+      StackName: "web",
+      ChangeSetId: arnOf("release-1"),
+      ChangeSetName: "release-1",
+      ExecutionStatus: "AVAILABLE",
+      Status: "CREATE_COMPLETE",
+      CreationTime: "2026-11-20T10:00:00.000Z",
+      Description: "dropped",
+      IncludeNestedStacks: false,
+    };
+
+    it("lists one page of the stack's change sets, projected", async () => {
+      const stub = script(() => ({
+        stdout: JSON.stringify({
+          Summaries: [
+            SUMMARY,
+            { ...SUMMARY, ChangeSetName: "b", Status: "FAILED", StatusReason: "No updates" },
+          ],
+        }),
+      }));
+      expect(
+        await tools.callJson("iac_cloudformation_changesets_list", { stackName: "web" }),
+      ).toEqual({
+        stackName: "web",
+        changeSets: [
+          {
+            changeSetName: "release-1",
+            changeSetId: arnOf("release-1"),
+            status: "CREATE_COMPLETE",
+            executionStatus: "AVAILABLE",
+            statusReason: null,
+            creationTime: "2026-11-20T10:00:00.000Z",
+          },
+          {
+            changeSetName: "b",
+            changeSetId: arnOf("release-1"),
+            status: "FAILED",
+            executionStatus: "AVAILABLE",
+            statusReason: "No updates",
+            creationTime: "2026-11-20T10:00:00.000Z",
+          },
+        ],
+        more: false,
+      });
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        [
+          "aws",
+          "cloudformation",
+          "list-change-sets",
+          "--stack-name",
+          "web",
+          "--no-paginate",
+          "--output",
+          "json",
+        ],
+      ]);
+    });
+
+    it("says more when AWS has another page or the page is over 100, and caps the reason", async () => {
+      script(() => ({
+        stdout: JSON.stringify({
+          Summaries: [{ ...SUMMARY, StatusReason: "r".repeat(900) }],
+          NextToken: "tok",
+        }),
+      }));
+      const r = (await tools.callJson("iac_cloudformation_changesets_list", {
+        stackName: "web",
+      })) as { changeSets: { statusReason: string }[]; more: boolean };
+      expect(r.more).toBe(true);
+      expect(r.changeSets[0]?.statusReason).toHaveLength(500);
+      script(() => ({
+        stdout: JSON.stringify({ Summaries: Array.from({ length: 101 }, () => SUMMARY) }),
+      }));
+      const big = (await tools.callJson("iac_cloudformation_changesets_list", {
+        stackName: "web",
+      })) as { changeSets: unknown[]; more: boolean };
+      expect(big.changeSets).toHaveLength(100);
+      expect(big.more).toBe(true);
+    });
+
+    it("an empty or absent Summaries is no change sets", async () => {
+      script(() => ({ stdout: "{}" }));
+      expect(
+        await tools.callJson("iac_cloudformation_changesets_list", { stackName: "web" }),
+      ).toEqual({ stackName: "web", changeSets: [], more: false });
+    });
+
+    it("throws aws's exit code and stderr", async () => {
+      script(() => ({ exitCode: 254, stderr: "ValidationError: Stack [web] does not exist" }));
+      await expect(
+        tools.call("iac_cloudformation_changesets_list", { stackName: "web" }),
+      ).rejects.toThrow("aws exited 254: ValidationError: Stack [web] does not exist");
+    });
+
+    it("refuses a value aws would read from a file, or a flag, before spawning", async () => {
+      const stub = script(() => ({ stdout: "{}" }));
+      for (const [stackName, refusal] of [
+        ["file:///etc/hosts", 'must not start with "file://"'],
+        ["--region=x", 'must not start with "-"'],
+      ] as const) {
+        await expect(
+          tools.call("iac_cloudformation_changesets_list", { stackName }),
+        ).rejects.toThrow(refusalSaying(refusal));
+      }
+      expect(stub.calls).toEqual([]);
+    });
+  });
+
+  describe("changeset_get", () => {
+    const SECRET = "db-master-password-do-not-leak";
+    const DESCRIBED = {
+      ChangeSetName: "release-1",
+      ChangeSetId: arnOf("release-1"),
+      StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/web/${UUID}`,
+      StackName: "web",
+      Status: "CREATE_COMPLETE",
+      ExecutionStatus: "AVAILABLE",
+      CreationTime: "2026-11-20T10:00:00.000Z",
+      Capabilities: ["CAPABILITY_IAM"],
+      Parameters: [
+        { ParameterKey: "DbPassword", ParameterValue: SECRET },
+        { ParameterKey: "Env", ParameterValue: "prod", UsePreviousValue: false },
+      ],
+      Changes: [
+        rowOf("Db", {
+          Action: "Modify",
+          PhysicalResourceId: "db-1",
+          Replacement: "True",
+          Scope: ["Properties"],
+        }),
+      ],
+    };
+
+    it("describes that change set of that stack and returns its status and changes", async () => {
+      const stub = script(() => ({ stdout: JSON.stringify(DESCRIBED) }));
+      expect(
+        await tools.callJson("iac_cloudformation_changeset_get", {
+          stackName: "web",
+          changeSetName: "release-1",
+        }),
+      ).toEqual({
+        changeSetName: "release-1",
+        changeSetId: arnOf("release-1"),
+        stackName: "web",
+        status: "CREATE_COMPLETE",
+        executionStatus: "AVAILABLE",
+        statusReason: null,
+        creationTime: "2026-11-20T10:00:00.000Z",
+        capabilities: ["CAPABILITY_IAM"],
+        parameterKeys: ["DbPassword", "Env"],
+        changes: [
+          {
+            action: "Modify",
+            logicalId: "Db",
+            physicalId: "db-1",
+            resourceType: "T",
+            replacement: "True",
+            scope: ["Properties"],
+          },
+        ],
+      });
+      expect(stub.calls.map((c) => c.command)).toEqual([
+        [
+          "aws",
+          "cloudformation",
+          "describe-change-set",
+          "--stack-name",
+          "web",
+          "--change-set-name",
+          "release-1",
+          "--output",
+          "json",
+        ],
+      ]);
+    });
+
+    it("refuses a change set (named by ARN) that belongs to another stack, quoting none of it", async () => {
+      script(() => ({
+        stdout: JSON.stringify({
+          ...DESCRIBED,
+          StackName: "payroll",
+          StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/payroll/${UUID}`,
+        }),
+      }));
+      const err = await tools
+        .call("iac_cloudformation_changeset_get", {
+          stackName: "web",
+          changeSetName: arnOf("release-1"),
+        })
+        .catch((e: unknown) => e);
+      expect((err as Error).message).toBe("change set belongs to a different stack, not web");
+    });
+
+    it("accepts the stack named by its ARN, and a reply that names no stack is refused", async () => {
+      const stackArn = `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/web/${UUID}`;
+      script(() => ({ stdout: JSON.stringify(DESCRIBED) }));
+      const r = (await tools.callJson("iac_cloudformation_changeset_get", {
+        stackName: stackArn,
+        changeSetName: arnOf("release-1"),
+      })) as { stackName: string };
+      expect(r.stackName).toBe("web");
+      const { StackName: _n, StackId: _i, ...nameless } = DESCRIBED;
+      script(() => ({ stdout: JSON.stringify(nameless) }));
+      await expect(
+        tools.call("iac_cloudformation_changeset_get", { stackName: "web", changeSetName: "x" }),
+      ).rejects.toThrow("change set belongs to a different stack, not web");
+    });
+
+    it("never returns a parameter value", async () => {
+      script(() => ({ stdout: JSON.stringify(DESCRIBED) }));
+      const text = JSON.stringify(
+        await tools.callJson("iac_cloudformation_changeset_get", {
+          stackName: "web",
+          changeSetName: arnOf("release-1"),
+        }),
+      );
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain('"prod"');
+    });
+
+    it("follows NextToken pages by --next-token", async () => {
+      const stub = script((cmd) =>
+        cmd.includes("--next-token")
+          ? { stdout: JSON.stringify({ Changes: [rowOf("B")] }) }
+          : { stdout: JSON.stringify({ ...DESCRIBED, Changes: [rowOf("A")], NextToken: "t2" }) },
+      );
+      const r = (await tools.callJson("iac_cloudformation_changeset_get", {
+        stackName: "web",
+        changeSetName: "release-1",
+      })) as { changes: { logicalId: string }[] };
+      expect(r.changes.map((c) => c.logicalId)).toEqual(["A", "B"]);
+      expect(stub.calls[1]?.command).toEqual([
+        "aws",
+        "cloudformation",
+        "describe-change-set",
+        "--stack-name",
+        "web",
+        "--change-set-name",
+        "release-1",
+        "--next-token",
+        "t2",
+        "--output",
+        "json",
+      ]);
+    });
+
+    it("refuses more than 500 changes", async () => {
+      script(() => ({
+        stdout: JSON.stringify({
+          ...DESCRIBED,
+          Changes: Array.from({ length: 501 }, (_, i) => rowOf(`R${String(i)}`)),
+        }),
+      }));
+      await expect(
+        tools.call("iac_cloudformation_changeset_get", { stackName: "web", changeSetName: "x" }),
+      ).rejects.toThrow("change set too large");
+    });
+
+    it("caps the status reason, and reports a missing change set as not found", async () => {
+      script(() => ({
+        stdout: JSON.stringify({ ...DESCRIBED, Status: "FAILED", StatusReason: "q".repeat(900) }),
+      }));
+      const r = (await tools.callJson("iac_cloudformation_changeset_get", {
+        stackName: "web",
+        changeSetName: "x",
+      })) as { statusReason: string };
+      expect(r.statusReason).toHaveLength(500);
+      script(() => ({ exitCode: 254, stderr: "ChangeSetNotFound: ChangeSet [x] does not exist" }));
+      await expect(
+        tools.call("iac_cloudformation_changeset_get", { stackName: "web", changeSetName: "x" }),
+      ).rejects.toThrow("change set not found");
+      script(() => ({ exitCode: 255, stderr: "AccessDenied" }));
+      await expect(
+        tools.call("iac_cloudformation_changeset_get", { stackName: "web", changeSetName: "x" }),
+      ).rejects.toThrow("aws exited 255: AccessDenied");
+    });
+
+    it("refuses a value aws would read from a file, or a flag, in either field before spawning", async () => {
+      const stub = script(() => ({ stdout: "{}" }));
+      for (const [args, refusal] of [
+        [{ stackName: "web", changeSetName: "file:///etc/hosts" }, 'must not start with "file://"'],
+        [{ stackName: "web", changeSetName: "--region=x" }, 'must not start with "-"'],
+        [{ stackName: "https://x.invalid", changeSetName: "c" }, 'must not start with "https://"'],
+        [{ stackName: "web", changeSetName: "Body@=file:///etc/hosts" }, 'must not contain "@="'],
+      ] as const) {
+        await expect(tools.call("iac_cloudformation_changeset_get", args)).rejects.toThrow(
+          refusalSaying(refusal),
+        );
+      }
+      expect(stub.calls).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1189,10 +1550,39 @@ describe("iac standalone mode", () => {
         "iac_terraform_plan_refresh_only",
         "iac_cloudformation_changeset_create",
         "iac_cloudformation_stack_get",
+        "iac_cloudformation_changesets_list",
+        "iac_cloudformation_changeset_get",
         "iac_pulumi_preview",
       ].sort(byToolName),
     );
     expect(standalone(true).tools.names()).toEqual([...IAC_TOOL_NAMES].sort(byToolName));
+  });
+
+  it("init is a write: it runs in scope only after the human approved it, and is audited", async () => {
+    const cap = standalone(true);
+    const stub = script(() => ({ stdout: "" }));
+    expect(
+      await cap.tools.callJson("iac_terraform_init", { workingDirectory: "infra/prod" }),
+    ).toEqual({ ok: true, status: "initialized" });
+    expect(cap.prompts).toHaveLength(1);
+    expect(cap.prompts[0]).toContain("iac.terraform.init");
+    expect(stub.calls).toHaveLength(1);
+    expect(entries().find((e) => e.outcome === "executed")?.detail["preState"]).toEqual({
+      workingDirectory: "infra/prod",
+    });
+  });
+
+  it("init refuses an out-of-scope directory without prompting or running terraform", async () => {
+    const cap = standalone(true);
+    const stub = script(() => ({ stdout: "" }));
+    expect(
+      await cap.tools.callJson("iac_terraform_init", { workingDirectory: "infra/dev" }),
+    ).toEqual({
+      ok: false,
+      error: "out of scope: dir:infra/dev is not in NIMBUS_MCP_IAC_WRITE_SCOPE",
+    });
+    expect(cap.prompts).toEqual([]);
+    expect(stub.calls).toEqual([]);
   });
 
   it("refuses a prepare tool out of scope, with no spawn and no prompt", async () => {

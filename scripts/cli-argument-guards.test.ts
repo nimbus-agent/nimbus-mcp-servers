@@ -234,7 +234,7 @@ const SWEEP_SEED: Record<string, unknown> = {
 
 /**
  * The reply every stubbed CLI gives. The read tools that PROJECT a reply (a deployment, a node pool,
- * an EC2 instance) refuse one that holds none of their fields, as they should, so the generic
+ * an EC2 instance, a Lambda function) refuse one that holds none of their fields, as they should, so the generic
  * `{}` is replaced by one object that carries a field of each.
  */
 const SWEEP_REPLY = JSON.stringify({
@@ -242,6 +242,10 @@ const SWEEP_REPLY = JSON.stringify({
   count: 1,
   Reservations: [{ Instances: [{ InstanceId: "i-0123456789abcdef0" }] }],
   services: [{ serviceName: "x" }],
+  FunctionName: "x",
+  // iac_cloudformation_changeset_get refuses a change set of another stack: this one is of the
+  // stack the sweep names (`nimbus-sweep-<field>`, see sweepArgs).
+  StackName: "nimbus-sweep-stackName",
 });
 
 /**

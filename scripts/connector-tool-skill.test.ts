@@ -183,6 +183,35 @@ describe("phase 2 file", () => {
       expect(md()).toContain(rule);
     }
   });
+  test("a first write on a read-only connector reaches the model door and its own vault key", () => {
+    // Batch 2 (Google Calendar): without the listing and credential tables the model door never
+    // listed the tools, and `nimbus connector auth` saved the consent to the shared google.oauth.
+    for (const rule of [
+      "lazy-mesh/mesh/listing-table.ts",
+      "lazy-mesh/service-credential.ts",
+      "the model door never lists the tools",
+      "the service's own vault key, never the shared provider key",
+    ]) {
+      expect(md()).toContain(rule);
+    }
+  });
+  test("the first-write row says who gets scopes at spawn as of gateway connectors 0.20.0", () => {
+    // Stale until batch 3: it said Google Calendar requests only calendar.readonly and that only
+    // Gmail is given its scopes at spawn.
+    expect(md()).toContain("Gmail and Google Calendar (from its own key)");
+    expect(md()).not.toContain("only `calendar.readonly` today");
+    expect(md()).not.toContain("today only Gmail gets them");
+    expect(readSkill("SKILL.md")).not.toContain("today `calendar.readonly`");
+  });
+  test("a wave 4 confirm text names the whole id unless the id is opaque", () => {
+    // Batch 2: a Google Calendar occurrence id is `<seriesId>_<timestamp>`, so `{eventId:tail8}`
+    // named only the time of day.
+    for (const file of ["phase2-gateway.md", "SKILL.md"]) {
+      const text = readSkill(file);
+      expect({ file, has: text.includes("Confirm on the whole id") }).toEqual({ file, has: true });
+      expect({ file, has: text.includes("<seriesId>_<timestamp>") }).toEqual({ file, has: true });
+    }
+  });
   test("does not follow the stale authoring file", () => {
     expect(md()).toMatch(/nimbus-connector-authoring\.md[^\n]*(stale|not follow)/i);
   });
