@@ -864,7 +864,7 @@ async function changeSetGet(p: {
           : undefined;
       return k === undefined ? [] : [k];
     })
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   const reply = {
     changeSetName: str(d["ChangeSetName"]) ?? null,
     changeSetId: str(d["ChangeSetId"]) ?? null,

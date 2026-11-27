@@ -132,7 +132,7 @@ function lambdaFields(
     isRecord(l) && typeof l["Arn"] === "string" ? [l["Arn"]] : [],
   );
   const env = isRecord(raw["Environment"]) ? raw["Environment"]["Variables"] : undefined;
-  const envNames = isRecord(env) ? Object.keys(env).sort() : [];
+  const envNames = isRecord(env) ? Object.keys(env).sort((a, b) => a.localeCompare(b)) : [];
   if (style === "aws") {
     if (typeof tracing === "string") out["TracingConfig"] = { Mode: tracing };
     if (typeof storage === "number") out["EphemeralStorage"] = { Size: storage };
