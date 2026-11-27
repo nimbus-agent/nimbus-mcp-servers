@@ -31,7 +31,7 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   upstream SDK by design. The gateway's roadmap carries the matching row for its own MCP server
   ([Phase 28](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-28--the-agent-door)).
 - [ ] **Audit connector error text.** A tool's thrown message reaches the standalone client
-  verbatim, as it did on the upstream SDK. No one has checked the 98 connectors' error paths for
+  verbatim, as it did on the upstream SDK. No one has checked the 100 connectors' error paths for
   an upstream reply that could carry a path or a token into that text.
 - [ ] **Cost connectors.** `vantage` shipped in 0.14.0, read-only. The other platforms named in
   the gateway's *FinOps connectors* row
@@ -56,8 +56,13 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   - [ ] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
     `tag_database` and `tag_schema`; `iac_terraform_init`; a read of a stack's change sets.
   - [ ] **Flag connectors:** Unleash and Split, as new connectors with writes.
-  - [ ] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. It may be
-    impossible upstream.
+  - [x] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. *Closed
+    2026-11-27: impossible upstream.* Bitbucket Cloud's merge body
+    (`pullrequest_merge_parameters`) has only `type`, `message`, `close_source_branch` and
+    `merge_strategy`, the endpoint's one parameter is `async`, and no `If-Match` or ETag
+    precondition is documented (Atlassian's published OpenAPI spec, `swagger.v3.json`). A
+    re-read before the merge would only narrow the race, so `bitbucket_pr_merge` stays never
+    offered to the model.
 
   Dropped: Opsgenie (replaced by Jira Service Management, OR-W34-7), and REST readers for
   `az`/`gcloud` (not taken, OR-97-1).

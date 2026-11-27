@@ -1,0 +1,15 @@
+{
+  "id": "com.nimbus.unleash",
+  "displayName": "Unleash",
+  "version": "0.1.0",
+  "description": "Unleash feature-flag connector. Surfaces feature-flag definitions across all Unleash projects — name, type, description, project, stale state, tags, per-environment enabled state, and timestamps — for indexing as `unleash:feature_flag` items, useful for incident correlation (\"was this flag on when the alert fired?\"). Admin API auth with an admin or personal access token sent as the bare `Authorization: <token>` header. Unleash is usually self-hosted: the instance URL is required (`UNLEASH_API_URL`, https only, plain http only to a loopback host) and has no default, so the static sandbox network list is intentionally empty and the host is added at spawn time. Per-environment strategies are read live with `unleash_feature_state_get`. Write tool (needs owner approval): `unleash.feature.toggle` turns a feature on or off in ONE environment; enabling an environment with no active strategy makes Unleash add a default strategy that serves everyone, which toggling off does not remove, so the previous state is recorded first; Unleash refuses it while change requests are enabled.",
+  "author": "Nimbus",
+  "entrypoint": "dist/server.js",
+  "runtime": "bun",
+  "permissions": {
+    "network": []
+  },
+  "hitlRequired": ["write"],
+  "syncInterval": 600,
+  "minNimbusVersion": "0.2.0"
+}

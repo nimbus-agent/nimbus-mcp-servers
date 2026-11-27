@@ -73,9 +73,11 @@ import { registerPowerBiTools } from "../connectors/powerbi/src/server.ts";
 import { registerProtonmailTools } from "../connectors/protonmail/src/tools.ts";
 import { registerSlackTools } from "../connectors/slack/src/tools.ts";
 import { registerSnowflakeTools } from "../connectors/snowflake/src/server.ts";
+import { registerSplitTools } from "../connectors/split/src/tools.ts";
 import { registerTableauTools } from "../connectors/tableau/src/server.ts";
 import { registerTeamsTools } from "../connectors/teams/src/tools.ts";
 import { registerTestflightTools } from "../connectors/testflight/src/tools.ts";
+import { registerUnleashTools } from "../connectors/unleash/src/tools.ts";
 import { registerVercelTools } from "../connectors/vercel/src/tools.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../shared/connector-mode.ts";
 import { registersWriteTool } from "../standalone/src/launcher.ts";
@@ -116,6 +118,8 @@ type WriteCase = readonly [
 /** Three distinct keys, so a scope built from the wrong two of them fails. */
 const LD_FLAG = { projectKey: "proj-x", environmentKey: "env-y", flagKey: "flag-z" };
 const LD_TARGET = "flag:proj-x/env-y/flag-z";
+const SPLIT_FLAG = { workspaceId: "ws-x", environment: "env-y", splitName: "flag_z" };
+const SPLIT_TARGET = "flag:ws-x/env-y/flag_z";
 const MAIL_TO = { to: "ada@example.com" };
 /**
  * A repo no tool source may contain as a literal: a scope target hard-coded to a "typical" repo
@@ -859,6 +863,24 @@ const WRITES: Readonly<
         "snowflake.tag.set",
         { object: "ANALYTICS.PUBLIC.ORDERS" },
         "object:ANALYTICS.PUBLIC.ORDERS",
+      ],
+    ],
+  },
+  split: {
+    register: registerSplitTools,
+    cases: [
+      ["split_kill", "split.flag.kill", SPLIT_FLAG, SPLIT_TARGET],
+      ["split_restore", "split.flag.restore", SPLIT_FLAG, SPLIT_TARGET],
+    ],
+  },
+  unleash: {
+    register: registerUnleashTools,
+    cases: [
+      [
+        "unleash_feature_toggle",
+        "unleash.feature.toggle",
+        { projectId: "proj-x", environment: "env-y", featureName: "flag-z" },
+        "flag:proj-x/env-y/flag-z",
       ],
     ],
   },
