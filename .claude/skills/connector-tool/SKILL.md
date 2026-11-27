@@ -123,7 +123,10 @@ Asked in one message at the start of Phase 2, before any gateway edit, per write
 - **offered to the model or not.** A wave 2/3 row with a preview is offerable by construction
   (`isModelOfferableRow`), so "not offered" means an entry in `MODEL_NEVER_OFFERED_REASONS` with the
   owner's reason. Every wave 4 row needs a confirm text (`confirm-rows.test.ts`). A wave 4 row offered
-  to the model also needs a before-state reader or bound step (`isModelOfferableRow`);
+  to the model also needs a before-state reader or bound step (`isModelOfferableRow`).
+  Confirm on the whole id unless the id is known to be opaque or random: a tail of an id with
+  internal structure names the wrong part (a Google Calendar occurrence id is `<seriesId>_<timestamp>`, so
+  `{eventId:tail8}` named only the time of day);
 - **reversibility** and its inverse, when that is a judgement call. Name a candidate inverse only if
   a tool for it exists, else say there is none. A precedent with no reversibility entry is unknown,
   not irreversible;
