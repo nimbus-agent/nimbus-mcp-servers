@@ -31,7 +31,7 @@ Rules that always apply:
 |---|---|
 | read tool added | `aws_lambda_get` |
 | write tool added | `bitbucket_pr_comment_create` |
-| first write on a read-only connector | anything in Google Calendar (today `calendar.readonly`); supersedes "write tool added" and includes all of it |
+| first write on a read-only connector | the first write on a connector with none (precedent: Google Calendar, 0.20.0); supersedes "write tool added" and includes all of it |
 | prepare tool added | a read the gateway calls before approval (listed in `shared/prepare-tool-ids.ts`; named `*_commit_prepare`, `*_plan`, `*_show_json` or `*_changeset_create`) |
 | behaviour fix, definition unchanged | Snowflake `TAG_REFERENCES` columns |
 | definition change: description, input schema, or name | any edit to what a tool lists |
