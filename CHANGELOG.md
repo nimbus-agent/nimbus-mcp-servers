@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.21.0...connectors-v0.22.0) (2026-11-27)
+
+
+### Features
+
+* unleash and split connectors, with flag reads and owner-approved writes ([#114](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/114)) ([641f8ff](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/641f8ff613e7bfaf37c476a5a1a8725986e335a7))
+
 ## [0.21.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.20.0...connectors-v0.21.0) (2026-11-27)
 
 
