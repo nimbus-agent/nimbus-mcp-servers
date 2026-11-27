@@ -86,6 +86,20 @@ Every request refuses a redirect on a write, and follows one on a read only to t
 the token never reaches another host. An error quotes Google's status and at most 300 characters
 of its body, never the token.
 
+### Sandbox test
+
+`test/sandbox.test.ts` holds opt-in live tests of the three writes, run only by
+`bun run test:sandbox` and only when `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_OAUTH_SCOPES` (holding
+`calendar` or `calendar.events`) and `GCAL_SANDBOX_CALENDAR_ID` are all set; otherwise they are
+skipped and say which are missing. `GCAL_SANDBOX_CALENDAR_ID` must be a throwaway secondary calendar
+you created (an id ending in `@group.calendar.google.com`): `primary` and any other id are refused
+before a request. They touch only events they create there, named `nimbus-sandbox-<timestamp>-…`,
+with no attendees and `sendUpdates: "none"`: one timed event is created, renamed, moved to all day
+and back (the PATCH that clears `dateTime` or `date` with an explicit `null`), deleted, and deleted
+again to see the 410 `alreadyDeleted` answer; one daily event with an `RRULE` and an
+`EXDATE;TZID=Europe/Berlin:…` line is created, its expanded occurrences listed, and deleted. An
+event is deleted even when a step fails.
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)

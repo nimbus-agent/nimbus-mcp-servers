@@ -78,7 +78,7 @@ value from a file), `imapflow-adapter.ts` (IMAP/SMTP). The full set is listed in
 | `bun run sync:tool-names` | Rewrites the stale ones. Run after adding or renaming a tool. |
 | `bun test` | Full suite (3600+ tests). |
 | `bun run test:coverage` | The suite plus `coverage/lcov.info`, which the SonarQube Cloud workflow uploads. |
-| `bun run test:sandbox` | Opt-in, in neither `check` nor CI: the 85 connector sandbox tests, which open **real** connections to vendor hosts. |
+| `bun run test:sandbox` | Opt-in, in neither `check` nor CI: the 85 connector sandbox tests, which open **real** connections to vendor hosts, plus the live write tests in three of them (`google-calendar`, `unleash`, `split`) that run only when their throwaway-resource variables are set. |
 
 Dependencies are updated by hand, in periodic bulk PRs; Dependabot opens none here (its alerts stay
 on). The procedure, and the traps it has to avoid, are in
