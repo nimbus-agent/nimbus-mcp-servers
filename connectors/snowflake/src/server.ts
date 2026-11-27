@@ -312,14 +312,24 @@ async function objectMetadata(
   if (row === undefined) throw new Error(`Snowflake ${objectType} not found: ${object}`);
   const tagRows = rowsFromStatementsResponse(
     await executeStatement(
-      `SELECT tag_name, tag_value FROM TABLE(${db}.INFORMATION_SCHEMA.TAG_REFERENCES(${sfLiteral(object)}, 'TABLE'))`,
+      `SELECT tag_database, tag_schema, tag_name, tag_value FROM TABLE(${db}.INFORMATION_SCHEMA.TAG_REFERENCES(${sfLiteral(object)}, 'TABLE'))`,
     ),
   );
+  // A tag is a schema object: two tags named PII in different schemas are different tags, so each
+  // entry carries where its tag lives, and the order is by fully qualified name, then value.
+  const qualified = (t: { database: string; schema: string; name: string }): string =>
+    `${t.database}.${t.schema}.${t.name}`;
   const tags = tagRows
-    .map((t) => ({ name: scalarText(t["tag_name"] ?? ""), value: t["tag_value"] ?? null }))
+    .map((t) => ({
+      database: scalarText(t["tag_database"] ?? ""),
+      schema: scalarText(t["tag_schema"] ?? ""),
+      name: scalarText(t["tag_name"] ?? ""),
+      value: t["tag_value"] ?? null,
+    }))
     .sort(
       (a, b) =>
-        a.name.localeCompare(b.name) || scalarText(a.value).localeCompare(scalarText(b.value)),
+        qualified(a).localeCompare(qualified(b)) ||
+        scalarText(a.value).localeCompare(scalarText(b.value)),
     );
   return { object, objectType, comment: row["comment"] ?? "", tags };
 }

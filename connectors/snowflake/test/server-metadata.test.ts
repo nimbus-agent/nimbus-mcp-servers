@@ -36,10 +36,10 @@ function rows(columns: string[], data: (string | null)[][]): string {
 const SHOW = (name: string, comment: string): string =>
   rows(["created_on", "name", "comment"], [["2026-01-01", name, comment]]);
 const TAGS = rows(
-  ["TAG_NAME", "TAG_VALUE"],
+  ["TAG_DATABASE", "TAG_SCHEMA", "TAG_NAME", "TAG_VALUE"],
   [
-    ["PII", "yes"],
-    ["COST_CENTER", "42"],
+    ["GOV", "TAGS", "PII", "yes"],
+    ["GOV", "TAGS", "COST_CENTER", "42"],
   ],
 );
 
@@ -69,16 +69,38 @@ describe("snowflake_object_metadata_get", () => {
       objectType: "table",
       comment: "Order facts",
       tags: [
-        { name: "COST_CENTER", value: "42" },
-        { name: "PII", value: "yes" },
+        { database: "GOV", schema: "TAGS", name: "COST_CENTER", value: "42" },
+        { database: "GOV", schema: "TAGS", name: "PII", value: "yes" },
       ],
     });
     expect(statements(stub)).toEqual([
       "SHOW TABLES LIKE 'ORDERS' IN SCHEMA SALES.PUBLIC",
-      "SELECT tag_name, tag_value FROM TABLE(SALES.INFORMATION_SCHEMA.TAG_REFERENCES('SALES.PUBLIC.ORDERS', 'TABLE'))",
+      "SELECT tag_database, tag_schema, tag_name, tag_value FROM TABLE(SALES.INFORMATION_SCHEMA.TAG_REFERENCES('SALES.PUBLIC.ORDERS', 'TABLE'))",
     ]);
     // Never the lagging view.
     expect(statements(stub).join(" ")).not.toMatch(/ACCOUNT_USAGE/i);
+  });
+
+  it("tells apart two tags of one name in different schemas, sorted by qualified name, then value", async () => {
+    serve((req) =>
+      req.body?.includes("SHOW")
+        ? SHOW("ORDERS", "")
+        : rows(
+            ["TAG_DATABASE", "TAG_SCHEMA", "TAG_NAME", "TAG_VALUE"],
+            [
+              ["GOV", "TAGS", "PII", "yes"],
+              ["FIN", "TAGS", "PII", "no"],
+              ["GOV", "ARCHIVE", "PII", "b"],
+              ["GOV", "ARCHIVE", "PII", "a"],
+            ],
+          ),
+    );
+    expect(((await call({ object: "SALES.PUBLIC.ORDERS" })) as { tags: unknown }).tags).toEqual([
+      { database: "FIN", schema: "TAGS", name: "PII", value: "no" },
+      { database: "GOV", schema: "ARCHIVE", name: "PII", value: "a" },
+      { database: "GOV", schema: "ARCHIVE", name: "PII", value: "b" },
+      { database: "GOV", schema: "TAGS", name: "PII", value: "yes" },
+    ]);
   });
 
   it("a view uses SHOW VIEWS and still the TABLE domain", async () => {
