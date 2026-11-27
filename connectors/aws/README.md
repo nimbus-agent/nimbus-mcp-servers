@@ -20,6 +20,11 @@ nimbus ask "Summarize my recent activity in Aws"
 - `aws_ec2_instance_get {instanceId}` (one `i-...` id) runs `aws ec2 describe-instances` and returns
   `{instanceId, state, instanceType, launchTime, tags, iamProfileArn}`, the before-state of a start or a
   stop. No instance in the reply, or the `InvalidInstanceID.NotFound` error, is "instance not found".
+- `aws_lambda_list {}` runs `aws lambda list-functions` and returns `{Functions, NextMarker?}`, each
+  function through the same allow-list as `aws_lambda_get` but under the AWS field names
+  (`FunctionName`, `Runtime`, `Handler`, `MemorySize`, `Timeout`, `LastModified`, `Description`, ...,
+  `Layers:[{Arn}]`) plus `EnvironmentVariableNames`. Environment variable values,
+  `Environment.Error`, `ImageConfigResponse` and unlisted fields are never returned.
 - `aws_lambda_get {functionName}` (a name, `name:qualifier`, a partial or a full Lambda ARN) runs
   `aws lambda get-function-configuration --function-name <f>`, chosen over `get-function` because
   its reply has no `Code.Location` (a presigned URL to the deployment package). The answer is an

@@ -106,49 +106,92 @@ function projectLambda(raw: unknown): Record<string, unknown> {
   if (!isRecord(raw) || typeof raw["FunctionName"] !== "string") {
     throw new Error("unexpected reply from aws lambda get-function-configuration");
   }
+  return lambdaFields(raw, "camel");
+}
+
+/**
+ * The one allow-list both Lambda reads apply, in either key style: `camel` for `aws_lambda_get`,
+ * `aws` for `aws_lambda_list`, which keeps the AWS field names (and nesting) it has always returned,
+ * because the gateway's `aws_lambda_invoke` before-state reads `Functions[].FunctionName`,
+ * `Runtime`, `Handler`, `MemorySize`, `Timeout`, `LastModified` and `Description` from it. Either
+ * way the environment is its sorted variable NAMES, and nothing else of `Environment`,
+ * `ImageConfigResponse`, `Code` or an unlisted field is copied.
+ */
+function lambdaFields(
+  raw: Record<string, unknown>,
+  style: "camel" | "aws",
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [from, to] of LAMBDA_SCALARS) {
     const v = lambdaScalar(raw[from]);
-    if (v !== undefined) out[to] = v;
+    if (v !== undefined) out[style === "aws" ? from : to] = v;
   }
   const tracing = isRecord(raw["TracingConfig"]) ? raw["TracingConfig"]["Mode"] : undefined;
-  if (typeof tracing === "string") out["tracingMode"] = tracing;
   const storage = isRecord(raw["EphemeralStorage"]) ? raw["EphemeralStorage"]["Size"] : undefined;
-  if (typeof storage === "number") out["ephemeralStorageSize"] = storage;
-  out["layers"] = (Array.isArray(raw["Layers"]) ? raw["Layers"] : []).flatMap((l: unknown) =>
+  const layers = (Array.isArray(raw["Layers"]) ? raw["Layers"] : []).flatMap((l: unknown) =>
     isRecord(l) && typeof l["Arn"] === "string" ? [l["Arn"]] : [],
   );
   const env = isRecord(raw["Environment"]) ? raw["Environment"]["Variables"] : undefined;
-  out["environmentVariableNames"] = isRecord(env) ? Object.keys(env).sort() : [];
+  const envNames = isRecord(env) ? Object.keys(env).sort() : [];
+  if (style === "aws") {
+    if (typeof tracing === "string") out["TracingConfig"] = { Mode: tracing };
+    if (typeof storage === "number") out["EphemeralStorage"] = { Size: storage };
+    out["Layers"] = layers.map((Arn) => ({ Arn }));
+    out["EnvironmentVariableNames"] = envNames;
+  } else {
+    if (typeof tracing === "string") out["tracingMode"] = tracing;
+    if (typeof storage === "number") out["ephemeralStorageSize"] = storage;
+    out["layers"] = layers;
+    out["environmentVariableNames"] = envNames;
+  }
   return out;
 }
 
 /**
- * `aws lambda get-function-configuration`, parsed. Not {@link awsJson}: its failure message for a
- * reply that is not JSON quotes the reply, and this one holds the environment's values. A non-zero
- * exit reports the stderr as every aws tool does; the stdout is never quoted.
+ * The projection of `aws lambda list-functions`
+ * (https://docs.aws.amazon.com/cli/latest/reference/lambda/list-functions.html): each
+ * `Functions[]` entry through {@link lambdaFields} in the AWS key style, an entry naming no function
+ * dropped, and the paging fields (`NextMarker`, `NextToken`) kept. An answer with no `Functions`
+ * array stays without one, as the unprojected tool answered.
  */
-async function lambdaConfiguration(functionName: string): Promise<unknown> {
-  const r = await runCliCode(
-    [
-      "aws",
-      "lambda",
-      "get-function-configuration",
-      "--function-name",
-      functionName,
-      "--output",
-      "json",
-    ],
-    awsEnv(),
-  );
+function projectLambdaList(raw: unknown): Record<string, unknown> {
+  if (!isRecord(raw)) return {};
+  const out: Record<string, unknown> = {};
+  if (Array.isArray(raw["Functions"])) {
+    out["Functions"] = raw["Functions"].flatMap((f: unknown) =>
+      isRecord(f) && typeof f["FunctionName"] === "string" ? [lambdaFields(f, "aws")] : [],
+    );
+  }
+  for (const k of ["NextMarker", "NextToken"] as const) {
+    if (typeof raw[k] === "string") out[k] = raw[k];
+  }
+  return out;
+}
+
+/**
+ * A Lambda CLI read, parsed. Not {@link awsJson}: its failure message for a reply that is not JSON
+ * quotes the reply, and a Lambda reply holds the environment's values. A non-zero exit reports the
+ * stderr as every aws tool does; the stdout is never quoted. An empty stdout is `{}`.
+ */
+async function lambdaRead(args: readonly string[], what: string): Promise<unknown> {
+  const r = await runCliCode(["aws", "lambda", ...args, "--output", "json"], awsEnv());
   if (r.code !== 0) {
     throw new Error(`aws exited ${String(r.code)}: ${r.stderr.slice(0, 500)}`);
   }
+  if (r.stdout.trim() === "") return {};
   try {
     return JSON.parse(r.stdout) as unknown;
   } catch {
-    throw new Error("invalid JSON from aws lambda get-function-configuration");
+    throw new Error(`invalid JSON from aws lambda ${what}`);
   }
+}
+
+/** `aws lambda get-function-configuration --function-name <f>`, parsed by {@link lambdaRead}. */
+function lambdaConfiguration(functionName: string): Promise<unknown> {
+  return lambdaRead(
+    ["get-function-configuration", "--function-name", functionName],
+    "get-function-configuration",
+  );
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -272,7 +315,7 @@ export function registerAwsTools(
   );
 
   reg("aws_lambda_list", "List Lambda functions (first page).", z.object({}), async () =>
-    jsonResult(await awsJson(["lambda", "list-functions"])),
+    jsonResult(projectLambdaList(await lambdaRead(["list-functions"], "list-functions"))),
   );
 
   reg(

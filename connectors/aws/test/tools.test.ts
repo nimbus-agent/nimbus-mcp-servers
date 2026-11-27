@@ -369,6 +369,83 @@ describe("aws_ec2_instance_get", () => {
   });
 });
 
+describe("aws_lambda_list projects each function", () => {
+  const SECRETS = {
+    env: "fake-secret-51ListEnvValueNotReal",
+    envError: "env-error-quotes-fake-secret-51ListEnvError",
+    image: "image-config-arg-secret-value",
+    imageError: "image-error-secret-value",
+    unlisted: "unlisted-field-secret-value",
+    code: "X-Amz-Signature=listcodeurl",
+  } as const;
+  const FN = {
+    FunctionName: "resize",
+    FunctionArn: "arn:aws:lambda:us-east-1:123456789012:function:resize",
+    Runtime: "nodejs20.x",
+    Handler: "index.handler",
+    MemorySize: 512,
+    Timeout: 30,
+    LastModified: "2026-11-01T10:00:00.000+0000",
+    Description: "Resizes images",
+    TracingConfig: { Mode: "Active" },
+    EphemeralStorage: { Size: 512 },
+    Layers: [{ Arn: "arn:aws:lambda:us-east-1:123456789012:layer:sharp:3", CodeSize: 9 }],
+    Environment: {
+      Variables: { STRIPE_KEY: SECRETS.env, A_FIRST: SECRETS.env },
+      Error: { ErrorCode: "KMSAccessDenied", Message: SECRETS.envError },
+    },
+    ImageConfigResponse: {
+      ImageConfig: { Command: [SECRETS.image], EntryPoint: [SECRETS.image] },
+      Error: { Message: SECRETS.imageError },
+    },
+    SomeFutureField: SECRETS.unlisted,
+    Code: { Location: `https://example.invalid/?${SECRETS.code}` },
+  };
+
+  it("keeps the AWS field names the gateway reads, and environment variable names only", async () => {
+    cli({ stdout: JSON.stringify({ Functions: [FN, { FunctionName: "bare" }] }) });
+    expect(await tools.callJson("aws_lambda_list", {})).toEqual({
+      Functions: [
+        {
+          FunctionName: "resize",
+          FunctionArn: "arn:aws:lambda:us-east-1:123456789012:function:resize",
+          Runtime: "nodejs20.x",
+          Handler: "index.handler",
+          MemorySize: 512,
+          Timeout: 30,
+          LastModified: "2026-11-01T10:00:00.000+0000",
+          Description: "Resizes images",
+          TracingConfig: { Mode: "Active" },
+          EphemeralStorage: { Size: 512 },
+          Layers: [{ Arn: "arn:aws:lambda:us-east-1:123456789012:layer:sharp:3" }],
+          EnvironmentVariableNames: ["A_FIRST", "STRIPE_KEY"],
+        },
+        { FunctionName: "bare", Layers: [], EnvironmentVariableNames: [] },
+      ],
+    });
+  });
+
+  it("never surfaces a secret from any excluded field", async () => {
+    cli({ stdout: JSON.stringify({ Functions: [FN] }) });
+    const text = JSON.stringify(await tools.callJson("aws_lambda_list", {}));
+    for (const leaked of Object.values(SECRETS)) expect(text).not.toContain(leaked);
+  });
+
+  it("keeps the paging marker and drops an entry that names no function", async () => {
+    cli({ stdout: JSON.stringify({ Functions: [{ Runtime: "x" }, "junk"], NextMarker: "m2" }) });
+    expect(await tools.callJson("aws_lambda_list", {})).toEqual({
+      Functions: [],
+      NextMarker: "m2",
+    });
+  });
+
+  it("never quotes a reply that is not JSON", async () => {
+    cli({ stdout: `{"Functions":[{"Environment":{"Variables":{"K":"${SECRETS.env}"` });
+    const err = await tools.call("aws_lambda_list", {}).catch((e: unknown) => e);
+    expect((err as Error).message).toBe("invalid JSON from aws lambda list-functions");
+  });
+});
+
 describe("aws_lambda_get", () => {
   const SECRET = "fake-secret-51NotARealSecretButShapedLikeOne";
   const OTHER_SECRET = "postgres://admin:hunter2@db.internal/prod";
