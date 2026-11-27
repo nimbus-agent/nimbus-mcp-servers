@@ -243,6 +243,9 @@ const SWEEP_REPLY = JSON.stringify({
   Reservations: [{ Instances: [{ InstanceId: "i-0123456789abcdef0" }] }],
   services: [{ serviceName: "x" }],
   FunctionName: "x",
+  // iac_cloudformation_changeset_get refuses a change set of another stack: this one is of the
+  // stack the sweep names (`nimbus-sweep-<field>`, see sweepArgs).
+  StackName: "nimbus-sweep-stackName",
 });
 
 /**

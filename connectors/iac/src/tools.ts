@@ -849,6 +849,12 @@ async function changeSetGet(p: {
     return r.stdout;
   };
   const d = parseObject(await describe(), "describe-change-set");
+  // A change set named by ARN identifies its stack itself, and AWS may then ignore --stack-name:
+  // the reply must name the stack the caller asked about (by name or by stack ARN), else it is
+  // refused, so a read scoped to one stack never answers for another.
+  if (p.stackName !== str(d["StackName"]) && p.stackName !== str(d["StackId"])) {
+    throw new Error(`change set belongs to a different stack, not ${p.stackName}`);
+  }
   const changes = await collectChanges(d, describe);
   const parameterKeys = (Array.isArray(d["Parameters"]) ? d["Parameters"] : [])
     .flatMap((x: unknown) => {

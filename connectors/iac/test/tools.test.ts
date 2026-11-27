@@ -1389,6 +1389,38 @@ describe("iac cloudformation (gateway mode)", () => {
       ]);
     });
 
+    it("refuses a change set (named by ARN) that belongs to another stack, quoting none of it", async () => {
+      script(() => ({
+        stdout: JSON.stringify({
+          ...DESCRIBED,
+          StackName: "payroll",
+          StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/payroll/${UUID}`,
+        }),
+      }));
+      const err = await tools
+        .call("iac_cloudformation_changeset_get", {
+          stackName: "web",
+          changeSetName: arnOf("release-1"),
+        })
+        .catch((e: unknown) => e);
+      expect((err as Error).message).toBe("change set belongs to a different stack, not web");
+    });
+
+    it("accepts the stack named by its ARN, and a reply that names no stack is refused", async () => {
+      const stackArn = `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/web/${UUID}`;
+      script(() => ({ stdout: JSON.stringify(DESCRIBED) }));
+      const r = (await tools.callJson("iac_cloudformation_changeset_get", {
+        stackName: stackArn,
+        changeSetName: arnOf("release-1"),
+      })) as { stackName: string };
+      expect(r.stackName).toBe("web");
+      const { StackName: _n, StackId: _i, ...nameless } = DESCRIBED;
+      script(() => ({ stdout: JSON.stringify(nameless) }));
+      await expect(
+        tools.call("iac_cloudformation_changeset_get", { stackName: "web", changeSetName: "x" }),
+      ).rejects.toThrow("change set belongs to a different stack, not web");
+    });
+
     it("never returns a parameter value", async () => {
       script(() => ({ stdout: JSON.stringify(DESCRIBED) }));
       const text = JSON.stringify(
