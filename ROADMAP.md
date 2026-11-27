@@ -48,9 +48,9 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   [Phase 9.7](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-97--connector-write-enablement-the-acting-roster)
   lists tools it needed and did not find here. Each is a small connector change with its own
   release.
-  - [ ] **Code review and issue writes:** GitHub PR review / line comment, Bitbucket PR comment,
+  - [x] **Code review and issue writes:** GitHub PR review / line comment, Bitbucket PR comment,
     GitHub/GitLab label and assignee remove, GitHub/GitLab issue title and body edit, Jira
-    assignee, Linear labels.
+    assignee, Linear labels. *Shipped: the Bitbucket PR comment in 0.18.0, the rest in 0.19.0.*
   - [ ] **Google Calendar writes:** create, update, delete. This is the first write on the
     connector, and the gateway must pass the granted scopes at spawn.
   - [ ] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
