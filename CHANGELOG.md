@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.18.0...connectors-v0.19.0) (2026-11-27)
+
+
+### Features
+
+* code-review and issue writes for github, gitlab, jira and linear ([#108](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/108)) ([2577fc9](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/2577fc917f1914e34b073bcfc5b764d26f500387))
+
 ## [0.18.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.17.3...connectors-v0.18.0) (2026-11-26)
 
 
