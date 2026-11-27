@@ -91,9 +91,11 @@ What the lock does not cover:
 reads `NIMBUS_MCP_GITHUB_WRITE_SCOPE` and `monte-carlo` reads `NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE`.
 Scope kinds are per connector. `discord` accepts `channel:<channelId>`, the 17 to 20 digit snowflake
 of the channel `discord_message_post` writes to, e.g. `NIMBUS_MCP_DISCORD_WRITE_SCOPE=channel:123456789012345678`.
-`launchdarkly` accepts `flag:<projectKey>/<environmentKey>/<flagKey>` and `flagsmith` accepts
-`flag:<environmentKey>/<featureId>` (the numeric feature id), so one flag in one environment is one
-term. `google-calendar` accepts `calendar:<calendarId>`, with `calendar:primary` for a write that names no
+`launchdarkly` accepts `flag:<projectKey>/<environmentKey>/<flagKey>`, `flagsmith` accepts
+`flag:<environmentKey>/<featureId>` (the numeric feature id), `unleash` accepts
+`flag:<projectId>/<environment>/<featureName>` and `split` accepts
+`flag:<workspaceId>/<environment>/<splitName>` (the environment as the tool is called with it, id or
+name), so one flag in one environment is one term. `google-calendar` accepts `calendar:<calendarId>`, with `calendar:primary` for a write that names no
 calendar; its writes also register only for a token whose `GOOGLE_OAUTH_SCOPES` holds a calendar write
 scope (see its README). `jira` also accepts `alert:<alertId>` for its Operations alerts, by exact alert id only. `iac`
 accepts `dir:<workingDirectory>` (Terraform) and `stack:<stackName>` (CloudFormation), and
@@ -105,7 +107,7 @@ Do not derive it from a connector's tool names or action types — `monte-carlo`
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
 
 **Redirects.** A credential header is never sent to another origin. The `gitlab` connector, the flag
-connectors, the JSM Operations tools, `bitbucket`, `google-calendar`, `jira`, `linear` and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
+connectors (`launchdarkly`, `flagsmith`, `unleash`, `split`), the JSM Operations tools, `bitbucket`, `google-calendar`, `jira`, `linear` and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
 redirects, only to the same origin or the same host's http -> https upgrade (never https -> http).
 A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the token is then sent in
 clear.
@@ -138,8 +140,8 @@ though, so a temp directory whose path holds one of these characters is refused 
 
 Four connectors need libraries the other 92 do not: `apple` (`imapflow`, `nodemailer`, `tsdav`),
 `imap` and `protonmail` (`imapflow`, `nodemailer`), and `dataprofile` (`hyparquet`). They are
-declared as **optional** dependencies, so a normal install fetches them and all 98 connectors work
-out of the box, while a platform that cannot build one does not break the other 97.
+declared as **optional** dependencies, so a normal install fetches them and all 100 connectors work
+out of the box, while a platform that cannot build one does not break the other 99.
 
 If you install with optional dependencies disabled, those four fail at startup with a
 module-not-found error. The rest are unaffected.

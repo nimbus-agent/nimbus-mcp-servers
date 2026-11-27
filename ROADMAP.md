@@ -31,7 +31,7 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   upstream SDK by design. The gateway's roadmap carries the matching row for its own MCP server
   ([Phase 28](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-28--the-agent-door)).
 - [ ] **Audit connector error text.** A tool's thrown message reaches the standalone client
-  verbatim, as it did on the upstream SDK. No one has checked the 98 connectors' error paths for
+  verbatim, as it did on the upstream SDK. No one has checked the 100 connectors' error paths for
   an upstream reply that could carry a path or a token into that text.
 - [ ] **Cost connectors.** `vantage` shipped in 0.14.0, read-only. The other platforms named in
   the gateway's *FinOps connectors* row
