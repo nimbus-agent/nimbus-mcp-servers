@@ -43,7 +43,7 @@ Tools exposed:
 | Tool | Purpose |
 | --- | --- |
 | `unleash_list` | List projects (no `projectId`), or a project's feature flag definitions (`GET /api/admin/projects/{projectId}/features`), capped at `limit` (default 100) with `total` and `notShown`. |
-| `unleash_get` | Fetch one flag by `projectId` + `featureName`, with every environment's enabled state and strategies. |
+| `unleash_get` | Fetch one flag by `projectId` + `featureName`, with each environment's enabled state, strategies and variants, bounded as `unleash_feature_state_get` is (at most 50 environments, 50 strategies and 50 variants each, 20 values per constraint). |
 | `unleash_search` | Search flags by name or tag across projects, or in one (`GET /api/admin/search/features`, present in recent Unleash versions; an older server answers 404, quoted as is). |
 | `unleash_feature_state_get` | Read one feature in ONE environment: `enabled`, strategies (capped at 50, each constraint's values capped at 20) and variants (capped at 50). |
 | `unleash_feature_toggle` (write) | Turn a feature on or off in ONE environment (`POST .../environments/{environment}/on` or `/off`). |
@@ -55,17 +55,25 @@ set (letters, digits, `.`, `_`, `~`, `-`, at most 100 characters) and are never
 ### The write
 
 `unleash_feature_toggle` declares `hitlRequired: ["write"]` and needs owner
-approval. It is its own inverse: toggling back restores the previous on/off
-state; strategies and variants are untouched. After the write it reads the
+approval. It is **not** fully its own inverse. When it enables an environment
+that has no active strategy (none, or only disabled ones), Unleash itself adds a
+default strategy: a 100% rollout that serves everyone, unless the project sets
+another default for that environment. Toggling off does not remove that
+strategy, so toggling back restores the on/off state but not the strategies.
+Existing strategies and variants are otherwise left as they are. This is the
+server's own logic (`unprotectedUpdateEnabled` in Unleash's
+`feature-toggle-service.ts`, checked on 2026-11-27), not something the connector
+does. So the tool is registered as not recoverable, and the environment's state
+before the write, strategies included, is recorded first as the audit pre-state.
+After the write it reads the
 environment back and returns `confirmed: true` only when that read shows the
 requested state (a failed read-back is reported as `confirmError`, and the write
 is not retried). Unleash refuses the toggle while change requests are enabled for
 the environment, and its message is returned as is. Outside the gateway, scope
 it with `NIMBUS_MCP_UNLEASH_WRITE_SCOPE=flag:<projectId>/<environment>/<featureName>`.
 
-Unverified against a live server: whether enabling an environment that has no
-strategies makes Unleash add its default strategy, as its UI does.
-`unleash_feature_state_get` shows the strategies either way.
+`unleash_feature_state_get` shows the strategies before and after. Unverified
+against a live server.
 
 ## See also
 

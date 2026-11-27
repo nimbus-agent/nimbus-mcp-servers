@@ -93,6 +93,51 @@ describe("unleash read tools", () => {
     expect(stub.only.url).toBe(`${ADMIN}/projects/web/features/new-checkout`);
   });
 
+  it("get caps each environment's strategies and every constraint's values", async () => {
+    const huge = Array.from({ length: 5000 }, (_, i) => `u${String(i)}`);
+    serve(
+      JSON.stringify({
+        name: "new-checkout",
+        environments: [
+          {
+            name: "production",
+            enabled: true,
+            strategies: Array.from({ length: 60 }, () => ({
+              name: "flexibleRollout",
+              constraints: [{ contextName: "userId", operator: "IN", values: huge }],
+            })),
+            variants: Array.from({ length: 70 }, (_, i) => ({ name: `v${String(i)}` })),
+          },
+          { name: "dev", enabled: false },
+        ],
+      }),
+    );
+    await configured(async () => {
+      const out = (await tools.callJson("unleash_get", {
+        projectId: "web",
+        featureName: "new-checkout",
+      })) as {
+        name: string;
+        environments: Array<{
+          name: string;
+          strategies?: Array<{ constraints: Array<{ values: string[]; valuesNotShown: number }> }>;
+          strategiesNotShown?: number;
+          variants?: unknown[];
+          variantsNotShown?: number;
+        }>;
+      };
+      expect(out.name).toBe("new-checkout");
+      const prod = out.environments[0];
+      expect(prod?.strategies).toHaveLength(50);
+      expect(prod?.strategiesNotShown).toBe(10);
+      expect(prod?.strategies?.[0]?.constraints[0]?.values).toHaveLength(20);
+      expect(prod?.strategies?.[0]?.constraints[0]?.valuesNotShown).toBe(4980);
+      expect(prod?.variants).toHaveLength(50);
+      expect(prod?.variantsNotShown).toBe(20);
+      expect(out.environments[1]).toEqual({ name: "dev", enabled: false });
+    });
+  });
+
   it("search asks the search endpoint, scoped to a project when one is given", async () => {
     const stub = serve('{"features":[{"name":"new-checkout"}],"total":1}');
     await configured(async () => {

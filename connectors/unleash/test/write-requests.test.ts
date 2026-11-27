@@ -76,7 +76,7 @@ describe("unleash_feature_toggle (gateway mode)", () => {
     });
   }
 
-  it("encodes every path value", async () => {
+  it("accepts '.', '_', '~' and '-' in every path value and places each in its own segment", async () => {
     const stub = serve(toggled(true));
     await configured(async () => {
       await tools.call("unleash_feature_toggle", {
@@ -89,6 +89,14 @@ describe("unleash_feature_toggle (gateway mode)", () => {
     expect(stub.calls[0]?.url).toBe(
       `${ROOT}/api/admin/projects/p~1/features/a.b_c-d/environments/pre~prod/on`,
     );
+  });
+
+  it("says in its description that enabling may add a default strategy toggling off keeps", () => {
+    const description = tools.get("unleash_feature_toggle").description;
+    expect(description).toMatch(/no active strategy/);
+    expect(description).toMatch(/adds a default strategy/);
+    expect(description).toMatch(/toggling off does not remove it/);
+    expect(description).not.toMatch(/untouched/);
   });
 
   it("reports confirmed:false when the read after the write shows another state", async () => {
@@ -187,19 +195,33 @@ describe("unleash_feature_toggle (standalone mode)", () => {
     });
   });
 
-  it("runs approved, in scope, under the unleash.feature.toggle action type", async () => {
-    const stub = serve(toggled(false));
+  it("runs approved and in scope, recording the strategies BEFORE the POST", async () => {
+    // Enabling an environment with no active strategy makes Unleash add a default one that
+    // toggling off does not remove, so the previous strategies are the audited pre-state.
+    let posted = false;
+    const stub = serve((req) => {
+      if (req.method === "POST") {
+        posted = true;
+        return { status: 200, body: "" };
+      }
+      return JSON.stringify(
+        posted
+          ? { enabled: true, strategies: [{ name: "flexibleRollout", id: "new" }] }
+          : { enabled: false, strategies: [] },
+      );
+    });
     await configured(async () => {
       const run = await approvedStandaloneWrite(
         registerUnleashTools,
         { NIMBUS_MCP_UNLEASH_WRITE_SCOPE: "flag:web/production/new-checkout" },
         "unleash_feature_toggle",
-        { ...ARGS, enabled: false },
+        { ...ARGS, enabled: true },
       );
-      expect(run.answer).toMatchObject({ ok: true, confirmed: true, enabled: false });
+      expect(run.answer).toMatchObject({ ok: true, confirmed: true, enabled: true });
       expect(run.chain.ok).toBe(true);
-      expect(run.audit.map((e) => e.outcome)).toContain("executed");
+      const executed = run.audit.find((e) => e.outcome === "executed");
+      expect(executed?.detail["preState"]).toMatchObject({ enabled: false, strategies: [] });
     });
-    expect(stub.calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "POST", "GET"]);
   });
 });

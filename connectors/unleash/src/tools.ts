@@ -139,6 +139,35 @@ function boundStrategy(raw: unknown): unknown {
   return { ...s, constraints: s["constraints"].map(boundConstraint) };
 }
 
+/** Environments a feature read returns; the rest are counted, not shown. */
+const MAX_ENVIRONMENTS = 50;
+
+/** One entry of a feature's `environments`: its strategies and variants capped where present. */
+function boundEnvironment(raw: unknown): unknown {
+  const e = asRecord(raw);
+  if (e === undefined) return raw;
+  const strategies = e["strategies"];
+  const variants = e["variants"];
+  return {
+    ...e,
+    ...(Array.isArray(strategies)
+      ? capped("strategies", strategies.map(boundStrategy), MAX_STRATEGIES)
+      : {}),
+    ...(Array.isArray(variants) ? capped("variants", variants, MAX_VARIANTS) : {}),
+  };
+}
+
+/** One feature with every environment bounded as {@link boundEnvironment} does. */
+async function readFeature(p: { projectId: string; featureName: string }): Promise<unknown> {
+  const raw = await unGet(featurePath(p));
+  const feature = asRecord(raw);
+  if (feature === undefined || !Array.isArray(feature["environments"])) return raw;
+  return {
+    ...feature,
+    ...capped("environments", feature["environments"].map(boundEnvironment), MAX_ENVIRONMENTS),
+  };
+}
+
 /**
  * One feature in one environment: on or off, its activation strategies (capped, and each
  * constraint's value list capped) and its variants. Metrics counters are left out.
@@ -195,9 +224,9 @@ export function registerUnleashTools(
 
   reg(
     "unleash_get",
-    "Fetch one Unleash feature flag by project id + feature name (`GET /api/admin/projects/{projectId}/features/{featureName}`): its definition and every environment with its enabled state and strategies.",
+    "Fetch one Unleash feature flag by project id + feature name (`GET /api/admin/projects/{projectId}/features/{featureName}`): its definition and each environment with its enabled state, strategies and variants. Bounded like `unleash_feature_state_get`: at most 50 environments, 50 strategies and 50 variants each, 20 values per strategy constraint, the rest counted in `*NotShown`.",
     featureArgs,
-    async (p) => jsonResult(await unGet(featurePath(p))),
+    async (p) => jsonResult(await readFeature(p)),
   );
 
   reg(
@@ -234,11 +263,15 @@ export function registerUnleashTools(
     "unleash_feature_toggle",
     {
       mutates: "unleash.feature.toggle",
-      // Its own inverse: the same tool with the opposite `enabled`.
-      recoverable: true,
+      // Not fully undone by toggling back: enabling an environment with no active strategy makes
+      // Unleash add a default strategy, which turning it off leaves in place. So the environment's
+      // previous state, strategies included, is recorded in the audit pre-state first; this tool
+      // does not restore the strategies.
+      recoverable: false,
+      capturePreState: readFeatureState,
       scopeTargetOf: flagScope,
     },
-    "Turn an Unleash feature on or off in ONE environment (`POST /api/admin/projects/{projectId}/features/{featureName}/environments/{environment}/on` or `/off`). Reversible by toggling back; strategies and variants are untouched. Unleash refuses it while change requests are enabled for the environment, with its own message. The result carries `confirmed`: true only when a read of the environment after the write shows the requested state.",
+    "Turn an Unleash feature on or off in ONE environment (`POST /api/admin/projects/{projectId}/features/{featureName}/environments/{environment}/on` or `/off`). When this enables an environment that has no active strategy (none, or only disabled ones), Unleash itself adds a default strategy, a 100% rollout that serves everyone unless the project sets another default, and toggling off does not remove it: toggling back restores the on/off state, not the strategies. Existing strategies and variants are otherwise left as they are. The environment's previous state is recorded before the write. Unleash refuses it while change requests are enabled for the environment, with its own message. The result carries `confirmed`: true only when a read of the environment after the write shows the requested state.",
     featureEnvArgs.extend({ enabled: z.boolean() }),
     async (p) => {
       await unSend("POST", `${environmentPath(p)}/${p.enabled ? "on" : "off"}`, undefined);
