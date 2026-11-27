@@ -92,6 +92,23 @@ function capped(key: string, items: unknown[], max: number): Record<string, unkn
   };
 }
 
+/** Entries shown per list in a split's metadata (tags, flag sets). */
+const MAX_SPLIT_LIST = 50;
+
+/** A split's metadata with every top-level list capped; scalars and objects as given. */
+function boundSplit(raw: unknown): unknown {
+  const s = asRecord(raw);
+  if (s === undefined) return raw;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(s)) {
+    Object.assign(
+      out,
+      Array.isArray(value) ? capped(key, value, MAX_SPLIT_LIST) : { [key]: value },
+    );
+  }
+  return out;
+}
+
 function boundTreatment(raw: unknown): unknown {
   const t = asRecord(raw);
   const config = t?.["configurations"];
@@ -238,9 +255,9 @@ export function registerSplitTools(
 
   reg(
     "split_get",
-    "Fetch one Split split (feature flag) definition by workspace id + split name (`GET /splits/ws/{workspaceId}/{splitName}`): name, description, traffic type, tags, rollout status and creation time.",
+    "Fetch one Split split (feature flag) definition by workspace id + split name (`GET /splits/ws/{workspaceId}/{splitName}`): name, description, traffic type, tags, rollout status and creation time. Every list in it (tags, flag sets) is capped at 50, the rest counted in `*NotShown`.",
     splitArgs,
-    async (p) => jsonResult(await splitGet(splitPath(p))),
+    async (p) => jsonResult(boundSplit(await splitGet(splitPath(p)))),
   );
 
   reg(

@@ -100,6 +100,30 @@ describe("split read tools", () => {
     expect(stub.only.url).toBe(`${API}/splits/ws/${WS}/new_checkout`);
   });
 
+  it("get caps every list in the split: tags, flag sets, and any other array", async () => {
+    serve(
+      JSON.stringify({
+        name: "new_checkout",
+        description: "d",
+        trafficType: { id: "tt", name: "user" },
+        tags: Array.from({ length: 5000 }, (_, i) => ({ name: `t${String(i)}` })),
+        flagSets: Array.from({ length: 60 }, (_, i) => ({ id: `fs${String(i)}` })),
+      }),
+    );
+    await configured(async () => {
+      const out = (await tools.callJson("split_get", {
+        workspaceId: WS,
+        splitName: "new_checkout",
+      })) as Record<string, unknown>;
+      expect(out["name"]).toBe("new_checkout");
+      expect(out["trafficType"]).toEqual({ id: "tt", name: "user" });
+      expect(out["tags"]).toHaveLength(50);
+      expect(out["tagsNotShown"]).toBe(4950);
+      expect(out["flagSets"]).toHaveLength(50);
+      expect(out["flagSetsNotShown"]).toBe(10);
+    });
+  });
+
   it("search pages through the workspace and matches name, description and tags", async () => {
     const page = (offset: number): unknown[] =>
       Array.from({ length: offset < 100 ? 50 : 3 }, (_, i) => ({
