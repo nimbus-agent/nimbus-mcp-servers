@@ -14,10 +14,13 @@ spawns (`terraform`, `aws`, `pulumi`) are bounded by the sandbox the gateway put
 | `iac_terraform_apply` | write | applies a saved plan file whose SHA-256 equals `planSha256` |
 | `iac_terraform_destroy` | write | the same tool body for a plan made by `iac_terraform_destroy_plan` |
 | `iac_terraform_apply_refresh_only` | write | applies a saved `refresh.tfplan` whose SHA-256 equals `planSha256`: accepts drift into the state. It first renders the file with `terraform show -json` and refuses unless every resource change is a no-op (a data source may be read) and the plan saves no provider action (`action_invocations`), so a plan that would change infrastructure is never applied under this tool |
+| `iac_terraform_init` | write | `terraform -chdir=<dir> init -input=false -no-color`, nothing else: the caller chooses only the directory (the same `workingDirectory` and `dir:` scope as `iac_terraform_plan`), so no `-upgrade`, `-reconfigure`, `-migrate-state`, `-backend-config` or any other flag. Writes `.terraform/` and `.terraform.lock.hcl` and fetches the providers and modules the configuration names. Answers `{ok, status:"initialized"}`; a failure is terraform's exit code and at most 500 characters of its stderr |
 | `iac_cloudformation_changeset_create` | prepare | creates a change set for a template and lists its changes |
 | `iac_cloudformation_changeset_discard` | write | deletes a change set this connector made, and the empty stack shell it left |
 | `iac_cloudformation_deploy` | write | executes a reviewed change set; answers `execution started`, never "deployed" |
 | `iac_cloudformation_stack_get` | read | `{exists:false}` or `{exists:true, status, statusReason, lastUpdatedTime}` |
+| `iac_cloudformation_changesets_list` | read | `aws cloudformation list-change-sets --stack-name <s> --no-paginate`: one page, at most 100, as `{stackName, changeSets:[{changeSetName, changeSetId, status, executionStatus, statusReason, creationTime}], more}` (`more` when AWS has another page or the page was cut; a reason is capped at 500 characters) |
+| `iac_cloudformation_changeset_get` | read | `aws cloudformation describe-change-set --stack-name <s> --change-set-name <name or ARN>`, every page of changes followed (the same 500-change and 256 KiB bounds as `changeset_create`): `{changeSetName, changeSetId, stackName, status, executionStatus, statusReason, creationTime, capabilities, parameterKeys, changes}`. Parameter **values** are never returned, only their keys. A `ChangeSetNotFound` is "change set not found" |
 | `iac_pulumi_preview` | read | `pulumi preview` |
 | `iac_pulumi_up` | write | **always refused** (see below) |
 
@@ -28,7 +31,7 @@ bound to. It spends no write budget and never prompts.
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `NIMBUS_IAC_PLAN_DIR` | every terraform tool but `iac_pulumi_*`: the two plan tools, `show_json`, apply and destroy | Absolute path of an existing real directory (not a link). Each plan is saved in a fresh 0700 directory `<dir>/<planId>/plan.tfplan` (`destroy.tfplan` for a destroy plan); apply, destroy and `show_json` take only a plan file inside it. Missing or invalid: the tool fails before running anything. |
+| `NIMBUS_IAC_PLAN_DIR` | every terraform tool but `iac_terraform_init` (which saves no plan): the plan tools, `show_json`, apply and destroy | Absolute path of an existing real directory (not a link). Each plan is saved in a fresh 0700 directory `<dir>/<planId>/plan.tfplan` (`destroy.tfplan` for a destroy plan); apply, destroy and `show_json` take only a plan file inside it. Missing or invalid: the tool fails before running anything. |
 | `NIMBUS_CONNECTOR_SCRATCH_DIR` | `iac_cloudformation_changeset_create` | Absolute directory for the template file (a 0700 directory per call, removed afterwards). Unset: the OS temp directory, except on Windows under the gateway, where the tool refuses. |
 | `NIMBUS_MCP_IAC_WRITE_SCOPE` | standalone mode | `dir:<path>` and `stack:<name>` terms. Since this release the four prepare tools (`iac_terraform_plan`, `iac_terraform_destroy_plan`, `iac_terraform_show_json`, `iac_cloudformation_changeset_create`) are scope-checked too. |
 

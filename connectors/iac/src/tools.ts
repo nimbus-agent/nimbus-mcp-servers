@@ -252,6 +252,23 @@ async function terraformPlan(
 }
 
 /**
+ * `terraform init`, with nothing the caller chooses but the directory: no `-upgrade`,
+ * `-reconfigure`, `-migrate-state` or `-backend-config`, so a lock file's pinned versions and the
+ * configured backend stay as they are, and a backend change fails rather than migrating state.
+ * https://developer.hashicorp.com/terraform/cli/commands/init
+ */
+async function terraformInit(workingDirectory: string): Promise<ReturnType<typeof jsonResult>> {
+  const r = await runCliCode(
+    ["terraform", `-chdir=${workingDirectory}`, "init", "-input=false", "-no-color"],
+    terraformEnv(),
+  );
+  if (r.code !== 0) {
+    throw new Error(`terraform exited ${String(r.code)}: ${r.stderr.slice(0, 500)}`);
+  }
+  return jsonResult({ ok: true, status: "initialized" });
+}
+
+/**
  * Why a plan JSON is not a refresh-only plan, or `undefined`. A refresh-only plan may change the
  * state and the outputs, never infrastructure: every resource change must be a no-op (a data
  * source may be read). Anything else is refused, because the check is about what the file would
@@ -751,6 +768,115 @@ async function changeSetDiscard(p: {
   return jsonResult({ ok: true, ...done });
 }
 
+/** Longest status reason a change-set read carries: AWS's text, which may quote the template. */
+const STATUS_REASON_MAX = 500;
+/** Most change sets one list answer carries. */
+const CHANGESETS_LIST_MAX = 100;
+
+function reasonOf(v: unknown): string | null {
+  const s = str(v);
+  return s === undefined ? null : s.slice(0, STATUS_REASON_MAX);
+}
+
+/**
+ * One page of `aws cloudformation list-change-sets --stack-name <s>`
+ * (https://docs.aws.amazon.com/cli/latest/reference/cloudformation/list-change-sets.html):
+ * `--no-paginate` so the CLI returns the first API page and not every page, at most 100 entries of
+ * it, and `more` when AWS had another page or this one was cut. Each summary is its name, ARN,
+ * status, execution status, capped status reason and creation time.
+ */
+async function changeSetsList(stackName: string): Promise<ReturnType<typeof jsonResult>> {
+  const d = parseObject(
+    await awsOk([
+      "cloudformation",
+      "list-change-sets",
+      "--stack-name",
+      stackName,
+      "--no-paginate",
+      "--output",
+      "json",
+    ]),
+    "list-change-sets",
+  );
+  const summaries = Array.isArray(d["Summaries"]) ? d["Summaries"] : [];
+  const changeSets = summaries
+    .filter((s): s is Record<string, unknown> => typeof s === "object" && s !== null)
+    .slice(0, CHANGESETS_LIST_MAX)
+    .map((s) => ({
+      changeSetName: str(s["ChangeSetName"]) ?? null,
+      changeSetId: str(s["ChangeSetId"]) ?? null,
+      status: str(s["Status"]) ?? null,
+      executionStatus: str(s["ExecutionStatus"]) ?? null,
+      statusReason: reasonOf(s["StatusReason"]),
+      creationTime: str(s["CreationTime"]) ?? null,
+    }));
+  const token = str(d["NextToken"]);
+  const more = (token !== undefined && token !== "") || summaries.length > CHANGESETS_LIST_MAX;
+  return jsonResult({ stackName, changeSets, more });
+}
+
+/**
+ * `aws cloudformation describe-change-set --stack-name <s> --change-set-name <name or ARN>`
+ * (https://docs.aws.amazon.com/cli/latest/reference/cloudformation/describe-change-set.html), every
+ * page of changes followed as the prepare tool follows them, with its bounds. `Parameters` are
+ * reduced to their keys: a value can be a secret (a NoEcho parameter is masked by AWS, but a
+ * parameter that should have been NoEcho is not).
+ */
+async function changeSetGet(p: {
+  stackName: string;
+  changeSetName: string;
+}): Promise<ReturnType<typeof jsonResult>> {
+  const describe = async (nextToken?: string): Promise<string> => {
+    const r = await runCliCode(
+      [
+        "aws",
+        "cloudformation",
+        "describe-change-set",
+        "--stack-name",
+        p.stackName,
+        "--change-set-name",
+        p.changeSetName,
+        ...(nextToken === undefined ? [] : ["--next-token", nextToken]),
+        "--output",
+        "json",
+      ],
+      awsEnv(),
+    );
+    if (r.code !== 0) {
+      if (/ChangeSetNotFound/.test(r.stderr)) throw new Error("change set not found");
+      throw new Error(`aws exited ${String(r.code)}: ${r.stderr.slice(0, 500)}`);
+    }
+    return r.stdout;
+  };
+  const d = parseObject(await describe(), "describe-change-set");
+  const changes = await collectChanges(d, describe);
+  const parameterKeys = (Array.isArray(d["Parameters"]) ? d["Parameters"] : [])
+    .flatMap((x: unknown) => {
+      const k =
+        typeof x === "object" && x !== null
+          ? str((x as Record<string, unknown>)["ParameterKey"])
+          : undefined;
+      return k === undefined ? [] : [k];
+    })
+    .sort();
+  const reply = {
+    changeSetName: str(d["ChangeSetName"]) ?? null,
+    changeSetId: str(d["ChangeSetId"]) ?? null,
+    stackName: str(d["StackName"]) ?? null,
+    status: str(d["Status"]) ?? null,
+    executionStatus: str(d["ExecutionStatus"]) ?? null,
+    statusReason: reasonOf(d["StatusReason"]),
+    creationTime: str(d["CreationTime"]) ?? null,
+    capabilities: stringList(d["Capabilities"]),
+    parameterKeys,
+    changes,
+  };
+  if (Buffer.byteLength(JSON.stringify(reply), "utf8") > CHANGESET_REPLY_MAX_BYTES) {
+    throw new Error("change set too large");
+  }
+  return jsonResult(reply);
+}
+
 const PULUMI_UP_REFUSAL =
   "iac_pulumi_up is refused: Pulumi saved update plans are documented as experimental, so no plan-bound apply exists (OR-W34-2)";
 
@@ -763,10 +889,13 @@ export const IAC_TOOL_NAMES = [
   "iac_terraform_apply",
   "iac_terraform_destroy",
   "iac_terraform_apply_refresh_only",
+  "iac_terraform_init",
   "iac_cloudformation_changeset_create",
   "iac_cloudformation_changeset_discard",
   "iac_cloudformation_deploy",
   "iac_cloudformation_stack_get",
+  "iac_cloudformation_changesets_list",
+  "iac_cloudformation_changeset_get",
   "iac_pulumi_preview",
   "iac_pulumi_up",
 ] as const;
@@ -917,6 +1046,22 @@ export function registerIacTools(
     (p) => terraformApplyPlan(p, REFRESH_PLAN_NAME),
   );
 
+  registerWriteTool(
+    "iac_terraform_init",
+    {
+      mutates: "iac.terraform.init",
+      // It writes `.terraform/` and `.terraform.lock.hcl` in the directory and fetches the
+      // providers and modules the configuration names; no tool undoes that.
+      recoverable: false,
+      capturePreState: (p) => Promise.resolve({ workingDirectory: p.workingDirectory }),
+      // The directory guard of iac_terraform_plan, unchanged: the same schema and the same scope.
+      scopeTargetOf: dirScope,
+    },
+    "Run terraform init in a directory (-input=false; no -upgrade, -reconfigure, -migrate-state or -backend-config, and no other flag): writes .terraform/ and .terraform.lock.hcl and fetches the providers and modules the configuration names.",
+    z.object({ workingDirectory: cliArg }),
+    (p) => terraformInit(p.workingDirectory),
+  );
+
   registerPrepareTool(
     "iac_cloudformation_changeset_create",
     { scopeTargetOf: stackScope },
@@ -993,6 +1138,20 @@ export function registerIacTools(
           : { exists: false },
       );
     },
+  );
+
+  reg(
+    "iac_cloudformation_changesets_list",
+    "List a CloudFormation stack's change sets (one page, at most 100): {stackName, changeSets:[{changeSetName, changeSetId, status, executionStatus, statusReason, creationTime}], more}.",
+    z.object({ stackName: awsCliArg }),
+    (p) => changeSetsList(p.stackName),
+  );
+
+  reg(
+    "iac_cloudformation_changeset_get",
+    "Describe one change set of a CloudFormation stack, by name or ARN: its status, execution status, capabilities, parameter keys (never values) and resource changes [{action, logicalId, physicalId, resourceType, replacement, scope}].",
+    z.object({ stackName: awsCliArg, changeSetName: awsCliArg }),
+    changeSetGet,
   );
 
   reg(

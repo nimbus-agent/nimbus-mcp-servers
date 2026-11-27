@@ -570,6 +570,12 @@ const WRITES: Readonly<
       ),
       ["iac_pulumi_up", "iac.pulumi.up", { workingDirectory: "infra/prod" }, "dir:infra/prod"],
       [
+        "iac_terraform_init",
+        "iac.terraform.init",
+        { workingDirectory: "infra/prod" },
+        "dir:infra/prod",
+      ],
+      [
         "iac_terraform_apply_refresh_only",
         "iac.terraform.apply_refresh_only",
         {
