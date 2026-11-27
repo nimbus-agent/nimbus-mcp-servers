@@ -51,6 +51,7 @@ import { registerGithubTools } from "../connectors/github/src/tools.ts";
 import { registerGithubActionsTools } from "../connectors/github-actions/src/tools.ts";
 import { registerGitlabTools } from "../connectors/gitlab/src/tools.ts";
 import { registerGmailTools } from "../connectors/gmail/src/tools.ts";
+import { registerGoogleCalendarTools } from "../connectors/google-calendar/src/tools.ts";
 import { registerGoogleDriveTools } from "../connectors/google-drive/src/tools.ts";
 import { registerIacTools } from "../connectors/iac/src/tools.ts";
 import { registerImapTools } from "../connectors/imap/src/tools.ts";
@@ -121,6 +122,11 @@ const MAIL_TO = { to: "ada@example.com" };
  * (acme/api, group/repo) must fail here, not coincide with the fixture and pass.
  */
 const GITHUB_REPO = { owner: "zeta-labs", repo: "quokka" };
+/** Google Calendar event times: an ordered pair `fixtureFor` cannot guess, or refuseBefore refuses. */
+const GCAL_TIMES = {
+  start: { dateTime: "2026-01-01T09:00:00Z" },
+  end: { dateTime: "2026-01-01T10:00:00Z" },
+};
 /** iCloud event times are format-checked (UTC `YYYYMMDDTHHMMSSZ`), which `fixtureFor` cannot guess. */
 const ICLOUD_TIMES = { start: "20260101T000000Z", end: "20260101T010000Z" };
 
@@ -489,6 +495,43 @@ const WRITES: Readonly<
         "gmail.thread.archive",
         { threadId: "18c2f0a1b2" },
         "thread:18c2f0a1b2",
+      ],
+    ],
+  },
+  "google-calendar": {
+    register: registerGoogleCalendarTools,
+    cases: [
+      [
+        "gcal_event_create",
+        "google_calendar.event.create",
+        { calendarId: "team-zeta@group.calendar.google.com", ...GCAL_TIMES },
+        "calendar:team-zeta@group.calendar.google.com",
+      ],
+      ["gcal_event_create", "google_calendar.event.create", GCAL_TIMES, "calendar:primary"],
+      // A summary: with nothing to change the tool's refuseBefore refuses ahead of scope.
+      [
+        "gcal_event_update",
+        "google_calendar.event.update",
+        { calendarId: "team-zeta@group.calendar.google.com", eventId: "evt-1", summary: "s" },
+        "calendar:team-zeta@group.calendar.google.com",
+      ],
+      [
+        "gcal_event_update",
+        "google_calendar.event.update",
+        { eventId: "evt-1", summary: "s" },
+        "calendar:primary",
+      ],
+      [
+        "gcal_event_delete",
+        "google_calendar.event.delete",
+        { calendarId: "team-zeta@group.calendar.google.com", eventId: "evt-1" },
+        "calendar:team-zeta@group.calendar.google.com",
+      ],
+      [
+        "gcal_event_delete",
+        "google_calendar.event.delete",
+        { eventId: "evt-1" },
+        "calendar:primary",
       ],
     ],
   },
@@ -912,8 +955,10 @@ function registersWrites(id: string): boolean {
 /** Obsidian resolves its vaults while registering, so it cannot register without the variable. */
 const REGISTRATION_ENV = {
   OBSIDIAN_VAULT_PATHS_JSON: JSON.stringify([join(tmpdir(), "nimbus-write-scope-no-vault")]),
-  // gmail_thread_archive registers only for a token holding gmail.modify.
-  GOOGLE_OAUTH_SCOPES: "https://www.googleapis.com/auth/gmail.modify",
+  // gmail_thread_archive registers only for a token holding gmail.modify, and the google-calendar
+  // writes only for one holding the calendar scope.
+  GOOGLE_OAUTH_SCOPES:
+    "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar",
 };
 
 /**

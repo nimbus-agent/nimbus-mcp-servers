@@ -8,7 +8,7 @@ import {
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
-import { GOOGLE_CALENDAR_TOOL_NAMES, registerGoogleCalendarTools } from "../src/tools.ts";
+import { registerGoogleCalendarTools } from "../src/tools.ts";
 
 const API = "https://www.googleapis.com/calendar/v3";
 const MIN = "2026-11-11T00:00:00Z";
@@ -39,8 +39,11 @@ async function refused(name: string, args: Record<string, unknown>): Promise<voi
   expect(stub.calls).toEqual([]);
 }
 
-beforeEach(() => {
-  tools = captureTools(registerGoogleCalendarTools);
+beforeEach(async () => {
+  // No GOOGLE_OAUTH_SCOPES: the writes stay hidden, so this file sees the read surface alone.
+  tools = await withEnv({ GOOGLE_OAUTH_SCOPES: undefined }, () =>
+    captureTools(registerGoogleCalendarTools),
+  );
 });
 
 afterEach(() => {
@@ -49,9 +52,8 @@ afterEach(() => {
 });
 
 describe("google calendar tools", () => {
-  it("registers exactly the three read tools", () => {
+  it("registers exactly the three read tools for a token whose scopes are unknown", () => {
     expect(tools.names()).toEqual(["gcal_calendar_list", "gcal_event_get", "gcal_event_list"]);
-    expect([...GOOGLE_CALENDAR_TOOL_NAMES].sort()).toEqual(tools.names());
   });
 
   it("calendar list is one GET on the user's list, with the bearer token", async () => {

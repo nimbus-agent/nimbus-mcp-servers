@@ -2,14 +2,14 @@
   "id": "com.nimbus.google-calendar",
   "displayName": "Google Calendar",
   "version": "0.1.0",
-  "description": "Google Calendar API v3 connector (calendars and events). Read-only.",
+  "description": "Google Calendar API v3 connector (calendars and events): reads, and event create, update and delete for a token with a calendar write scope.",
   "author": "Nimbus",
   "entrypoint": "dist/server.js",
   "runtime": "bun",
   "permissions": {
     "network": ["www.googleapis.com"]
   },
-  "hitlRequired": [],
+  "hitlRequired": ["write", "delete"],
   "syncInterval": 900,
   "minNimbusVersion": "0.2.0"
 }

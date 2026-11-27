@@ -93,7 +93,9 @@ Scope kinds are per connector. `discord` accepts `channel:<channelId>`, the 17 t
 of the channel `discord_message_post` writes to, e.g. `NIMBUS_MCP_DISCORD_WRITE_SCOPE=channel:123456789012345678`.
 `launchdarkly` accepts `flag:<projectKey>/<environmentKey>/<flagKey>` and `flagsmith` accepts
 `flag:<environmentKey>/<featureId>` (the numeric feature id), so one flag in one environment is one
-term. `jira` also accepts `alert:<alertId>` for its Operations alerts, by exact alert id only. `iac`
+term. `google-calendar` accepts `calendar:<calendarId>`, with `calendar:primary` for a write that names no
+calendar; its writes also register only for a token whose `GOOGLE_OAUTH_SCOPES` holds a calendar write
+scope (see its README). `jira` also accepts `alert:<alertId>` for its Operations alerts, by exact alert id only. `iac`
 accepts `dir:<workingDirectory>` (Terraform) and `stack:<stackName>` (CloudFormation), and
 `kubernetes` accepts `namespace:<namespace>`; the prepare tools that come before their writes
 (`iac_terraform_plan`, `iac_cloudformation_changeset_create`, `k8s_manifest_plan` and the others in
@@ -103,7 +105,7 @@ Do not derive it from a connector's tool names or action types — `monte-carlo`
 `montecarlo_*` and `montecarlo.*`. A variable under any other name is ignored, not rejected.
 
 **Redirects.** A credential header is never sent to another origin. The `gitlab` connector, the flag
-connectors, the JSM Operations tools, `bitbucket`, `jira`, `linear` and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
+connectors, the JSM Operations tools, `bitbucket`, `google-calendar`, `jira`, `linear` and the deploy and mobile-release connectors (`vercel`, `netlify`, `bitrise`, `codemagic`, `testflight`, `firebase`) refuse any redirect on a write. A read follows at most 3
 redirects, only to the same origin or the same host's http -> https upgrade (never https -> http).
 A plain-http `GITLAB_API_BASE_URL` is accepted for a self-hosted server; the token is then sent in
 clear.
