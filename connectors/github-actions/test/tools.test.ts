@@ -189,6 +189,18 @@ describe("github-actions writes (gateway mode)", () => {
     expect(JSON.parse(fetchStub.only.body ?? "null")).toEqual({ ref: "main", inputs: {} });
   });
 
+  it("gha_run_trigger refuses a '.' or '..' workflow id, before any request", async () => {
+    // encodeURIComponent leaves both alone and the URL parser collapses them out of
+    // /actions/workflows/<id>/dispatches, turning the POST into one on another endpoint.
+    reply("");
+    for (const workflowId of ["..", "."]) {
+      await expect(tools.call("gha_run_trigger", { ...REPO, workflowId })).rejects.toThrow(
+        "a workflow id or file name is not '.' or '..'",
+      );
+    }
+    expect(fetchStub.calls).toEqual([]);
+  });
+
   it("gha_run_trigger sends the ref and inputs it is given", async () => {
     reply("");
     await tools.call("gha_run_trigger", {

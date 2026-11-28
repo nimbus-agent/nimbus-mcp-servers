@@ -613,7 +613,16 @@ export function registerJiraTools(
   );
 
   const jiraEpicListSchema = z.object({
-    projectKey: z.string().min(1),
+    // Spliced into `project = <key> AND issuetype = Epic`, so it must be a key (a letter, then
+    // letters, digits or '_') or a numeric project id, never JQL that widens the search. A
+    // refine, so the listed schema is unchanged.
+    projectKey: z
+      .string()
+      .min(1)
+      .refine((key) => /^(?:[A-Za-z][A-Za-z0-9_]{0,254}|[0-9]{1,18})$/.test(key), {
+        message:
+          "a Jira project key is a letter then letters, digits or '_', or a numeric project id",
+      }),
     maxResults: z.number().int().min(1).max(100).optional(),
   });
 
