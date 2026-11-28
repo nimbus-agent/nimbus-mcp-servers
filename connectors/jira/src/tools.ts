@@ -391,7 +391,30 @@ export function registerJiraTools(
     "jira_issue_update",
     {
       mutates: "jira.issue.update",
-      recoverable: true,
+      // The update overwrites summary and/or description and keeps no copy, so both are read first
+      // (the description as Jira's ADF document, untouched): the audit record is what restores them.
+      recoverable: false,
+      capturePreState: async (parsed) => {
+        const { baseUrl, email, token } = requireJiraConfig();
+        const key = encodeURIComponent(parsed.issueKey);
+        const res = await jiraFetch(
+          baseUrl,
+          email,
+          token,
+          `/rest/api/3/issue/${key}?fields=summary,description`,
+        );
+        if (!res.ok) {
+          throw new Error(`Jira ${String(res.status)}: ${res.text.slice(0, 200)}`);
+        }
+        const json = JSON.parse(res.text) as {
+          fields?: { summary?: string; description?: unknown };
+        };
+        return {
+          key: parsed.issueKey,
+          summary: json.fields?.summary,
+          description: json.fields?.description ?? null,
+        };
+      },
       scopeTargetOf: (p) => ({ kind: "issue", value: p.issueKey }),
     },
     "Update summary and/or description on a Jira issue (PUT /rest/api/3/issue/{key}).",

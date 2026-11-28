@@ -4,6 +4,7 @@ import {
   outgoingMail,
   registerEmailConnectorTools,
 } from "../../../shared/imap-tool-kit.ts";
+import { recipientScopeTargets } from "../../../shared/mail-recipients.ts";
 import { mcpJsonResult } from "../../../shared/mcp-tool-kit.ts";
 import {
   type DraftAppender,
@@ -80,6 +81,7 @@ export function registerAppleTools(
       // A draft is editable and deletable after the fact, so it is recoverable.
       recoverable: true,
       scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
+      scopeTargetsOf: recipientScopeTargets,
     },
     "Save a new email to the iCloud Mail Drafts folder via IMAP APPEND.",
     // A draft takes exactly what a send does.

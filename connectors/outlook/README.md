@@ -66,11 +66,12 @@ is the gate. The standalone scope variable is `NIMBUS_MCP_OUTLOOK_WRITE_SCOPE`, 
 `recipient` and `calendar`. A term is `kind:value` and matches exactly, with no prefix matching.
 
 - `outlook_mail_send` sends a mail that cannot be recalled, so it is registered as not recoverable;
-  the recipient and subject are recorded first. Scope: `recipient:<to>`, matched against the whole
-  `to` string as given. Addresses in `cc` are not scope-checked.
+  the recipient and subject are recorded first. Scope: one `recipient:<address>` term per address
+  in `to` and `cc`; every address must be in scope (a display name is dropped, the address inside
+  `<>` is checked).
 - `outlook_draft_create` writes only to Drafts and sends nothing, so it is registered as
-  recoverable. Scope: `recipient:<to>`. Addresses in `cc` and `bcc` are not scope-checked, which is
-  acceptable because the tool never sends the draft, but review a draft before you send it.
+  recoverable. Scope: one `recipient:<address>` term per address in `to`, `cc` and `bcc`;
+  every address must be in scope (a display name is dropped, the address inside `<>` is checked).
 - `outlook_calendar_create` is registered as recoverable. Scope: `calendar:<subject>`, matched
   against the event's subject.
 - `outlook_calendar_delete` is registered as not recoverable; the `eventId` is recorded first.

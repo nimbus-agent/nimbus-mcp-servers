@@ -274,3 +274,53 @@ describe("gmail_draft_send standalone: an unrecoverable send records its draft",
     expect(run?.chain).toEqual({ ok: true, count: 3 });
   });
 });
+
+describe("gmail subject header encoding", () => {
+  const WORD = /^=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=$/;
+
+  /** The folded Subject header of a sent message, split into its folded lines. */
+  async function sentSubjectLines(tool: string, subject: string): Promise<string[]> {
+    const req = await request(tool, { to: "you@example.test", subject, body: "b" });
+    const parsed = JSON.parse(req.body ?? "null") as { raw?: string; message?: { raw: string } };
+    const msg = rfc822(parsed.raw ?? parsed.message?.raw);
+    const header = msg.split("\r\n\r\n")[0] ?? "";
+    const at = header.indexOf("Subject: ");
+    const rest = header.slice(at + "Subject: ".length);
+    const lines = rest.split("\r\n");
+    // Stop at the first line that is not a continuation (the Content-Type header).
+    const end = lines.findIndex((l, i) => i > 0 && !l.startsWith(" "));
+    return (end === -1 ? lines : lines.slice(0, end)).map((l) => l.trim());
+  }
+
+  function decode(lines: string[]): string {
+    return lines
+      .map((w) => Buffer.from(WORD.exec(w)?.[1] ?? "", "base64").toString("utf-8"))
+      .join("");
+  }
+
+  for (const tool of ["gmail_message_send", "gmail_draft_create"]) {
+    it(`${tool}: an ASCII subject is left as it was`, async () => {
+      expect(await sentSubjectLines(tool, "Quarterly plan")).toEqual(["Quarterly plan"]);
+    });
+
+    it(`${tool}: accents, emoji and CJK are encoded and decode back`, async () => {
+      const subject = "Café résumé 🎉 日本語";
+      const lines = await sentSubjectLines(tool, subject);
+      expect(lines.every((l) => WORD.test(l))).toBe(true);
+      expect(decode(lines)).toBe(subject);
+    });
+
+    it(`${tool}: a long subject is split into encoded-words of at most 75 characters`, async () => {
+      const subject = "日本語のテキスト🎉é".repeat(12);
+      const lines = await sentSubjectLines(tool, subject);
+      expect(lines.length).toBeGreaterThan(1);
+      for (const l of lines) {
+        expect(l.length).toBeLessThanOrEqual(75);
+        const bytes = Buffer.from(WORD.exec(l)?.[1] ?? "", "base64");
+        // A word that cut a character in half would not survive a UTF-8 round trip.
+        expect(Buffer.from(bytes.toString("utf-8"), "utf-8").equals(bytes)).toBe(true);
+      }
+      expect(decode(lines)).toBe(subject);
+    });
+  }
+});
