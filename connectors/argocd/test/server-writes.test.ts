@@ -135,7 +135,9 @@ describe("argocd write scope (standalone mode)", () => {
           ]);
         },
       );
+      // The pre-state read comes first, and only for the call that is in scope.
       expect(http.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+        "GET https://argo.example.com/api/v1/applications/web",
         "POST https://argo.example.com/api/v1/applications/web/sync",
       ]);
     } finally {

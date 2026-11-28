@@ -1177,7 +1177,10 @@ export function registerIacTools(
     "iac_pulumi_up",
     {
       mutates: "iac.pulumi.up",
-      recoverable: true,
+      // An apply changes real infrastructure, so the flag says it cannot be undone. The tool is
+      // refused before every run, so the capture never executes; it records the directory anyway.
+      recoverable: false,
+      capturePreState: (p) => Promise.resolve({ workingDirectory: p.workingDirectory }),
       scopeTargetOf: dirScope,
       refuseBefore: () => PULUMI_UP_REFUSAL,
     },

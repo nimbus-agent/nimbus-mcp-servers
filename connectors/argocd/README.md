@@ -66,14 +66,16 @@ Gateway HITL approval (`hitlRequired` is `["write"]`). The destructive
 
 ### The writes
 
-Both write tools go through the consent registrar and are declared `recoverable: true`, so neither
-has a `capturePreState`. Outside the gateway each is gated by owner consent, a write-scope
+Both write tools go through the consent registrar and are declared `recoverable: false`. Each reads
+the application once first (`GET /api/v1/applications/{name}`) and records `app`, `revision` (the
+currently synced one), `syncStatus` and `health` as the audit pre-state, `null` for any the
+application lacks. If that read fails the audit records `captureFailed` and the write still runs. Outside the gateway each is gated by owner consent, a write-scope
 allow-list, a mutation budget and an audit record; in the gateway the executor is the gate.
 
 | Tool | Changes | Recoverable | Scope target |
 | --- | --- | --- | --- |
-| `argocd_app_sync` | Requests a sync of one application, with optional `prune` and `revision`. | `true` | `app:<application name>` |
-| `argocd_app_rollback` | Requests a rollback of one application to a deployment history `id`. | `true` | `app:<application name>` |
+| `argocd_app_sync` | Requests a sync of one application, with optional `prune` and `revision`. | `false` | `app:<application name>` |
+| `argocd_app_rollback` | Requests a rollback of one application to a deployment history `id`. | `false` | `app:<application name>` |
 
 Scope them with `NIMBUS_MCP_ARGOCD_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched
 exactly. The only kind is `app`, matched against the `name` argument; an unknown kind fails at
