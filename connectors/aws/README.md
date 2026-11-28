@@ -71,8 +71,9 @@ carries a presigned URL to the deployment package.
 
 All four are registered through `createWriteToolRegistrar` (`shared/consent-kit.ts`). The two EC2 tools
 once went through the read registrar, which offered them standalone with no consent prompt, scope check,
-budget or audit record; they no longer do. All four declare `recoverable: true`, so none captures a
-pre-state. Standalone, each needs owner consent and a target allowed by
+budget or audit record; they no longer do. `aws_lambda_invoke` declares `recoverable: false`, since an
+invocation's side effects cannot be undone, and records the `functionName` as its audit pre-state; the
+other three declare `recoverable: true` and capture none. Standalone, each needs owner consent and a target allowed by
 `NIMBUS_MCP_AWS_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched exactly (no prefix
 match; an empty or unset scope allows nothing, and an unknown kind fails at startup). The kinds are
 `cluster`, `function` and `instance`.

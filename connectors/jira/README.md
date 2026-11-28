@@ -70,7 +70,8 @@ Standalone, they are limited by `NIMBUS_MCP_JIRA_WRITE_SCOPE`, a comma-separated
 | Write | Scope term it needs | Declared recoverable |
 | --- | --- | --- |
 | `jira_issue_create` | `project:<KEY>`, the `projectKey` argument | yes |
-| `jira_issue_update`, `jira_comment_add` | `issue:<KEY>`, the `issueKey` argument | yes |
+| `jira_comment_add` | `issue:<KEY>`, the `issueKey` argument | yes |
+| `jira_issue_update` | `issue:<KEY>` | no: the old summary and description are recorded first, since the update keeps no copy |
 | `jira_issue_transition` | `issue:<KEY>` | no: the status before the move is recorded first, since workflows can be one-way |
 | `jira_issue_assign` | `issue:<KEY>` | no: the previous assignee's account id is recorded first |
 | `jira_ops_alert_acknowledge`, `jira_ops_alert_close` | `alert:<alertId>` (exact id only) | no: the alert's status, acknowledged flag, message and priority are recorded first |
