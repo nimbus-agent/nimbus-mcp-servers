@@ -136,15 +136,15 @@ or empty scope refuses every write.
 | `apple_mail_send` | Sends a new email over iCloud SMTP. | `false`; `capturePreState` records `{to, subject}`, since a sent mail cannot be recalled. | `recipient:<address>` |
 | `apple_mail_draft_create` | Appends a draft to the iCloud Drafts folder over IMAP. | `true`; a draft can be edited or deleted afterwards. | `recipient:<address>` |
 | `apple_calendar_event_create` | Creates an event with a CalDAV PUT. | `true` | `calendar:<name>`; the target is the `calendar` argument, or `default` when it is omitted. |
-| `apple_calendar_event_delete` | Deletes an event with a CalDAV DELETE. | `false`; `capturePreState` records `{href}`, which is all that identifies the event afterwards (`apple_calendar_event_get` reads it first). | `calendar:<href>` |
+| `apple_calendar_event_delete` | Deletes an event with a CalDAV DELETE. | `false`; `capturePreState` records `{href}`, which is all that identifies the event afterwards (`apple_calendar_event_get` reads it first). | `calendar:<name>`; the target is the display name of the calendar the event is in, resolved from the `href` against the calendars the last discovery found (as `apple_calendar_list` or startup does), with no request. An `href` under none of them is refused before any prompt. |
 
 Mail scope: one `recipient:<address>` term per address; every address in `to`, `cc` and `bcc` must
 be in scope (a display name is dropped; the address inside `<>` is what is checked; an entry that is
 not exactly one simple address is checked as written).
 
-Note that the delete's target value is the event `href`, not a calendar name, so a
-`calendar:<name>` term that allows a create does not allow a delete: scope a delete with the exact
-href.
+A create and a delete are scoped the same way, by calendar name, so one `calendar:<name>` term
+allows both. Behaviour change: a delete used to be scoped by the event `href`; an existing
+`calendar:<href>` term no longer matches and must be replaced with the calendar's name.
 
 ### Privacy contract
 

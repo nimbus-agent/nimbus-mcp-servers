@@ -80,6 +80,9 @@ function fakeCalendar(overrides?: Partial<CalDavClient>): {
     listCalendars: async () => [
       { url: "https://caldav.icloud.com/calendars/work", displayName: "Work" },
     ],
+    knownCalendars: () => [
+      { url: "https://caldav.icloud.com/calendars/work", displayName: "Work" },
+    ],
     listEvents: async () => [],
     putEvent: async (_cal, uid, ics) => {
       putCalls.push({ uid, ics });
