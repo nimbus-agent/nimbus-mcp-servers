@@ -31,7 +31,7 @@ describe("prefect never sends its API key across a redirect", () => {
     http = stubFetch({ status: 307, headers: { location: "https://evil.example/steal" } });
     await cloud(async () => {
       await expect(tools.call("prefect_list", {})).rejects.toThrow(
-        "Prefect answered a POST with a redirect (307)",
+        "Prefect answered a POST with a redirect (307); refused (a read: nothing was written)",
       );
     });
     expect(http.calls.map((c) => c.url)).toEqual([`${API}/deployments/filter`]);

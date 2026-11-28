@@ -33,7 +33,8 @@ async function prefectListDeployments(offset: number, limit: number): Promise<un
       headers: { ...authHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify({ limit, offset, sort: "CREATED_DESC" }),
     },
-    { requireSecureBase: false },
+    // A filter POST is a read: a refused redirect says nothing was written.
+    { requireSecureBase: false, read: true },
   );
   const text = await res.text();
   if (!res.ok) {

@@ -18,11 +18,17 @@ const snykGet = createJsonGetter({
 });
 
 async function snykPost(path: string, body: unknown): Promise<unknown> {
-  const res = await guardedFetch("Snyk", `${SNYK_API}${path}`, {
-    method: "POST",
-    headers: { ...authHeader(), "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  // Every Snyk POST here is a query (this connector has no writes), so a refused redirect says so.
+  const res = await guardedFetch(
+    "Snyk",
+    `${SNYK_API}${path}`,
+    {
+      method: "POST",
+      headers: { ...authHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    { read: true },
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Snyk ${String(res.status)}: ${text.slice(0, 400)}`);

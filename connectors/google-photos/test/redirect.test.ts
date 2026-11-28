@@ -37,7 +37,7 @@ describe("google photos never sends its token across a redirect", () => {
   it("the mediaItems:search POST refuses a 3xx instead of replaying it", async () => {
     stub = stubFetch({ status: 307, headers: { location: SEARCH_URL } });
     await expect(tools.call("gphotos_media_list", {})).rejects.toThrow(
-      "Google Photos answered a POST with a redirect (307)",
+      "Google Photos answered a POST with a redirect (307); refused (a read: nothing was written)",
     );
     expect(stub.calls.map((c) => c.url)).toEqual([SEARCH_URL]);
   });

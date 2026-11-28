@@ -83,6 +83,25 @@ describe("guardedFetch redirects", () => {
     expect(t.calls).toHaveLength(MAX_REDIRECT_HOPS + 1);
   });
 
+  it("a POST the caller marks as a read is refused the same way, and says nothing was written", async () => {
+    const t = scripted([redirect(302, "/moved")]);
+    let message = "";
+    try {
+      await guardedFetch(
+        "Svc",
+        "https://api.example.com/search",
+        { method: "POST" },
+        { fetch: t.fetch, read: true },
+      );
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(message).toBe(
+      "Svc answered a POST with a redirect (302); refused (a read: nothing was written)",
+    );
+    expect(t.calls).toHaveLength(1);
+  });
+
   it("refuses any redirect on a POST without a second request", async () => {
     const t = scripted([redirect(301, "/moved")]);
     await expect(
