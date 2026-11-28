@@ -8,6 +8,7 @@
  */
 
 import { optionalEnv } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { requireProcessEnv } from "../../../shared/mcp-tool-kit.ts";
 import {
   asRecord,
@@ -31,6 +32,9 @@ import {
 } from "./jmap-core.ts";
 
 const DEFAULT_BASE_URL = "https://api.fastmail.com";
+
+/** FASTMAIL_BASE_URL may name a self-hosted JMAP server over plain http, as it always could. */
+const GUARD_OPTIONS = { requireSecureBase: false } as const;
 
 /** Parse a comma-separated address list (`Name <a@x>, b@y`) → JMAP address objects. */
 function parseAddressList(raw: string): Array<{ email: string }> {
@@ -71,7 +75,12 @@ class FetchJmapClient implements JmapClient {
     if (this.session !== null) {
       return this.session;
     }
-    const res = await fetch(`${this.baseUrl}/jmap/session`, { headers: this.headers() });
+    const res = await guardedFetch(
+      "Fastmail",
+      `${this.baseUrl}/jmap/session`,
+      { headers: this.headers() },
+      GUARD_OPTIONS,
+    );
     if (!res.ok) {
       throw new Error(`JMAP session failed: HTTP ${String(res.status)}`);
     }
@@ -91,11 +100,12 @@ class FetchJmapClient implements JmapClient {
 
   private async api(body: unknown): Promise<unknown> {
     const session = await this.ensureSession();
-    const res = await fetch(session.apiUrl, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(body),
-    });
+    const res = await guardedFetch(
+      "Fastmail",
+      session.apiUrl,
+      { method: "POST", headers: this.headers(), body: JSON.stringify(body) },
+      GUARD_OPTIONS,
+    );
     if (!res.ok) {
       throw new Error(`JMAP api failed: HTTP ${String(res.status)}`);
     }

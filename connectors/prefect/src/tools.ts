@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createJsonGetter, requiredBaseUrl } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -23,11 +24,17 @@ function authHeaders(): Record<string, string> {
 const prefectGet = createJsonGetter({ base: apiBase, label: "Prefect", headers: authHeaders });
 
 async function prefectListDeployments(offset: number, limit: number): Promise<unknown> {
-  const res = await fetch(`${apiBase()}/deployments/filter`, {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ limit, offset, sort: "CREATED_DESC" }),
-  });
+  // The base comes from PREFECT_API_URL, and a self-hosted server has always been allowed plain http.
+  const res = await guardedFetch(
+    "Prefect",
+    `${apiBase()}/deployments/filter`,
+    {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ limit, offset, sort: "CREATED_DESC" }),
+    },
+    { requireSecureBase: false },
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Prefect ${String(res.status)}: ${text.slice(0, 400)}`);

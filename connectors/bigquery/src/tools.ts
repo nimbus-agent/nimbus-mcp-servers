@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { asArray, gcloudEnv, isRecord, strField } from "../../../shared/cli-json-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import { nimbusSpawn } from "../../../shared/nimbus-spawn.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -40,7 +41,7 @@ async function accessToken(): Promise<string> {
 }
 
 async function bqGet(token: string, path: string): Promise<unknown> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await guardedFetch("BigQuery", `${BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
   });
   const text = await res.text();

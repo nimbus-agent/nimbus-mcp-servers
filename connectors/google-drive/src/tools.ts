@@ -5,6 +5,7 @@ import {
   createWriteToolRegistrar,
   type WriteToolConfig,
 } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -12,7 +13,13 @@ import {
   requireProcessEnv,
   type ZodObjectSchema,
 } from "../../../shared/mcp-tool-kit.ts";
+import { fetchWithSignedHandoff } from "../../../shared/signed-download.ts";
 import { escapeDriveQueryLiteral } from "./drive-query.ts";
+
+/** Every Drive API call: a redirect never carries the token to another origin, and each hop times out. */
+function driveFetch(url: string, init: RequestInit): Promise<Response> {
+  return guardedFetch("Google Drive", url, init);
+}
 
 const METADATA_FIELDS =
   "id, name, mimeType, description, starred, trashed, parents, webViewLink, webContentLink, size, createdTime, modifiedTime, owners(displayName,emailAddress), shared";
@@ -46,7 +53,7 @@ async function driveListFiles(
   if (pageToken !== undefined && pageToken !== "") {
     params.set("pageToken", pageToken);
   }
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return driveJson(res);
@@ -54,7 +61,7 @@ async function driveListFiles(
 
 async function driveGetFileMetadata(token: string, fileId: string): Promise<unknown> {
   const params = new URLSearchParams({ fields: METADATA_FIELDS });
-  const res = await fetch(
+  const res = await driveFetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?${params.toString()}`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
@@ -89,7 +96,7 @@ async function driveDownloadGoogleAppsExport(
   maxBytes: number,
 ): Promise<{ ok: true; payload: DownloadOk } | { ok: false; message: string }> {
   const exportUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent(exportMime)}`;
-  const res = await fetch(exportUrl, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await driveFetch(exportUrl, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) {
     const body = await res.text();
     return { ok: false, message: `export ${String(res.status)}: ${body.slice(0, 200)}` };
@@ -132,7 +139,12 @@ async function driveDownloadMediaPayload(
   }
 
   const mediaUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`;
-  const res = await fetch(mediaUrl, { headers: { Authorization: `Bearer ${token}` } });
+  // `alt=media` may answer with a 302 to a signed download URL on another Google host. The token
+  // goes to the Drive API only; that URL is fetched without it. (`/export` and the rest stream
+  // from the API itself, so they use the plain guarded fetch.)
+  const res = await fetchWithSignedHandoff("Google Drive", mediaUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!res.ok) {
     const body = await res.text();
     return { ok: false, message: `download ${String(res.status)}: ${body.slice(0, 200)}` };
@@ -189,7 +201,7 @@ async function driveDownloadFile(
   const params = new URLSearchParams({
     fields: "id,name,mimeType,size,webViewLink",
   });
-  const metaRes = await fetch(
+  const metaRes = await driveFetch(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?${params.toString()}`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
@@ -234,7 +246,7 @@ async function drivePatchJson(
 ): Promise<unknown> {
   const path = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
   const url = query !== undefined && [...query].length > 0 ? `${path}?${query.toString()}` : path;
-  const res = await fetch(url, {
+  const res = await driveFetch(url, {
     method: "PATCH",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -249,7 +261,7 @@ async function drivePostCreateMetadata(
   token: string,
   metadata: Record<string, unknown>,
 ): Promise<unknown> {
-  const res = await fetch("https://www.googleapis.com/drive/v3/files", {
+  const res = await driveFetch("https://www.googleapis.com/drive/v3/files", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -280,20 +292,23 @@ async function driveMultipartCreate(
     mediaBody,
     `--${boundary}--`,
   ].join(crlf);
-  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": `multipart/related; boundary=${boundary}`,
+  const res = await driveFetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
     },
-    body,
-  });
+  );
   return driveJson(res);
 }
 
 async function driveListParents(token: string, fileId: string): Promise<string[]> {
   const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=parents`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await driveFetch(url, { headers: { Authorization: `Bearer ${token}` } });
   const json = await driveJson(res);
   if (json === null || typeof json !== "object" || Array.isArray(json)) {
     return [];

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createJsonGetter, envAuthHeaders } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { matchesResult } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -17,7 +18,7 @@ const snykGet = createJsonGetter({
 });
 
 async function snykPost(path: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`${SNYK_API}${path}`, {
+  const res = await guardedFetch("Snyk", `${SNYK_API}${path}`, {
     method: "POST",
     headers: { ...authHeader(), "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
 import { requiredBaseUrl, requiredEnv } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -10,17 +11,26 @@ function apiBase(): string {
   return requiredBaseUrl("SUPERSET_URL");
 }
 
+/** SUPERSET_URL names a self-hosted server, which has always been allowed plain http. */
+const SELF_HOSTED = { requireSecureBase: false } as const;
+
 /** Superset issues its own JWT from a username/password POST, not OAuth. */
 const login = createAccessTokenCache({
   label: "Superset login",
   exchange: async () => {
     const username = requiredEnv("SUPERSET_USERNAME");
     const password = requiredEnv("SUPERSET_PASSWORD");
-    const res = await fetch(`${apiBase()}/api/v1/security/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ username, password, provider: "db", refresh: true }),
-    });
+    // A 3xx on this POST is refused: the password must never be replayed to a redirect target.
+    const res = await guardedFetch(
+      "Superset",
+      `${apiBase()}/api/v1/security/login`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ username, password, provider: "db", refresh: true }),
+      },
+      SELF_HOSTED,
+    );
     return { ok: res.ok, status: res.status, text: await res.text() };
   },
 });
@@ -32,9 +42,12 @@ export function __resetSupersetLoginForTests(): void {
 
 async function supersetGet(path: string): Promise<unknown> {
   const token = await login();
-  const res = await fetch(`${apiBase()}${path}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-  });
+  const res = await guardedFetch(
+    "Superset",
+    `${apiBase()}${path}`,
+    { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } },
+    SELF_HOSTED,
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Superset ${String(res.status)}: ${text.slice(0, 400)}`);

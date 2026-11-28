@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
 import { optionalEnv, requiredEnv } from "../../../shared/env-json-api.ts";
 import { postGraphql } from "../../../shared/graphql-json.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -30,11 +31,17 @@ const getToken = createAccessTokenCache({
       client_secret: requiredEnv("WIZ_CLIENT_SECRET"),
       audience: "wiz-api",
     });
-    const res = await fetch(authUrl(), {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
+    // A 3xx on this POST is refused: the client secret must never be replayed to a redirect target.
+    const res = await guardedFetch(
+      "Wiz",
+      authUrl(),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      },
+      { requireSecureBase: false },
+    );
     return { ok: res.ok, status: res.status, text: await res.text() };
   },
 });

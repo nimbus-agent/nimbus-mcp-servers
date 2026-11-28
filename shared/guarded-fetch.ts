@@ -93,15 +93,20 @@ function resolveNext(label: string, location: string, current: URL): URL {
  * Never https -> http; anything else is refused and nothing is sent there.
  */
 function assertSameOriginOrUpgrade(label: string, current: URL, next: URL): void {
+  if (!isSameOriginOrUpgrade(current, next)) {
+    throw new Error(`${label} redirected to another origin; refused`);
+  }
+}
+
+/** True when `next` is `current`'s origin, or the same host's http -> https upgrade. */
+export function isSameOriginOrUpgrade(current: URL, next: URL): boolean {
   const sameOrigin = next.origin === current.origin;
   const httpsUpgrade =
     current.protocol === "http:" &&
     next.protocol === "https:" &&
     next.hostname === current.hostname &&
     next.port === current.port;
-  if (!sameOrigin && !httpsUpgrade) {
-    throw new Error(`${label} redirected to another origin; refused`);
-  }
+  return sameOrigin || httpsUpgrade;
 }
 
 /**

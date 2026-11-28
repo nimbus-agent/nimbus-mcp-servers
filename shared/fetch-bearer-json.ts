@@ -15,4 +15,6 @@
  */
 
 export type { BearerJsonFetchResult } from "@nimbus-dev/sdk/connector-kit";
-export { fetchBearerAuthorizedJson, resolveUrlWithBase } from "@nimbus-dev/sdk/connector-kit";
+// `fetchBearerAuthorizedJson` is deliberately NOT re-exported: it follows any redirect (re-sending
+// the Bearer token to whatever `Location` names) and never times out. Use `guardedBearerJson`.
+export { resolveUrlWithBase } from "@nimbus-dev/sdk/connector-kit";
