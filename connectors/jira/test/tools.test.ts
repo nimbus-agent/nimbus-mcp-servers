@@ -616,3 +616,68 @@ describe("jira issue assign (standalone mode)", () => {
     expect(executed?.detail["preState"]).toEqual({ assigneeAccountId: "old-1" });
   });
 });
+
+describe("jira issue update (standalone mode)", () => {
+  let dir: string;
+  let auditLog: string;
+
+  beforeEach(() => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    dir = mkdtempSync(join(tmpdir(), "nimbus-jira-audit-"));
+    auditLog = join(dir, "audit.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function runUpdate(
+    reply: Parameters<typeof serve>[0],
+  ): Promise<{ stub: ReturnType<typeof serve>; preState: unknown }> {
+    let standalone: CapturedTools | undefined;
+    await withEnv(
+      { NIMBUS_MCP_JIRA_WRITE_SCOPE: "issue:ENG-7", NIMBUS_MCP_AUDIT_LOG: auditLog },
+      () => {
+        standalone = captureStandaloneTools(registerJiraTools, { elicitation: true }).tools;
+      },
+    );
+    const stub = serve(reply);
+    await onSite(async () => {
+      await standalone?.call("jira_issue_update", { issueKey: "ENG-7", summary: "New" });
+    });
+    const executed = readFileSync(auditLog, "utf8")
+      .trim()
+      .split(String.fromCharCode(10))
+      .map(
+        (l) =>
+          (JSON.parse(l) as { entry: { outcome: string; detail: Record<string, unknown> } }).entry,
+      )
+      .find((e) => e.outcome === "executed");
+    return { stub, preState: executed?.detail["preState"] };
+  }
+
+  it("records the old summary and description before the PUT, so they can be put back", async () => {
+    const description = { type: "doc", version: 1, content: [] };
+    const { stub, preState } = await runUpdate((req) =>
+      req.method === "GET"
+        ? JSON.stringify({ fields: { summary: "Old", description } })
+        : { status: 204, body: "" },
+    );
+    expect(stub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${SITE}/rest/api/3/issue/ENG-7?fields=summary,description`,
+      `PUT ${SITE}/rest/api/3/issue/ENG-7`,
+    ]);
+    expect(preState).toEqual({ key: "ENG-7", summary: "Old", description });
+  });
+
+  it("records captureFailed when the issue cannot be read, and still updates", async () => {
+    const { stub, preState } = await runUpdate((req) =>
+      req.method === "GET"
+        ? { status: 404, body: "Issue does not exist" }
+        : { status: 204, body: "" },
+    );
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "PUT"]);
+    expect(preState).toEqual({ captureFailed: expect.stringContaining("Jira 404") });
+  });
+});
