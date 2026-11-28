@@ -30,9 +30,12 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   2026-07-28 application (an SDK client has been run; no shipped application has). A gateway-started connector stays on the
   upstream SDK by design. The gateway's roadmap carries the matching row for its own MCP server
   ([Phase 28](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-28--the-agent-door)).
-- [ ] **Audit connector error text.** A tool's thrown message reaches the standalone client
-  verbatim, as it did on the upstream SDK. No one has checked the 100 connectors' error paths for
-  an upstream reply that could carry a path or a token into that text.
+- [x] **Audit connector error text.** *Shipped in 0.23.0.* A tool's thrown message reached the
+  standalone client verbatim. The audit found reply bodies (token endpoints among them), CLI
+  stderr and stdout, and fs errors carrying credentials and local paths into it; every message
+  now passes through `shared/error-text.ts` first, and a CLI's stdout is no longer quoted. What it
+  leaves open is in [SECURITY](./SECURITY.md): a derived credential with no known shape, and the
+  gateway path, which keeps the upstream server.
 - [ ] **Cost connectors.** `vantage` shipped in 0.14.0, read-only. The other platforms named in
   the gateway's *FinOps connectors* row
   ([Phase 10](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-10--the-autonomous-agent))
