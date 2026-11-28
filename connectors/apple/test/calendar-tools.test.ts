@@ -98,6 +98,7 @@ function makeFakeCalDavClient(overrides?: Partial<CalDavClient>): {
 
   const client: CalDavClient = {
     listCalendars: async () => [WORK_CAL, HOME_CAL],
+    knownCalendars: () => [WORK_CAL, HOME_CAL],
     listEvents: async (cal) => {
       if (cal.displayName === "Work") {
         return [
@@ -676,23 +677,30 @@ describe("apple calendar write tools in STANDALONE mode", () => {
   beforeEach(() => {
     resetConnectorModeForTests();
     setConnectorMode("standalone");
-    process.env["NIMBUS_MCP_APPLE_WRITE_SCOPE"] =
-      "calendar:work,calendar:default,calendar:/e/1.ics";
+    process.env["NIMBUS_MCP_APPLE_WRITE_SCOPE"] = "calendar:work,calendar:default,calendar:Work";
   });
   afterEach(() => {
     resetConnectorModeForTests();
     delete process.env["NIMBUS_MCP_APPLE_WRITE_SCOPE"];
   });
 
+  const WORK_EVENT = "https://caldav.icloud.com/calendars/work/e1.ics";
+  let deleted: string[] = [];
+  beforeEach(() => {
+    deleted = [];
+  });
   const client: CalDavClient = {
     listCalendars: async (): Promise<CalendarRef[]> => [],
+    knownCalendars: () => [WORK_CAL],
     listEvents: async () => [],
     putEvent: async () => undefined,
-    deleteEvent: async () => undefined,
+    deleteEvent: async (href: string) => {
+      deleted.push(href);
+    },
   } as unknown as CalDavClient;
 
   /** The calendar tools on the real standalone server, for a client that answers every prompt. */
-  function standalone(accept: boolean) {
+  function standaloneCapture(accept: boolean) {
     return captureStandaloneTools(
       (server: never) =>
         registerAppleCalendarTools(server, { calendar: client, now: () => "20260601T000000Z" }),
@@ -700,8 +708,9 @@ describe("apple calendar write tools in STANDALONE mode", () => {
         elicitation: true,
         ...(accept ? {} : { answer: { action: "decline", content: { confirm: false } } }),
       },
-    ).tools;
+    );
   }
+  const standalone = (accept: boolean) => standaloneCapture(accept).tools;
 
   it("an approved create runs, exercising scopeTargetOf with an explicit calendar", async () => {
     // It reaches the CONNECTOR's own error, not a gate refusal — which is the point: scope
@@ -729,13 +738,45 @@ describe("apple calendar write tools in STANDALONE mode", () => {
   });
 
   it("a DECLINED delete mutates nothing, and capturePreState never runs", async () => {
-    const res = await standalone(false).call("apple_calendar_event_delete", { href: "/e/1.ics" });
+    const res = await standalone(false).call("apple_calendar_event_delete", { href: WORK_EVENT });
     expect(JSON.stringify(res)).toMatch(/not approved/i);
+    expect(deleted).toEqual([]);
   });
 
-  it("an approved delete captures the href as pre-state", async () => {
-    const res = await standalone(true).call("apple_calendar_event_delete", { href: "/e/1.ics" });
-    expect(JSON.stringify(res)).not.toMatch(/not approved/i);
+  it("a delete is scoped by the NAME of the calendar the event is in, as create is", async () => {
+    const { tools, prompts } = standaloneCapture(true);
+    expect(await tools.callJson("apple_calendar_event_delete", { href: WORK_EVENT })).toEqual({
+      deleted: true,
+    });
+    expect(deleted).toEqual([WORK_EVENT]);
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("a calendar:<href> term no longer allows a delete", async () => {
+    process.env["NIMBUS_MCP_APPLE_WRITE_SCOPE"] = `calendar:${WORK_EVENT}`;
+    const { tools, prompts } = standaloneCapture(true);
+    expect(await tools.callJson("apple_calendar_event_delete", { href: WORK_EVENT })).toEqual({
+      ok: false,
+      error: "out of scope: calendar:Work is not in NIMBUS_MCP_APPLE_WRITE_SCOPE",
+    });
+    expect(deleted).toEqual([]);
+    expect(prompts).toEqual([]);
+  });
+
+  it("an href under none of the user's calendars is refused before any prompt", async () => {
+    const { tools, prompts } = standaloneCapture(true);
+    for (const href of [
+      "https://caldav.icloud.com/calendars/work-evil/e1.ics",
+      "https://evil.example/calendars/work/e1.ics",
+      "/e/1.ics",
+    ]) {
+      expect(await tools.callJson("apple_calendar_event_delete", { href })).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("href is not in one of your calendars"),
+      });
+    }
+    expect(deleted).toEqual([]);
+    expect(prompts).toEqual([]);
   });
 });
 

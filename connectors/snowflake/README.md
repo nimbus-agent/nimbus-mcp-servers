@@ -80,7 +80,11 @@ Both go through the consent registrar. Outside the gateway each is gated by owne
 write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
 gate. Scope them with `NIMBUS_MCP_SNOWFLAKE_WRITE_SCOPE`, a comma-separated list of `kind:value`
 terms with exact matching. One kind exists, `object:<fully qualified name>`, matched against the
-`object` argument exactly as the caller wrote it (no case folding or quoting normalisation). An
+`object` argument as Snowflake resolves it: the dotted name is split respecting double quotes, an
+unquoted part is upper-cased, a quoted part keeps its exact case (quotes removed, `""` read as `"`),
+so `db.sch.t`, `DB.SCH.T` and `"DB"."SCH"."T"` all match `object:DB.SCH.T`. A name that does not
+parse is matched as written. Behaviour change: write the term in resolved form; a lower-case term
+such as `object:db.sch.t` no longer matches anything. An
 unset or empty scope refuses every write, and an unknown kind fails at startup. Both tools reject
 an `object` or `tag` that is not a valid identifier before running any statement.
 

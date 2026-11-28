@@ -18,6 +18,7 @@ import { capPreview } from "./apple-mail-core.ts";
 import {
   type CalDavClient,
   type CalendarRef,
+  calendarOwningHref,
   clampInstances,
   selectCalendars,
 } from "./caldav-core.ts";
@@ -165,6 +166,12 @@ export function registerAppleCalendarTools(
   },
 ): void {
   const { calendar, now, config } = options;
+
+  const NOT_IN_YOUR_CALENDARS =
+    "href is not in one of your calendars (apple_calendar_list refreshes the calendars known)";
+  /** The display name of the calendar `href` lies under, per the last discovery, or undefined. */
+  const owningCalendarName = (href: string): string | undefined =>
+    calendarOwningHref(calendar.knownCalendars(), href)?.displayName;
   const maxInstances = config?.maxInstances ?? DEFAULT_MAX_INSTANCES;
   const registerSimpleTool = createRegisterSimpleTool(server);
 
@@ -358,7 +365,12 @@ export function registerAppleCalendarTools(
       // afterwards, so it IS the pre-state.
       recoverable: false,
       capturePreState: (p) => Promise.resolve({ href: p.href }),
-      scopeTargetOf: (p) => ({ kind: "calendar", value: p.href }),
+      // Scoped by the NAME of the calendar the event is in, as create is. The scope check is
+      // synchronous and runs before the prompt, so the calendar is read from the client's
+      // discovery cache (no request); an href under none of them is refused before any prompt.
+      scopeTargetOf: (p) => ({ kind: "calendar", value: owningCalendarName(p.href) ?? p.href }),
+      refuseBefore: (p) =>
+        owningCalendarName(p.href) === undefined ? NOT_IN_YOUR_CALENDARS : undefined,
     },
     "Delete an event from iCloud Calendar via CalDAV DELETE by href.",
     deleteArgs,

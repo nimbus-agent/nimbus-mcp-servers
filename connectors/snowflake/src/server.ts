@@ -75,6 +75,47 @@ function storedName(part: string): string {
   return part.startsWith('"') ? part.slice(1, -1) : part.toUpperCase();
 }
 
+/**
+ * The write-scope value of an object name: the name as Snowflake resolves it. The dotted name is
+ * split respecting double quotes; an unquoted part is upper-cased, a quoted one keeps its exact
+ * case with its quotes removed and `""` read as `"`; the parts are joined with `.`. A name that
+ * does not parse is returned as written, so it matches only a term that spells it that way.
+ */
+export function scopeObjectName(name: string): string {
+  const parts: string[] = [];
+  let i = 0;
+  for (;;) {
+    let part = "";
+    if (name[i] === '"') {
+      i++;
+      for (;;) {
+        const ch = name[i];
+        if (ch === undefined) return name; // unterminated quote
+        i++;
+        if (ch !== '"') {
+          part += ch;
+        } else if (name[i] === '"') {
+          part += '"';
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (part === "") return name;
+    } else {
+      const start = i;
+      while (i < name.length && name[i] !== "." && name[i] !== '"') i++;
+      const raw = name.slice(start, i);
+      if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(raw)) return name;
+      part = raw.toUpperCase();
+    }
+    parts.push(part);
+    if (i >= name.length) return parts.join(".");
+    if (name[i] !== ".") return name;
+    i++;
+  }
+}
+
 const TABLES_SQL =
   "SELECT table_catalog AS database_name, table_schema AS schema_name, table_name, " +
   "row_count, last_altered FROM information_schema.tables WHERE table_schema <> 'INFORMATION_SCHEMA'";
@@ -417,7 +458,7 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
     {
       mutates: "snowflake.tag.set",
       recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "object", value: p.object }),
+      scopeTargetOf: (p) => ({ kind: "object", value: scopeObjectName(p.object) }),
     },
     "Set or unset a governance TAG on a table. `ALTER TABLE <object> SET TAG <tag> = '<value>'`; omit `value` to UNSET.",
     z.object({
@@ -442,7 +483,7 @@ export function registerSnowflakeTools(reg: ZodToolRegistrar, server: unknown): 
     {
       mutates: "snowflake.comment.set",
       recoverable: true,
-      scopeTargetOf: (p) => ({ kind: "object", value: p.object }),
+      scopeTargetOf: (p) => ({ kind: "object", value: scopeObjectName(p.object) }),
     },
     "Set a COMMENT on a table. `COMMENT ON TABLE <object> IS '<comment>'`.",
     z.object({ object: z.string().min(1), comment: z.string() }),
