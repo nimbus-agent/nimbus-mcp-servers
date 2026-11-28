@@ -68,16 +68,38 @@ export function optionalEnv(name: string, fallback: string): string {
 }
 
 /**
- * A required base URL from the environment, with trailing slashes stripped so
- * `${base}${path}` cannot produce a double slash.
+ * `value` of variable `name`, refused when it is a URL with userinfo (`https://user:pass@host`).
+ * Credentials in a base URL ride along into every request line and every library error that
+ * quotes it; each connector has its own credential variables for them. The message names the
+ * variable, never the value. A value that does not parse as a URL is left to fail where it is
+ * used, as it did before this check.
  */
-export function requiredBaseUrl(name: string): string {
-  return stripTrailingSlashes(requiredEnv(name));
+function withoutUserinfo(name: string, value: string): string {
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(value);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed !== undefined && (parsed.username !== "" || parsed.password !== "")) {
+    throw new Error(
+      `${name} must not carry credentials; set them in the connector's credential variables instead`,
+    );
+  }
+  return value;
 }
 
-/** An optional base URL from the environment, trailing slashes stripped. */
+/**
+ * A required base URL from the environment, with trailing slashes stripped so
+ * `${base}${path}` cannot produce a double slash. A URL carrying credentials is refused.
+ */
+export function requiredBaseUrl(name: string): string {
+  return stripTrailingSlashes(withoutUserinfo(name, requiredEnv(name)));
+}
+
+/** An optional base URL from the environment, trailing slashes stripped, credentials refused. */
 export function optionalBaseUrl(name: string, fallback: string): string {
-  return stripTrailingSlashes(optionalEnv(name, fallback));
+  return stripTrailingSlashes(withoutUserinfo(name, optionalEnv(name, fallback)));
 }
 
 /** Builds the request headers. Called per request, so it reads env at call time. */

@@ -86,6 +86,35 @@ describe("requiredBaseUrl / optionalBaseUrl", () => {
   it("throws when a required base URL is unset", () => {
     expect(() => requiredBaseUrl(BASE_ENV)).toThrow(`${BASE_ENV} is not set`);
   });
+
+  it("refuses a base URL that carries credentials, naming the variable and not the value", () => {
+    for (const value of ["https://u:tok3n-value@x.test", "https://tok3n-value@x.test/api/"]) {
+      process.env[BASE_ENV] = value;
+      for (const read of [
+        () => requiredBaseUrl(BASE_ENV),
+        () => optionalBaseUrl(BASE_ENV, "https://fallback.test"),
+      ]) {
+        let message = "";
+        try {
+          read();
+        } catch (e) {
+          message = e instanceof Error ? e.message : String(e);
+        }
+        expect(message).toBe(
+          `${BASE_ENV} must not carry credentials; set them in the connector's credential variables instead`,
+        );
+        expect(message).not.toContain("tok3n-value");
+      }
+    }
+  });
+
+  it("keeps accepting a plain base URL, and a value that is not a URL at all", () => {
+    // Not a URL: left to fail where it is used, as before. Only userinfo is refused here.
+    process.env[BASE_ENV] = "jenkins.internal:8080/";
+    expect(requiredBaseUrl(BASE_ENV)).toBe("jenkins.internal:8080");
+    process.env[BASE_ENV] = "http://jenkins.internal:8080/ci/";
+    expect(requiredBaseUrl(BASE_ENV)).toBe("http://jenkins.internal:8080/ci");
+  });
 });
 
 describe("envAuthHeaders", () => {
