@@ -67,6 +67,28 @@ describe("circleci reads", () => {
     expect(req.url).toBe(`${API}/project/gh/acme%20co/api/pipeline?page-token=next+page`);
   });
 
+  it("refuses a slug with a '.' or '..' segment on every slug tool, reads and writes, before any request", async () => {
+    // encodeURIComponent leaves '.' and '..' alone and the URL parser collapses them, so
+    // 'gh/../../me' would have left /project/<slug>/ for another endpoint, with the token.
+    const stub = serve();
+    await withEnv({ CIRCLECI_API_TOKEN: "cci-token" }, async () => {
+      for (const projectSlug of ["gh/../../me", "gh/acme/..", " gh / . / api ", "../x/y"]) {
+        for (const [name, extra] of [
+          ["circleci_pipeline_list", {}],
+          ["circleci_job_artifacts", { jobNumber: 1 }],
+          ["circleci_job_get", { jobNumber: 1 }],
+          ["circleci_pipeline_trigger", {}],
+          ["circleci_job_cancel", { jobNumber: 1 }],
+        ] as const) {
+          await expect(tools.call(name, { projectSlug, ...extra })).rejects.toThrow(
+            "a CircleCI project slug has no '.' or '..' segment",
+          );
+        }
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
   it("addresses a pipeline, its workflows, a workflow's jobs and a job's artifacts", async () => {
     expect((await request("circleci_pipeline_get", { pipelineId: UUID })).url).toBe(
       `${API}/pipeline/${UUID}`,

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { envAuthHeaders, requiredEnv } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -15,9 +16,15 @@ const authHeaders = envAuthHeaders({ env: "GRAFANA_API_TOKEN" });
 
 async function grafanaGet(path: string): Promise<unknown> {
   const pathPart = path.startsWith("/") ? path : `/${path}`;
-  const res = await fetch(`${baseUrl()}${pathPart}`, {
-    headers: authHeaders(),
-  });
+  // The shared redirect policy and timeout: a plain fetch followed any Location, re-sending the
+  // bearer token to whatever host it named. Plain http stays allowed for a local Grafana, as the
+  // shared JSON getter allows it.
+  const res = await guardedFetch(
+    "Grafana",
+    `${baseUrl()}${pathPart}`,
+    { headers: authHeaders() },
+    { requireSecureBase: false },
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Grafana ${String(res.status)}: ${text.slice(0, 400)}`);
