@@ -53,9 +53,11 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
     assignee, Linear labels. *Shipped: the Bitbucket PR comment in 0.18.0, the rest in 0.19.0.*
   - [x] **Google Calendar writes:** create, update, delete. This is the first write on the
     connector, and the gateway must pass the granted scopes at spawn. *Shipped in 0.20.0.*
-  - [ ] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
+  - [x] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
     `tag_database` and `tag_schema`; `iac_terraform_init`; a read of a stack's change sets.
-  - [ ] **Flag connectors:** Unleash and Split, as new connectors with writes.
+    *Shipped in 0.21.0.*
+  - [x] **Flag connectors:** Unleash and Split, as new connectors with writes. *Shipped in
+    0.22.0.*
   - [x] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. *Closed
     2026-11-27: impossible upstream.* Bitbucket Cloud's merge body
     (`pullrequest_merge_parameters`) has only `type`, `message`, `close_source_branch` and
