@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.22.0...connectors-v0.23.0) (2026-11-28)
+
+
+### Features
+
+* scrub credentials and local paths from standalone tool errors ([#119](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/119)) ([11d8460](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/11d8460be6f71d63667d65154dadb720b071c77d))
+
 ## [0.22.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.21.0...connectors-v0.22.0) (2026-11-27)
 
 
