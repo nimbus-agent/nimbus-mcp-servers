@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.1...connectors-v0.23.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* **jenkins:** refuse a 307 or 308 on a write instead of reading it as done ([#132](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/132)) ([10064ad](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/10064ad067ee2bdccda67f84e338e726e9421c9a))
+
 ## [0.23.1](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.0...connectors-v0.23.1) (2026-11-28)
 
 
