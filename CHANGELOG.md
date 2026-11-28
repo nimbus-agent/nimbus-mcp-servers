@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.4](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.3...connectors-v0.23.4) (2026-11-28)
+
+
+### Bug Fixes
+
+* say a refused read sent as a POST wrote nothing; document the 0.23.x scope changes ([#138](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/138)) ([e2cf0b8](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e2cf0b84d042c0b66d75c3e5704b3f70bc53e329))
+
 ## [0.23.3](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.2...connectors-v0.23.3) (2026-11-28)
 
 
