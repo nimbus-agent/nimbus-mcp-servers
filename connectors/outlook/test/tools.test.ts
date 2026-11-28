@@ -462,4 +462,28 @@ describe("outlook calendar writes", () => {
     expect(allowed?.answer).toEqual({ ok: true });
     expect(stub.calls).toHaveLength(1);
   });
+
+  it("mail_send delivers to exactly the addresses it checked, a quoted comma included", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = serve({ status: 202, body: "" });
+    let run: ApprovedWrite | undefined;
+    await withEnv(
+      { MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token", MICROSOFT_OAUTH_SCOPES: undefined },
+      async () => {
+        run = await approvedStandaloneWrite(
+          registerOutlookTools,
+          { NIMBUS_MCP_OUTLOOK_WRITE_SCOPE: "recipient:ada@example.com" },
+          "outlook_mail_send",
+          { to: '"Lovelace, Ada" <ada@example.com>', subject: "hi", body: "b" },
+        );
+      },
+    );
+    expect(run?.answer).toEqual({ ok: true });
+    const sent = JSON.parse(stub.only.body ?? "null") as {
+      message: { toRecipients: unknown };
+    };
+    // A plain split on "," handed Graph '"Lovelace' and 'Ada" <ada@example.com>'.
+    expect(sent.message.toRecipients).toEqual([{ emailAddress: { address: "ada@example.com" } }]);
+  });
 });

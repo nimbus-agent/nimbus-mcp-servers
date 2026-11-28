@@ -2,7 +2,7 @@ import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { headerLine } from "../../../shared/header-safe.ts";
 import { mailSendConsent } from "../../../shared/imap-tool-kit.ts";
-import { recipientScopeTargets } from "../../../shared/mail-recipients.ts";
+import { mailAddresses, recipientScopeTargets } from "../../../shared/mail-recipients.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -38,13 +38,13 @@ function graphRequest(
   return makeRestFetcher({ apiBase: GRAPH, token })(pathOrUrl, init);
 }
 
-/** `a@x, ,b@y` as Graph recipients, empty entries dropped. */
+/**
+ * `a@x, ,b@y` as Graph recipients, empty entries dropped. Split by the same parser the write
+ * scope checks with (`mailAddresses`), so Graph is handed exactly the addresses that were checked:
+ * a plain split on "," cut `"Lovelace, Ada" <ada@x>` in two.
+ */
 function graphRecipients(list: string): { emailAddress: { address: string } }[] {
-  return list
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((address) => ({ emailAddress: { address } }));
+  return mailAddresses(list).map((address) => ({ emailAddress: { address } }));
 }
 
 /** What `outlook_mail_send` and `outlook_draft_create` both build the message from. */

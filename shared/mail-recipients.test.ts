@@ -47,6 +47,32 @@ describe("recipientScopeTargets", () => {
     ]);
   });
 
+  test("an entry the parser cannot read is checked as written, never dropped beside a readable one", () => {
+    // A quoted local part is a real address to a mail server; dropping it would let it ride along
+    // with an in-scope recipient.
+    expect(values({ to: 'ada@example.com, "x"@evil.example' })).toEqual([
+      "ada@example.com",
+      '"x"@evil.example',
+    ]);
+    expect(values({ to: "ada@example.com", cc: "bob@example.com; eve@evil.example" })).toEqual([
+      "ada@example.com",
+      "bob@example.com; eve@evil.example",
+    ]);
+    expect(values({ to: "ada@example.com eve@evil.example" })).toEqual([
+      "ada@example.com eve@evil.example",
+    ]);
+    expect(values({ to: "Ada <ada@example.com> <eve@evil.example>" })).toEqual([
+      "Ada <ada@example.com> <eve@evil.example>",
+    ]);
+  });
+
+  test("a comma inside a quoted display name or inside <> does not split the entry", () => {
+    expect(values({ to: '"Lovelace, Ada" <ada@example.com>, bob@example.com' })).toEqual([
+      "ada@example.com",
+      "bob@example.com",
+    ]);
+  });
+
   test("a repeated address is checked once", () => {
     expect(values({ to: "ada@example.com", cc: "ada@example.com" })).toEqual(["ada@example.com"]);
   });
