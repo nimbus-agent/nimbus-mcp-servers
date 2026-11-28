@@ -6,6 +6,7 @@ import {
   type OutgoingMail,
   outgoingMail,
 } from "../../../shared/imap-tool-kit.ts";
+import { recipientScopeTargets } from "../../../shared/mail-recipients.ts";
 import { createRegisterSimpleTool, createZodToolRegistrar } from "../../../shared/mcp-tool-kit.ts";
 import {
   makeRestFetcher,
@@ -204,6 +205,7 @@ export function registerGmailTools(
       mutates: "gmail.draft.create",
       recoverable: true,
       scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
+      scopeTargetsOf: recipientScopeTargets,
     },
     "Create a Gmail draft. Requires Gateway HITL email.draft.create.",
     emailToolSchemas.sendArgs,

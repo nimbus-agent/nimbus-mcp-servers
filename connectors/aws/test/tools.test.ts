@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  approvedStandaloneWrite,
   type CapturedTools,
   captureStandaloneTools,
   captureTools,
@@ -162,6 +163,26 @@ describe("aws_lambda_invoke", () => {
       expectLambdaDirRemoved(stub.calls[0]?.command);
     });
   }
+});
+
+describe("aws_lambda_invoke is not recoverable (standalone mode)", () => {
+  it("audits which function was invoked as the pre-state, adding no CLI call", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = cli({ stdout: "" });
+    const run = await approvedStandaloneWrite(
+      registerAwsTools,
+      { NIMBUS_MCP_AWS_WRITE_SCOPE: "function:fn" },
+      "aws_lambda_invoke",
+      { functionName: "fn" },
+    );
+    trackLambdaDir(stub.calls[0]?.command);
+    expect(stub.calls).toHaveLength(1);
+    expect(run.audit.find((e) => e.outcome === "executed")?.detail["preState"]).toEqual({
+      functionName: "fn",
+    });
+    expect(run.chain.ok).toBe(true);
+  });
 });
 
 describe("aws refuses a value the CLI would load from a file or a URL, before aws runs", () => {

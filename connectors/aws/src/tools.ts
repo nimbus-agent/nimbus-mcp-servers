@@ -382,7 +382,11 @@ export function registerAwsTools(
     "aws_lambda_invoke",
     {
       mutates: "aws.lambda.invoke",
-      recoverable: true,
+      // An invocation can have side effects nothing undoes, and none can be captured beforehand.
+      // What the audit record holds is which function was run. The tool takes no qualifier, and
+      // reading the function's configuration would be a new CLI call, so neither is recorded.
+      recoverable: false,
+      capturePreState: (p) => Promise.resolve({ functionName: p.functionName }),
       scopeTargetOf: (p) => ({ kind: "function", value: p.functionName }),
     },
     "Invoke a Lambda function.",

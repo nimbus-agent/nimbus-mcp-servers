@@ -438,6 +438,54 @@ describe("client-independent controls", () => {
     expect(JSON.stringify(res)).toMatch(/out of scope/i);
   });
 
+  test("with scopeTargetsOf, EVERY target must be in scope, and the first one outside is named, before prompting", async () => {
+    let prompted = 0;
+    let ran = 0;
+    const srv = serverWith(() => {
+      prompted += 1;
+      return Promise.resolve({ action: "accept", content: { confirm: true } });
+    });
+    process.env["NIMBUS_MCP_TEST_WRITE_SCOPE"] = "repo:acme/api,repo:acme/web";
+    process.env["NIMBUS_MCP_WRITE_BUDGET"] = "10";
+    delete process.env["NIMBUS_MCP_AUDIT_LOG"];
+    const reg = createWriteToolRegistrar(srv, kitConfig(srv));
+    reg(
+      "github_multi_write",
+      {
+        mutates: "repo.multi",
+        recoverable: true,
+        // Names the call in the audit log; what scope is checked against is the list below.
+        scopeTargetOf: (a: { repos: string[] }) => ({ kind: "repo", value: a.repos.join(" ") }),
+        scopeTargetsOf: (a: { repos: string[] }) =>
+          a.repos.map((value) => ({ kind: "repo", value })),
+      },
+      "Touch several repos.",
+      z.object({ repos: z.array(z.string()) }),
+      async () => {
+        ran += 1;
+        return ok();
+      },
+    );
+    const cb = srv.captured;
+    if (cb === undefined) throw new Error("tool was not registered");
+
+    const refused = await cb({ repos: ["acme/api", "acme/secret", "acme/other"] });
+    expect(JSON.stringify(refused)).toContain(
+      "out of scope: repo:acme/secret is not in NIMBUS_MCP_TEST_WRITE_SCOPE",
+    );
+    expect(prompted).toBe(0);
+    expect(ran).toBe(0);
+
+    // An empty list is not "nothing to check": a write that names no target is refused.
+    const none = await cb({ repos: [] });
+    expect(JSON.stringify(none)).toContain("out of scope");
+    expect(ran).toBe(0);
+
+    await cb({ repos: ["acme/api", "acme/web"] });
+    expect(prompted).toBe(1);
+    expect(ran).toBe(1);
+  });
+
   test("refuseBefore refuses BEFORE scope, budget and prompt, and is audited as refused", async () => {
     const dir = await mkdtemp(join(tmpdir(), "consent-refuse-before-"));
     const log = join(dir, "audit.jsonl");
