@@ -3,7 +3,6 @@ import {
   type CapturedTools,
   captureTools,
   type FetchStub,
-  type StubReply,
   stubFetch,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
@@ -14,7 +13,7 @@ const BASE = "https://grafana.example.com";
 let tools: CapturedTools;
 let http: FetchStub | undefined;
 
-function serve(reply: StubReply): FetchStub {
+function serve(reply: Parameters<typeof stubFetch>[0]): FetchStub {
   http?.restore();
   http = stubFetch(reply);
   return http;
@@ -67,6 +66,35 @@ describe("grafana tools", () => {
       await tools.call("grafana_alert_list", {});
     });
     expect(stub.only.url).toBe(`${BASE}/sub//api/ruler/grafana/api/v1/rules`);
+  });
+
+  it("refuses a redirect to another origin, so the token never leaves GRAFANA_URL's host", async () => {
+    const stub = serve((req) =>
+      req.url === `${BASE}/api/search?type=dash-db&query=`
+        ? { status: 302, headers: { location: "https://elsewhere.example/api/search" } }
+        : '{"stolen":true}',
+    );
+    await configured(async () => {
+      await expect(tools.call("grafana_dashboard_list", {})).rejects.toThrow(
+        "Grafana redirected to another origin; refused",
+      );
+    });
+    expect(stub.calls.map((c) => c.url)).toEqual([`${BASE}/api/search?type=dash-db&query=`]);
+    // Each hop is asked for by hand: the runtime never follows a Location on its own.
+    expect(stub.calls[0]?.redirect).toBe("manual");
+  });
+
+  it("still follows a same-origin redirect", async () => {
+    const stub = serve((req) =>
+      req.url === `${BASE}/api/ruler/grafana/api/v1/rules`
+        ? { status: 301, headers: { location: `${BASE}/grafana/api/ruler/grafana/api/v1/rules` } }
+        : '{"ok":1}',
+    );
+    await configured(async () => {
+      expect(await tools.callJson("grafana_alert_list", {})).toEqual({ ok: 1 });
+    });
+    expect(stub.calls).toHaveLength(2);
+    expect(stub.calls[1]?.headers["authorization"]).toBe("Bearer glsa_token");
   });
 
   it("returns a non-JSON answer as raw text rather than failing to parse it", async () => {
