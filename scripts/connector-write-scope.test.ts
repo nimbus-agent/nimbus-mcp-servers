@@ -172,7 +172,17 @@ const WRITES: Readonly<
         client: UNREACHABLE,
         mailer: UNREACHABLE,
         draftAppender: UNREACHABLE,
-        calendar: UNREACHABLE,
+        // Only the discovery cache a delete's scope target reads is reachable; any request is not.
+        calendar: {
+          knownCalendars: () => [
+            { url: "https://caldav.test/calendars/work", displayName: "Work" },
+          ],
+          listCalendars: UNREACHABLE,
+          listEvents: UNREACHABLE,
+          putEvent: UNREACHABLE,
+          getEvent: UNREACHABLE,
+          deleteEvent: UNREACHABLE,
+        },
         now: () => "20260101T000000Z",
       }),
     cases: [
@@ -193,8 +203,8 @@ const WRITES: Readonly<
       [
         "apple_calendar_event_delete",
         "apple.calendar.event.delete",
-        { href: "/calendars/work/evt-1.ics" },
-        "calendar:/calendars/work/evt-1.ics",
+        { href: "https://caldav.test/calendars/work/evt-1.ics" },
+        "calendar:Work",
       ],
     ],
   },

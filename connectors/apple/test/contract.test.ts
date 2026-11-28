@@ -86,6 +86,9 @@ function fakeCalendar(): CalDavClient {
     listCalendars: async () => [
       { url: "https://caldav.icloud.com/calendars/work", displayName: "Work" },
     ],
+    knownCalendars: () => [
+      { url: "https://caldav.icloud.com/calendars/work", displayName: "Work" },
+    ],
     listEvents: async () => [
       {
         href: "/calendars/work/e1.ics",

@@ -33,6 +33,11 @@ export interface EventWindow {
 
 export interface CalDavClient {
   listCalendars(): Promise<CalendarRef[]>;
+  /**
+   * The calendars the last discovery found, with no request: what a scope check reads, since it
+   * runs synchronously BEFORE the consent prompt. Empty until `listCalendars` has run once.
+   */
+  knownCalendars(): readonly CalendarRef[];
   listEvents(
     cal: CalendarRef,
     window: EventWindow,
@@ -46,6 +51,38 @@ export interface CalDavClient {
   getEvent(href: string): Promise<{ calendar: string; etag: string | null; event: ParsedEvent }>;
   /** Delete by object URL; `href` must lie under one of the account's own calendars. */
   deleteEvent(href: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// calendarOwningHref — which calendar an event href lies under
+// ---------------------------------------------------------------------------
+
+/**
+ * The calendar whose collection URL contains `href`, or undefined. Both are compared as normalised
+ * absolute URLs (dot segments resolved), the calendar's with a trailing slash, so `.../home/` does
+ * not own `.../home-evil/x.ics` or `.../home/../other/x.ics`, and another host owns nothing.
+ */
+export function calendarOwningHref<C extends { readonly url: string }>(
+  calendars: Iterable<C>,
+  href: string,
+): C | undefined {
+  let target: string;
+  try {
+    target = new URL(href).toString();
+  } catch {
+    return undefined;
+  }
+  for (const cal of calendars) {
+    let base: string;
+    try {
+      base = new URL(cal.url).toString();
+    } catch {
+      continue;
+    }
+    if (!base.endsWith("/")) base = `${base}/`;
+    if (target.startsWith(base) && target.length > base.length) return cal;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------

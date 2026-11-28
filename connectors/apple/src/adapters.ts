@@ -40,6 +40,7 @@ import {
   type CalDavClient,
   type CalendarRef,
   caldavObjectFilename,
+  calendarOwningHref,
   type EventWindow,
 } from "./caldav-core.ts";
 
@@ -293,23 +294,15 @@ class TsdavCalDavClient implements LoggingInCalDavClient {
    */
   private async calendarOwning(href: string): Promise<DAVCalendar | undefined> {
     if (this.discovered.size === 0) await this.listCalendars();
-    let target: string;
-    try {
-      target = new URL(href).toString();
-    } catch {
-      return undefined;
-    }
-    for (const [url, cal] of this.discovered) {
-      let base: string;
-      try {
-        base = new URL(url).toString();
-      } catch {
-        continue;
-      }
-      if (!base.endsWith("/")) base = `${base}/`;
-      if (target.startsWith(base) && target.length > base.length) return cal;
-    }
-    return undefined;
+    return calendarOwningHref(this.discovered.values(), href);
+  }
+
+  knownCalendars(): readonly CalendarRef[] {
+    return [...this.discovered.values()].map((cal) => ({
+      url: cal.url,
+      displayName:
+        typeof cal.displayName === "string" && cal.displayName !== "" ? cal.displayName : cal.url,
+    }));
   }
 
   async getEvent(
