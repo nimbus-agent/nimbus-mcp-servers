@@ -203,6 +203,14 @@ describe("phase 2 file", () => {
     expect(md()).not.toContain("today only Gmail gets them");
     expect(readSkill("SKILL.md")).not.toContain("today `calendar.readonly`");
   });
+  test("a connectors publish never blocks the gateway (Nimbus#2192)", () => {
+    // Until 2026-11-27 the skill said a minor gap failed the gateway's version-skew audit.
+    const skill = readSkill("SKILL.md");
+    expect(skill).toContain("never blocks the gateway");
+    expect(skill).toContain("report:connector-version-skew");
+    expect(md()).not.toContain("minor gap");
+    expect(md()).not.toContain("audit:connector-version-skew");
+  });
   test("a wave 4 confirm text names the whole id unless the id is opaque", () => {
     // Batch 2: a Google Calendar occurrence id is `<seriesId>_<timestamp>`, so `{eventId:tail8}`
     // named only the time of day.
