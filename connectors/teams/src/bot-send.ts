@@ -1,4 +1,5 @@
-import { fetchBearerAuthorizedJson } from "../../../shared/fetch-bearer-json.ts";
+import { guardedBearerJson } from "../../../shared/guarded-bearer-json.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { requireProcessEnv } from "../../../shared/mcp-tool-kit.ts";
 
 /**
@@ -19,7 +20,9 @@ const DEFAULT_SERVICE_URL = "https://smba.trafficmanager.net/teams/";
 type GraphLikeResult = { ok: boolean; status: number; json: unknown; text: string };
 
 async function acquireBotToken(appId: string, appPassword: string): Promise<string> {
-  const res = await fetch(BOT_TOKEN_ENDPOINT, {
+  // The app password is in this body, so a redirect must not carry it anywhere: guardedFetch
+  // refuses a 3xx on a POST. It also gives the request a timeout.
+  const res = await guardedFetch("Bot Framework token", BOT_TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -68,13 +71,21 @@ export async function teamsBotSendActivity(
   const appPassword = requireProcessEnv("TEAMS_BOT_APP_PASSWORD");
   const token = await acquireBotToken(appId, appPassword);
   const url = `${serviceUrlBase()}v3/conversations/${encodeURIComponent(conversationId)}/activities`;
-  return fetchBearerAuthorizedJson(url, token, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(
-      attachments === undefined
-        ? { type: "message", text }
-        : { type: "message", text, attachments },
-    ),
-  });
+  return guardedBearerJson(
+    "Bot Framework",
+    url,
+    token,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        attachments === undefined
+          ? { type: "message", text }
+          : { type: "message", text, attachments },
+      ),
+    },
+    undefined,
+    // The service URL comes from the environment, and a plain-http one has always worked.
+    { requireSecureBase: false },
+  );
 }

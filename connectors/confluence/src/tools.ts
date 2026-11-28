@@ -38,7 +38,7 @@ async function confFetch(
 ): Promise<{ ok: boolean; status: number; text: string }> {
   const { wikiApi, email, token } = requireConfluenceConfig();
   const url = joinApiPath(wikiApi, path);
-  return fetchAtlassianBasicAuthJsonText(url, email, token, init);
+  return fetchAtlassianBasicAuthJsonText(url, email, token, init, "Confluence");
 }
 
 /** The parts of a page `confluence_page_append` reads and writes back. */

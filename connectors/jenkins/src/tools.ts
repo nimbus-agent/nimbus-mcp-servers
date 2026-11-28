@@ -11,6 +11,7 @@ import {
   jenkinsAuthHeader,
   jenkinsBaseUrl,
   jenkinsFetchJson,
+  jenkinsGuardedFetch,
   jenkinsPost,
   jobApiRoot,
 } from "./jenkins-api.ts";
@@ -221,7 +222,7 @@ export function registerJenkinsTools(
       const base = jenkinsBaseUrl();
       const auth = jenkinsAuthHeader();
       const url = `${jobApiRoot(base, parsed.jobName)}/${String(parsed.buildNumber)}/consoleText`;
-      const res = await fetch(url, { headers: { Authorization: auth } });
+      const res = await jenkinsGuardedFetch(url, { headers: { Authorization: auth } });
       const text = await res.text();
       if (!res.ok) {
         throw new Error(`Jenkins log ${String(res.status)}: ${text.slice(0, 400)}`);

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -20,7 +21,8 @@ async function discordFetch(
   init?: RequestInit,
 ): Promise<RestFetchResult> {
   const url = path.startsWith("http") ? path : `${DISCORD_API}${path}`;
-  const res = await fetch(url, {
+  // A redirect must not carry the bot token anywhere, and a write's 3xx is refused outright.
+  const res = await guardedFetch("Discord", url, {
     ...init,
     headers: {
       Authorization: `Bot ${token}`,

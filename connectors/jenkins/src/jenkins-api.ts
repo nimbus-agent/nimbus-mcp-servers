@@ -1,8 +1,19 @@
+import { fetchWithTimeout } from "@nimbus-dev/sdk/connector-kit";
 import { requiredBaseUrl } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { encodeBasicAuthHeader } from "../../../shared/mcp-tool-kit.ts";
 
 export function jenkinsBaseUrl(): string {
   return requiredBaseUrl("JENKINS_BASE_URL");
+}
+
+/**
+ * Every Jenkins request goes through here: a redirect never carries the credential to another
+ * origin (a POST's 3xx is refused outright) and a hung server times out. The base is the owner's
+ * `JENKINS_BASE_URL`, and a plain-http Jenkins has always worked, so it is not required to be https.
+ */
+export function jenkinsGuardedFetch(url: string, init: RequestInit): Promise<Response> {
+  return guardedFetch("Jenkins", url, init, { requireSecureBase: false });
 }
 
 export function jenkinsAuthHeader(): string {
@@ -54,7 +65,7 @@ export async function getJenkinsCrumb(
   if (crumbCache !== undefined) {
     return crumbCache;
   }
-  const res = await fetch(`${base}/crumbIssuer/api/json`, {
+  const res = await jenkinsGuardedFetch(`${base}/crumbIssuer/api/json`, {
     headers: { Authorization: authHeader, Accept: "application/json" },
   });
   if (!res.ok) {
@@ -106,7 +117,7 @@ export async function jenkinsFetchJson(
   init: RequestInit & { authHeader: string },
 ): Promise<{ ok: boolean; status: number; text: string; json: unknown }> {
   const { authHeader, ...rest } = init;
-  const res = await fetch(url, {
+  const res = await jenkinsGuardedFetch(url, {
     ...rest,
     headers: {
       Authorization: authHeader,
@@ -146,7 +157,28 @@ export async function jenkinsPost(
   if (crumb !== null && isSafeHeaderName(crumb.field)) {
     headers.set(crumb.field, crumb.value);
   }
-  const res = await fetch(url, { method: "POST", headers });
+  // Never followed: a redirect would replay the credential. But Jenkins answers a successful
+  // `/stop` (and some `/build`s) with a 302 to the build or job page, so a 3xx whose Location is on
+  // this same Jenkins is the server saying "done", and is read as success. Any other 3xx (another
+  // origin, or no Location) is refused: the POST reached Jenkins, so it may have run.
+  const res = await fetchWithTimeout(url, { method: "POST", headers, redirect: "manual" }, 15_000);
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get("location");
+    let sameOrigin = false;
+    if (location !== null) {
+      try {
+        sameOrigin = new URL(location, url).origin === new URL(url).origin;
+      } catch {
+        sameOrigin = false;
+      }
+    }
+    if (!sameOrigin) {
+      throw new Error(
+        `Jenkins answered a POST with a redirect (${String(res.status)}) off its own origin; the write may or may not have been applied`,
+      );
+    }
+    return { ok: true, status: res.status, text: "" };
+  }
   const text = await res.text();
   return { ok: res.ok, status: res.status, text };
 }

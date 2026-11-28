@@ -487,3 +487,32 @@ describe("confluence_page_append", () => {
     }
   });
 });
+
+describe("confluence never sends its credential across a redirect", () => {
+  const EVIL = "https://evil.example/steal";
+
+  it("a read refuses a redirect to another origin and sends nothing there", async () => {
+    const stub = serve((req) =>
+      req.url === `${API}/space?limit=25&start=0`
+        ? { status: 302, headers: { location: EVIL } }
+        : undefined,
+    );
+    await configured(async () => {
+      await expect(tools.call("confluence_space_list", {})).rejects.toThrow(
+        "Confluence redirected to another origin; refused",
+      );
+    });
+    expect(stub.calls.map((c) => c.url)).toEqual([`${API}/space?limit=25&start=0`]);
+    expect(stub.only.redirect).toBe("manual");
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    const stub = serve({ status: 307, headers: { location: `${API}/content/1/child/comment` } });
+    await configured(async () => {
+      await expect(
+        tools.call("confluence_comment_add", { pageId: "1", storageHtml: "<p>x</p>" }),
+      ).rejects.toThrow("Confluence answered a POST with a redirect (307)");
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+});

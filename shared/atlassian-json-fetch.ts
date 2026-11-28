@@ -23,10 +23,12 @@ export async function fetchAtlassianBasicAuthJsonText(
   email: string,
   token: string,
   init?: RequestInit,
+  label = "Atlassian",
 ): Promise<{ ok: boolean; status: number; text: string }> {
   return fetchJsonText(
     url,
     { Accept: "application/json", Authorization: encodeBasicAuthHeader(email, token) },
     init,
+    label,
   );
 }

@@ -1,10 +1,8 @@
 import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
-import {
-  fetchBearerAuthorizedJson,
-  resolveUrlWithBase,
-} from "../../../shared/fetch-bearer-json.ts";
+import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
+import { guardedBearerJson } from "../../../shared/guarded-bearer-json.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -25,7 +23,7 @@ async function graphRequest(
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
   const url = resolveUrlWithBase(GRAPH, pathOrUrl);
-  return fetchBearerAuthorizedJson(url, token, init);
+  return guardedBearerJson("Graph", url, token, init);
 }
 
 async function teamsPagedGraph(
