@@ -64,6 +64,21 @@ The three list/get/search tools are read-only; the two write tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`). The destructive
 `argocd.app.delete` write tool is deferred.
 
+### The writes
+
+Both write tools go through the consent registrar and are declared `recoverable: true`, so neither
+has a `capturePreState`. Outside the gateway each is gated by owner consent, a write-scope
+allow-list, a mutation budget and an audit record; in the gateway the executor is the gate.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `argocd_app_sync` | Requests a sync of one application, with optional `prune` and `revision`. | `true` | `app:<application name>` |
+| `argocd_app_rollback` | Requests a rollback of one application to a deployment history `id`. | `true` | `app:<application name>` |
+
+Scope them with `NIMBUS_MCP_ARGOCD_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched
+exactly. The only kind is `app`, matched against the `name` argument; an unknown kind fails at
+startup, and an unset or empty scope refuses every write.
+
 ## Standalone use
 
 Outside the Nimbus gateway you set `ARGOCD_URL` and `ARGOCD_TOKEN` in the

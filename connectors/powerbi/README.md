@@ -52,7 +52,7 @@ Tools exposed:
 
 | Tool | Purpose |
 | --- | --- |
-| `powerbi_list` | List Power BI reports; optional `limit` cap (default 200, max 500). |
+| `powerbi_list` | List ALL Power BI reports in one response, each with its dataset-table refs; `cursor` and `limit` are accepted but never truncate, and `nextCursor` is always null. |
 | `powerbi_get` | Fetch one report by id. |
 | `powerbi_search` | Substring search across reports by name. |
 | `powerbi_dataset_refresh` | Trigger a dataset refresh (`groupId` optional; omit for My Workspace). Async. HITL-gated. |
@@ -61,6 +61,21 @@ Tools exposed:
 The three list/get/search tools are read-only; the two refresh tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`). Other write tools
 (publish, update dataset) are deferred.
+
+### The writes
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_POWERBI_WRITE_SCOPE`, a comma-separated list of `kind:value` terms
+with exact matching. One kind exists, `workspace:<groupId>`, matched against the `groupId` argument.
+For `powerbi_dataset_refresh` an omitted or null `groupId` (My Workspace) is checked as
+`workspace:my-workspace`. An unset or empty scope refuses every write, and an unknown kind fails at
+startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `powerbi_dataset_refresh` | Queues a refresh of a dataset (`groupId` optional; omitted means My Workspace). Async (202). | `true` |
+| `powerbi_dataflow_refresh` | Queues a refresh of a dataflow; `groupId` is required. Async (202). | `true` |
 
 ## See also
 

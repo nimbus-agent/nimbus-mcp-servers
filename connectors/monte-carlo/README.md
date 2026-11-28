@@ -49,7 +49,7 @@ Tools exposed:
 
 | Tool | Purpose |
 | --- | --- |
-| `montecarlo_list` | List incidents; optional `limit` cap (default 200, max 500). |
+| `montecarlo_list` | List incidents; optional `cursor` and `limit` (default 200, max 500); returns `{ items, nextCursor }`. |
 | `montecarlo_get` | Fetch one incident by id. |
 | `montecarlo_search` | Substring search across incidents (id, status, severity, table). |
 | `montecarlo_incident_acknowledge` | Acknowledge a Monte Carlo incident. HITL-gated. |
@@ -57,6 +57,20 @@ Tools exposed:
 
 The three list/get/search tools are read-only; the two write tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`).
+
+### The writes
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_MONTE_CARLO_WRITE_SCOPE`, a comma-separated list of `kind:value`
+terms with exact matching. One kind exists, `incident:<incidentId>`, matched against the
+`incidentId` argument of both tools. An unset or empty scope refuses every write, and an unknown
+kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `montecarlo_incident_acknowledge` | Sets the incident's feedback to `ACKNOWLEDGED` (GraphQL `setIncidentFeedback`). | `true` |
+| `montecarlo_incident_resolve` | Sets the incident's feedback to `RESOLVED` (the same mutation). | `true` |
 
 ## See also
 

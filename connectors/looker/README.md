@@ -65,6 +65,20 @@ The four list/get/search tools are read-only; the two write tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`). Explore-level metadata
 is deferred.
 
+### The writes
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_LOOKER_WRITE_SCOPE`, a comma-separated list of `kind:value` terms
+with exact matching. One kind exists, `resource:<id>`, matched against the `datagroupId` argument
+for `looker_datagroup_trigger` and the `scheduledPlanId` argument for `looker_schedule_run_once`.
+An unset or empty scope refuses every write, and an unknown kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `looker_datagroup_trigger` | Sets the datagroup's `stale_before` to the current epoch, marking its cached results stale. | `true` |
+| `looker_schedule_run_once` | Runs a scheduled plan once, outside its schedule. | `true` |
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)
