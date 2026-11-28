@@ -70,7 +70,7 @@ describe("grafana tools", () => {
 
   it("refuses a redirect to another origin, so the token never leaves GRAFANA_URL's host", async () => {
     const stub = serve((req) =>
-      req.url.startsWith(BASE)
+      req.url === `${BASE}/api/search?type=dash-db&query=`
         ? { status: 302, headers: { location: "https://elsewhere.example/api/search" } }
         : '{"stolen":true}',
     );
