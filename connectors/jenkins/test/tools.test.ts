@@ -278,6 +278,28 @@ describe("jenkins never sends its credential across a redirect", () => {
     expect(fetchStub.calls[1]?.redirect).toBe("manual");
   });
 
+  it("only a same-origin 301, 302 or 303 reads as done; a 307 or 308 asks for the POST again, so it is refused", async () => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      __resetJenkinsCrumbCacheForTests();
+      fetchStub?.restore();
+      fetchStub = stubFetch((req) =>
+        req.url === `${BASE}/crumbIssuer/api/json`
+          ? CRUMB
+          : { status, headers: { location: `${BASE}/job/app/3/` } },
+      );
+      const call = tools.call("jenkins_build_abort", { jobName: "app", buildNumber: 3 });
+      if (status === 307 || status === 308) {
+        // The server has not said the abort happened: it asked for the same POST elsewhere.
+        await expect(call).rejects.toThrow(
+          `Jenkins answered a POST with a ${String(status)}, which asks for it to be sent again; it was not, and the write may not have been applied`,
+        );
+      } else {
+        await expect(call).resolves.toBeDefined();
+      }
+      expect(fetchStub.calls.map((c) => c.method)).toEqual(["GET", "POST"]);
+    }
+  });
+
   it("a write's redirect to another origin, or one with no Location, is refused and not followed", async () => {
     for (const headers of [{ location: EVIL }, undefined]) {
       __resetJenkinsCrumbCacheForTests();
