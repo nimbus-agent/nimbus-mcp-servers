@@ -67,14 +67,28 @@ describe("pagerduty tools", () => {
     expect(stub.only.url).toBe(`${API}/incidents?limit=5&statuses%5B%5D=resolved`);
   });
 
-  it("incident_get fetches one incident by its encoded id", async () => {
-    const stub = serve('{"incident":{"id":"P1"}}');
+  it("incident_get fetches one incident by its id", async () => {
+    const stub = serve('{"incident":{"id":"P1AB2CD"}}');
     await configured(async () => {
-      expect(await tools.callJson("pd_incident_get", { incidentId: "P/1" })).toEqual({
-        incident: { id: "P1" },
+      expect(await tools.callJson("pd_incident_get", { incidentId: "P1AB2CD" })).toEqual({
+        incident: { id: "P1AB2CD" },
       });
     });
-    expect(stub.only.url).toBe(`${API}/incidents/P%2F1`);
+    expect(stub.only.url).toBe(`${API}/incidents/P1AB2CD`);
+  });
+
+  it("incident_get refuses an id that is not a PagerDuty id, before any request", async () => {
+    // As the writes do: encodeURIComponent leaves '.' and '..' alone, and the URL parser
+    // collapses them out of /incidents/<id>.
+    const stub = serve('{"incident":{}}');
+    await configured(async () => {
+      for (const incidentId of ["..", ".", "P/1", "P1?x=1", "a".repeat(65)]) {
+        await expect(tools.call("pd_incident_get", { incidentId })).rejects.toThrow(
+          "a PagerDuty incident id is 1-64 letters or digits",
+        );
+      }
+    });
+    expect(stub.calls).toEqual([]);
   });
 
   const STATUS_WORD = { acknowledge: "acknowledged", resolve: "resolved" } as const;
