@@ -44,7 +44,7 @@ unknown kind fails at startup, and an unset or empty scope refuses every write.
 | `iac_terraform_init` | Runs `terraform init`, writing `.terraform/` and `.terraform.lock.hcl` and fetching providers and modules. | `false`; `capturePreState` records `{workingDirectory}`. | `dir:<workingDirectory>` |
 | `iac_cloudformation_changeset_discard` | Deletes a change set this connector made, and the empty stack shell it left. | `false`; `capturePreState` records whether the change set exists and, if so, its `status` and `executionStatus`. | `stack:<stackName>` |
 | `iac_cloudformation_deploy` | Executes a reviewed change set. | `false`; `capturePreState` records whether the stack exists, its `stackStatus` and `lastUpdatedTime`. | `stack:<stackName>` |
-| `iac_pulumi_up` | Nothing: it is always refused before the scope check, and spawns no process. | `true`, with no pre-state | `dir:<workingDirectory>` |
+| `iac_pulumi_up` | Nothing: it is always refused before the scope check, and spawns no process. | `false`; `capturePreState` records `{workingDirectory}`, though the refusal means it never runs. | `dir:<workingDirectory>` |
 
 The prepare tools are checked against the same scope and are audited as `prepared`, though they are
 not writes and spend no budget: `iac_terraform_plan`, `iac_terraform_destroy_plan`,

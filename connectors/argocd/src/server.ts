@@ -42,6 +42,28 @@ function applicationsFrom(root: unknown): unknown[] {
   return Array.isArray(items) ? items : [];
 }
 
+/** Text of `value` when it is a string, else `null`. */
+function textOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * What a sync or rollback is about to replace, from one GET of the application (the same call
+ * and auth as `argocd_get`). `agGet` throws `ArgoCD <status>: <bounded text>` on a failed read,
+ * which the consent kit audits as `captureFailed` while the write still runs.
+ */
+async function applicationPreState(name: string): Promise<Record<string, string | null>> {
+  const root = (await agGet(`/applications/${encodeURIComponent(name)}`)) as {
+    status?: { sync?: { revision?: unknown; status?: unknown }; health?: { status?: unknown } };
+  } | null;
+  return {
+    app: name,
+    revision: textOrNull(root?.status?.sync?.revision),
+    syncStatus: textOrNull(root?.status?.sync?.status),
+    health: textOrNull(root?.status?.health?.status),
+  };
+}
+
 export function registerArgocdTools(reg: ZodToolRegistrar, server: unknown): void {
   // Despite the read-only helper's name, this connector exposes write tools. The consent
   // kit needs the real server, which the helper now passes through as its second argument.
@@ -104,7 +126,10 @@ export function registerArgocdTools(reg: ZodToolRegistrar, server: unknown): voi
     "argocd_app_sync",
     {
       mutates: "argocd.app.sync",
-      recoverable: true,
+      // A sync replaces what is deployed and keeps no record of what it replaced, so the
+      // application is read once first: the audit record names the revision to roll back to.
+      recoverable: false,
+      capturePreState: (p) => applicationPreState(p.name),
       scopeTargetOf: (p) => ({ kind: "app", value: p.name }),
     },
     "Trigger a sync for an ArgoCD application (`POST /api/v1/applications/{name}/sync`, requires HITL argocd.app.sync). Async — the sync is requested; verify via the next metadata sync (sync_status/health_status). Recommend /schedule to re-check.",
@@ -126,7 +151,9 @@ export function registerArgocdTools(reg: ZodToolRegistrar, server: unknown): voi
     "argocd_app_rollback",
     {
       mutates: "argocd.app.rollback",
-      recoverable: true,
+      // As for a sync: the revision being left is read first, so the rollback can itself be undone.
+      recoverable: false,
+      capturePreState: (p) => applicationPreState(p.name),
       scopeTargetOf: (p) => ({ kind: "app", value: p.name }),
     },
     "Roll back an ArgoCD application to a prior deployment history id (`POST /api/v1/applications/{name}/rollback`, requires HITL argocd.app.rollback). Async — verify via the next metadata sync.",
