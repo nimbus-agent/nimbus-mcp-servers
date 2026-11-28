@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { McpStateError } from "@nimbus-dev/sdk/mcp-server";
 import { z } from "zod";
@@ -127,6 +129,30 @@ describe("createLayerServer", () => {
     const state = await ask(server, "tools/call", { name: "bad_state" });
     expect(state.error?.code).toBe(-32602);
     expect(state.result).toBeUndefined();
+  });
+
+  test("a thrown message loses the credentials and local paths it carries, and keeps the rest", async () => {
+    const server = createLayerServer({ name: "nimbus-t", version: "0.1.0" });
+    const secret = "layer-test-credential-0123456789";
+    server.registerTool("echoes", {}, () => {
+      throw new Error(
+        `Acme 401: {"error":"bad token ${secret}"} reading ${join(homedir(), ".acme", "config")}`,
+      );
+    });
+    const prior = process.env["ACME_API_TOKEN"];
+    process.env["ACME_API_TOKEN"] = secret;
+    try {
+      const failed = await ask(server, "tools/call", { name: "echoes" });
+      expect(failed.result?.["isError"]).toBe(true);
+      expect(text(failed)).toStartWith("Acme 401: ");
+      expect(text(failed)).not.toContain(secret);
+      expect(text(failed)).not.toContain(homedir());
+      expect(text(failed)).toContain("[redacted]");
+      expect(text(failed)).toContain(join("~", ".acme", "config"));
+    } finally {
+      if (prior === undefined) delete process.env["ACME_API_TOKEN"];
+      else process.env["ACME_API_TOKEN"] = prior;
+    }
   });
 
   test("listing follows `listed` and `disable()`; calling follows neither", async () => {

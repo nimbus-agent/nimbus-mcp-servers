@@ -103,7 +103,9 @@ and approves writes itself. Standalone it is the layer server (`shared/layer-ser
 the MCP server layer of `@nimbus-dev/sdk`, which answers a client of MCP revision 2026-07-28 and a
 client that opens with `initialize` from one process. The layer server offers the registration
 surface connectors already used, checks arguments against each tool's zod shape before the tool
-runs, and passes a tool's own error text on to the client as the upstream server did.
+runs, and passes a tool's own error text on to the client as the upstream server did, after
+`shared/error-text.ts` has removed any credential or local path the text picked up
+([SECURITY](../SECURITY.md)).
 `scripts/connector-server-chokepoint.test.ts` fails any other shipped file that imports an upstream
 server module or constructs either server.
 

@@ -108,10 +108,10 @@ describe("runCliJsonThrowing", () => {
     ).rejects.toThrow(`${BUN} exited 2: denied`);
   });
 
-  it("throws on output that is not JSON", async () => {
-    await expect(
-      runCliJsonThrowing(evalCmd("process.stdout.write('not json')"), {}),
-    ).rejects.toThrow("invalid JSON from CLI: not json");
+  it("throws on output that is not JSON, naming its size and never quoting it", async () => {
+    const thrown = runCliJsonThrowing(evalCmd("process.stdout.write('c2VjcmV0 not json')"), {});
+    await expect(thrown).rejects.toThrow("invalid JSON from CLI (17 characters of output)");
+    await expect(thrown).rejects.not.toThrow("c2VjcmV0");
   });
 
   it("throws on an empty command", async () => {

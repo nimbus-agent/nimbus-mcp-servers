@@ -57,7 +57,13 @@ export async function runCliJson(
   try {
     return { ok: true, data: JSON.parse(trimmed) as unknown };
   } catch {
-    return { ok: false, message: `invalid JSON from CLI: ${r.stdout.slice(0, 200)}` };
+    // The output's size, never its text: stdout is the command's DATA (`kubectl get secret`
+    // prints a Secret's values), which no pattern in `scrubErrorText` would recognise, and this
+    // message reaches the client.
+    return {
+      ok: false,
+      message: `invalid JSON from CLI (${String(trimmed.length)} characters of output)`,
+    };
   }
 }
 
