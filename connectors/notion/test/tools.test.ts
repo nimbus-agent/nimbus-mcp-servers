@@ -250,3 +250,27 @@ describe("notion tool requests", () => {
     expect(fetchStub.calls).toEqual([]);
   });
 });
+
+describe("notion never sends its credential across a redirect", () => {
+  it("a read refuses a redirect to another origin and sends nothing there", async () => {
+    fetchStub.restore();
+    fetchStub = stubFetch({ status: 302, headers: { location: "https://evil.example/steal" } });
+    await expect(tools.call("notion_page_get", { pageId: "p1" })).rejects.toThrow(
+      "Notion redirected to another origin; refused",
+    );
+    expect(fetchStub.calls.map((c) => c.url)).toEqual(["https://api.notion.com/v1/pages/p1"]);
+    expect(fetchStub.only.redirect).toBe("manual");
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    fetchStub.restore();
+    fetchStub = stubFetch({
+      status: 307,
+      headers: { location: "https://api.notion.com/v1/comments" },
+    });
+    await expect(tools.call("notion_comment_create", { pageId: "p1", text: "hi" })).rejects.toThrow(
+      "Notion answered a POST with a redirect (307)",
+    );
+    expect(fetchStub.calls).toHaveLength(1);
+  });
+});

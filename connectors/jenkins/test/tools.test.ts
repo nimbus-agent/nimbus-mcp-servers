@@ -225,3 +225,47 @@ describe("jenkins reads", () => {
     expect(stub.calls).toEqual([]);
   });
 });
+
+describe("jenkins never sends its credential across a redirect", () => {
+  const EVIL = "https://evil.example/steal";
+
+  it("a JSON read refuses a redirect to another origin and sends nothing there", async () => {
+    fetchStub?.restore();
+    fetchStub = stubFetch({ status: 302, headers: { location: EVIL } });
+    await expect(tools.call("jenkins_job_list", {})).rejects.toThrow(
+      "Jenkins redirected to another origin; refused",
+    );
+    expect(fetchStub.calls).toHaveLength(1);
+    expect(fetchStub.only.redirect).toBe("manual");
+  });
+
+  it("the console log read refuses a redirect to another origin", async () => {
+    fetchStub?.restore();
+    fetchStub = stubFetch({ status: 302, headers: { location: EVIL } });
+    await expect(
+      tools.call("jenkins_build_log_tail", { jobName: "app", buildNumber: 3 }),
+    ).rejects.toThrow("Jenkins redirected to another origin; refused");
+    expect(fetchStub.calls).toHaveLength(1);
+  });
+
+  it("the crumb request refuses a redirect to another origin", async () => {
+    fetchStub?.restore();
+    fetchStub = stubFetch((req) =>
+      req.url === `${BASE}/crumbIssuer/api/json`
+        ? { status: 302, headers: { location: EVIL } }
+        : undefined,
+    );
+    await expect(tools.call("jenkins_build_trigger", { jobName: "app" })).rejects.toThrow(
+      "Jenkins redirected to another origin; refused",
+    );
+    expect(fetchStub.calls).toHaveLength(1);
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    const stub = jenkins({ status: 302 });
+    await expect(tools.call("jenkins_build_trigger", { jobName: "app" })).rejects.toThrow(
+      "Jenkins answered a POST with a redirect (302)",
+    );
+    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "POST"]);
+  });
+});

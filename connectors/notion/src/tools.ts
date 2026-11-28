@@ -27,6 +27,7 @@ async function notionFetch(
     url,
     { Authorization: `Bearer ${token}`, "Notion-Version": NOTION_VERSION },
     init,
+    "Notion",
   );
 }
 

@@ -1,8 +1,18 @@
 import { requiredBaseUrl } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { encodeBasicAuthHeader } from "../../../shared/mcp-tool-kit.ts";
 
 export function jenkinsBaseUrl(): string {
   return requiredBaseUrl("JENKINS_BASE_URL");
+}
+
+/**
+ * Every Jenkins request goes through here: a redirect never carries the credential to another
+ * origin (a POST's 3xx is refused outright) and a hung server times out. The base is the owner's
+ * `JENKINS_BASE_URL`, and a plain-http Jenkins has always worked, so it is not required to be https.
+ */
+export function jenkinsGuardedFetch(url: string, init: RequestInit): Promise<Response> {
+  return guardedFetch("Jenkins", url, init, { requireSecureBase: false });
 }
 
 export function jenkinsAuthHeader(): string {
@@ -54,7 +64,7 @@ export async function getJenkinsCrumb(
   if (crumbCache !== undefined) {
     return crumbCache;
   }
-  const res = await fetch(`${base}/crumbIssuer/api/json`, {
+  const res = await jenkinsGuardedFetch(`${base}/crumbIssuer/api/json`, {
     headers: { Authorization: authHeader, Accept: "application/json" },
   });
   if (!res.ok) {
@@ -106,7 +116,7 @@ export async function jenkinsFetchJson(
   init: RequestInit & { authHeader: string },
 ): Promise<{ ok: boolean; status: number; text: string; json: unknown }> {
   const { authHeader, ...rest } = init;
-  const res = await fetch(url, {
+  const res = await jenkinsGuardedFetch(url, {
     ...rest,
     headers: {
       Authorization: authHeader,
@@ -146,7 +156,7 @@ export async function jenkinsPost(
   if (crumb !== null && isSafeHeaderName(crumb.field)) {
     headers.set(crumb.field, crumb.value);
   }
-  const res = await fetch(url, { method: "POST", headers });
+  const res = await jenkinsGuardedFetch(url, { method: "POST", headers });
   const text = await res.text();
   return { ok: res.ok, status: res.status, text };
 }

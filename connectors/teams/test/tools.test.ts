@@ -266,3 +266,27 @@ describe("teams_chat_post through the Bot Framework (gateway mode)", () => {
     });
   });
 });
+
+describe("teams never sends its token across a redirect", () => {
+  it("a read refuses a redirect to another origin and sends nothing there", async () => {
+    fetchStub.restore();
+    fetchStub = stubFetch({ status: 302, headers: { location: "https://evil.example/steal" } });
+    await expect(tools.call("teams_team_list", {})).rejects.toThrow(
+      "Graph redirected to another origin; refused",
+    );
+    expect(fetchStub.calls).toHaveLength(1);
+    expect(fetchStub.only.redirect).toBe("manual");
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    fetchStub.restore();
+    fetchStub = stubFetch({
+      status: 307,
+      headers: { location: "https://graph.microsoft.com/v1.0/chats/c1/messages" },
+    });
+    await expect(
+      tools.call("teams_message_post_chat", { chatId: "c1", body: "hi" }),
+    ).rejects.toThrow("Graph answered a POST with a redirect (307)");
+    expect(fetchStub.calls).toHaveLength(1);
+  });
+});

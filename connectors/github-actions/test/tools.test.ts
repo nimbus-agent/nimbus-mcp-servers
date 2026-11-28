@@ -165,6 +165,25 @@ describe("gha_run_log against GitHub Enterprise Server and its log redirect", ()
     expect(fetchStub.calls[1]?.headers["authorization"]).toBeUndefined();
   });
 
+  it("bounds both the API request and the credential-free storage request with a timeout", async () => {
+    const storage = "https://blob.example.net/logs/42?sig=abc";
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const stubbed = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return String(input) === storage
+        ? new Response("the log")
+        : new Response("", { status: 302, headers: { Location: storage } });
+    }) as typeof fetch;
+    try {
+      await tools.call("gha_run_log", { ...REPO, jobId: 42 });
+    } finally {
+      globalThis.fetch = stubbed;
+    }
+    expect(signals).toHaveLength(2);
+    for (const signal of signals) expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
   it("fails clearly on a redirect with no Location", async () => {
     fetchStub.restore();
     fetchStub = stubFetch({ status: 302, body: "" });

@@ -183,3 +183,29 @@ describe("discord_message_post", () => {
     expect(stub.calls).toEqual([]);
   });
 });
+
+describe("discord never sends its credential across a redirect", () => {
+  it("a read refuses a redirect to another origin and sends nothing there", async () => {
+    const stub = serve({ status: 302, headers: { location: "https://evil.example/steal" } });
+    await withEnv({ DISCORD_BOT_TOKEN: "bot-token" }, async () => {
+      await expect(tools.call("discord_guild_list", {})).rejects.toThrow(
+        "Discord redirected to another origin; refused",
+      );
+    });
+    expect(stub.calls.map((c) => c.url)).toEqual([`${API}/users/@me/guilds`]);
+    expect(stub.only.redirect).toBe("manual");
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    const stub = serve({
+      status: 307,
+      headers: { location: `${API}/channels/123456789012345678/messages` },
+    });
+    await withEnv({ DISCORD_BOT_TOKEN: "bot-token" }, async () => {
+      await expect(
+        tools.call("discord_message_post", { channelId: "123456789012345678", content: "hi" }),
+      ).rejects.toThrow("Discord answered a POST with a redirect (307)");
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+});

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ConsentServer } from "../../../shared/consent-kit.ts";
 import { createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -19,7 +20,9 @@ async function slackApi(
   method: string,
   body: Record<string, unknown>,
 ): Promise<{ ok: boolean; json: SlackApiRecord; text: string }> {
-  const res = await fetch(`https://slack.com/api/${method}`, {
+  // Every Slack Web API method is a POST, so guardedFetch refuses any 3xx: the token never follows
+  // a redirect, and a hung request times out.
+  const res = await guardedFetch("Slack", `https://slack.com/api/${method}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

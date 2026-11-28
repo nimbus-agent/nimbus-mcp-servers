@@ -423,3 +423,26 @@ describe("slack_message_post_dm is a gated write (standalone mode)", () => {
     expect(stub.calls).toEqual([]);
   });
 });
+
+describe("slack never sends its credential across a redirect", () => {
+  it("a read refuses a redirect to another origin and sends nothing there", async () => {
+    const stub = serve({ status: 302, headers: { location: "https://evil.example/steal" } });
+    await withEnv(TOKENS, async () => {
+      await expect(tools.call("slack_channel_history", { channel: "C1" })).rejects.toThrow(
+        "Slack answered a POST with a redirect (302)",
+      );
+    });
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.only.redirect).toBe("manual");
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    const stub = serve({ status: 307, headers: { location: `${API}/chat.postMessage` } });
+    await withEnv(TOKENS, async () => {
+      await expect(tools.call("slack_message_post", { channel: "C1", text: "hi" })).rejects.toThrow(
+        "Slack answered a POST with a redirect (307)",
+      );
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+});

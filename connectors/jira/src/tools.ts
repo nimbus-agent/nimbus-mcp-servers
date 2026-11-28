@@ -145,6 +145,7 @@ async function resolveCloudId(cfg: JiraConfig): Promise<string> {
       {
         redirect: "manual",
       },
+      "Jira tenant_info",
     ),
   );
   if (!res.ok) {
@@ -171,6 +172,7 @@ async function opsFetch(cfg: JiraConfig, path: string, init?: RequestInit): Prom
     cfg.email,
     cfg.token,
     { ...init, redirect: "manual" },
+    "Jira Operations",
   );
   return refuseRedirect("Jira Operations", res);
 }

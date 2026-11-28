@@ -103,3 +103,28 @@ describe("teamsBotSendActivity", () => {
     await expect(teamsBotSendActivity("19:c", "hi")).rejects.toThrow();
   });
 });
+
+describe("teamsBotSendActivity never follows a redirect", () => {
+  const redirect = (location: string): Response =>
+    new Response("", { status: 307, headers: { location } });
+
+  test("the token request is a POST, so a 3xx is refused and the secret goes nowhere else", async () => {
+    const calls = installFetch(() => redirect("https://evil.example/steal"));
+    await expect(teamsBotSendActivity("19:c", "hi")).rejects.toThrow(
+      "Bot Framework token answered a POST with a redirect (307)",
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.init?.redirect).toBe("manual");
+  });
+
+  test("the activity POST refuses a 3xx instead of replaying it", async () => {
+    const calls = installFetch((c) =>
+      c.url.includes("/oauth2/") ? tokenResponse() : redirect("https://evil.example/steal"),
+    );
+    await expect(teamsBotSendActivity("19:c", "hi")).rejects.toThrow(
+      "Bot Framework answered a POST with a redirect (307)",
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.init?.redirect).toBe("manual");
+  });
+});

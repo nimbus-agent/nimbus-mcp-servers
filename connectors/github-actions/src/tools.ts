@@ -14,6 +14,7 @@ import {
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
+  fetchWithTimeout,
   mcpJsonResult as jsonResult,
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
@@ -126,7 +127,10 @@ export function registerGithubActionsTools(
       const url = `${ghApiBase()}${ghRepoPath(parsed.owner, parsed.repo)}/actions/jobs/${String(parsed.jobId)}/logs`;
       // The log lives in third-party storage behind a redirect, so the redirect is followed BY HAND:
       // the token goes to the API host only, never to wherever the Location points.
-      let res = await fetch(url, {
+      // Both hops go through fetchWithTimeout so neither can hang the tool call. The redirect
+      // policy stays explicit here (not guardedFetch) because the second hop is a different origin
+      // by design and must carry no credential at all.
+      let res = await fetchWithTimeout(url, {
         headers: {
           Accept: GH_ACCEPT,
           Authorization: `Bearer ${token}`,
@@ -142,7 +146,7 @@ export function registerGithubActionsTools(
         if (target.protocol !== "https:" && target.protocol !== new URL(url).protocol) {
           throw new Error(`GitHub Actions logs: refusing to follow a ${target.protocol} redirect`);
         }
-        res = await fetch(target.href, { redirect: "follow" });
+        res = await fetchWithTimeout(target.href, { redirect: "follow" });
       }
       const text = await res.text();
       if (!res.ok) {

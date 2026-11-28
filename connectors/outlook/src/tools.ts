@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
+import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
+import { guardedBearerJson } from "../../../shared/guarded-bearer-json.ts";
 import { headerLine } from "../../../shared/header-safe.ts";
 import { mailSendConsent } from "../../../shared/imap-tool-kit.ts";
 import {
@@ -9,7 +11,6 @@ import {
   requireProcessEnv,
 } from "../../../shared/mcp-tool-kit.ts";
 import {
-  makeRestFetcher,
   makeRestToolRegistrar,
   makeRestWriteToolRegistrar,
 } from "../../../shared/rest-tool-kit.ts";
@@ -34,7 +35,10 @@ function graphRequest(
   pathOrUrl: string,
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
-  return makeRestFetcher({ apiBase: GRAPH, token })(pathOrUrl, init);
+  // `resolveUrlWithBase` is the same chokepoint `makeRestFetcher` used: a next-page link may name
+  // only the Graph origin. The request itself is guarded, so a 3xx can neither carry the token to
+  // another origin nor replay a write, and a hung request times out.
+  return guardedBearerJson("Graph", resolveUrlWithBase(GRAPH, pathOrUrl), token, init);
 }
 
 /** `a@x, ,b@y` as Graph recipients, empty entries dropped. */

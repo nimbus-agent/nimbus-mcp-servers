@@ -429,3 +429,36 @@ describe("outlook calendar writes", () => {
     expect(run?.chain).toEqual({ ok: true, count: 3 });
   });
 });
+
+describe("outlook never sends its token across a redirect", () => {
+  it("a read refuses a redirect to another origin and sends nothing there", async () => {
+    const stub = serve({ status: 302, headers: { location: "https://evil.example/steal" } });
+    await withEnv({ MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token" }, async () => {
+      await expect(tools.call("outlook_mail_folders", {})).rejects.toThrow(
+        "Graph redirected to another origin; refused",
+      );
+    });
+    expect(stub.calls).toHaveLength(1);
+    expect(stub.only.redirect).toBe("manual");
+  });
+
+  it("a write refuses a 3xx instead of replaying it", async () => {
+    const stub = serve({ status: 307, headers: { location: `${GRAPH}/me/events/e1` } });
+    await withEnv({ MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token" }, async () => {
+      await expect(tools.call("outlook_calendar_delete", { eventId: "e1" })).rejects.toThrow(
+        "Graph answered a DELETE with a redirect (307)",
+      );
+    });
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it("still refuses a nextLink on another origin before anything is sent", async () => {
+    const stub = serve("{}");
+    await withEnv({ MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token" }, async () => {
+      await expect(
+        tools.call("outlook_mail_folders", { nextLink: "https://evil.example/next" }),
+      ).rejects.toThrow("refusing to fetch cross-origin URL");
+    });
+    expect(stub.calls).toEqual([]);
+  });
+});
