@@ -113,7 +113,9 @@ repo with `gateway <version>`. The steps are in [phase2-gateway.md](./phase2-gat
    deliberately left with a stated reason. Every other hit goes in the report.
 
 One connectors release maps to one gateway branch. Every release with a `feat:` needs a gateway pin
-bump soon after, because `audit:connector-version-skew` fails the gateway on a minor gap.
+bump, or the gateway never ships the new tools. A publish here never blocks the gateway (Nimbus#2192,
+2026-11-27): `bun run report:connector-version-skew` there says what is published but unpinned, and
+never fails. A Nimbus release PR may merge before or after the bump.
 
 ## What stays the owner's
 
@@ -148,8 +150,8 @@ Ends every run. Fill in:
 Change class:      <class from the table>
 This repo:         branch <name> · commits <sha subject, ...> · gates run: <command: result, ...>
 Gateway:           branch or worktree <name or "not started"> · commits <...> · gates run: <...>
-Landing order:     connectors PR -> release -> gateway PR (soon: a minor gap fails the gateway's
-                   version-skew audit)
+Landing order:     connectors PR -> release -> gateway PR (the gateway ships the new tools only
+                   once the pin moves; nothing fails meanwhile)
 Gateway work predicted: <per write tool, each item of the gateway checklist: what it needs, or n/a + reason>
 Open owner decisions: <wave, offered to model, reversibility, indexing, scopes, ... or "none">
 References found and not acted on: <id, file, why left>
