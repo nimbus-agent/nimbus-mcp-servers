@@ -12,6 +12,14 @@
  * names variables, never their values.
  */
 
+/**
+ * The per-test timeout for a live sandbox test. Each one makes several sequential vendor calls and
+ * then cleans up, which Bun's 5-second default does not cover: a timeout there would fail the test
+ * and could cut its cleanup short, leaving the throwaway resource modified. The runner passes no
+ * `--timeout`, so every live `it` passes this as its third argument.
+ */
+export const LIVE_TEST_TIMEOUT_MS = 60_000;
+
 /** What a live sandbox test needs to know before it decides to run. */
 export interface LiveSandboxGate {
   /** True only under the harness with every required variable set (non-blank). */

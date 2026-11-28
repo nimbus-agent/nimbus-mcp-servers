@@ -7,7 +7,12 @@ import {
   captureStandaloneTools,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
-import { liveSandboxGate, sandboxName, withCleanup } from "../../../scripts/sandbox-live-env.ts";
+import {
+  LIVE_TEST_TIMEOUT_MS,
+  liveSandboxGate,
+  sandboxName,
+  withCleanup,
+} from "../../../scripts/sandbox-live-env.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerGoogleCalendarTools } from "../src/tools.ts";
 
@@ -72,6 +77,18 @@ function icalLocal(ms: number, timeZone: string): string {
   }).formatToParts(new Date(ms));
   const part = (type: string): string => parts.find((p) => p.type === type)?.value ?? "";
   return `${part("year")}${part("month")}${part("day")}T${part("hour")}${part("minute")}${part("second")}`;
+}
+
+/** The same iCalendar local time (`YYYYMMDDTHHMMSS`) one calendar day later. */
+function nextLocalDay(local: string): string {
+  const date = new Date(
+    Date.UTC(
+      Number(local.slice(0, 4)),
+      Number(local.slice(4, 6)) - 1,
+      Number(local.slice(6, 8)) + 1,
+    ),
+  );
+  return `${date.toISOString().slice(0, 10).replaceAll("-", "")}${local.slice(8)}`;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -145,128 +162,138 @@ describe.skipIf(!live.enabled)(live.title, () => {
     expect(answer["deleted"] === true || answer["alreadyDeleted"] === true).toBe(true);
   }
 
-  it("creates a timed event, renames it, moves it to all-day and back, deletes it twice", () =>
-    standalone(async () => {
-      const calendarId = throwawayCalendar();
-      let eventId: string | undefined;
-      let deleted = false;
+  it(
+    "creates a timed event, renames it, moves it to all-day and back, deletes it twice",
+    () =>
+      standalone(async () => {
+        const calendarId = throwawayCalendar();
+        let eventId: string | undefined;
+        let deleted = false;
 
-      await withCleanup(
-        () => `event ${eventId ?? "(id unknown: look for nimbus-sandbox-*)"} in ${calendarId}`,
-        async () => {
-          const created = await write(calendarId, "gcal_event_create", {
-            summary: sandboxName("timed"),
-            description: "Created by the nimbus-mcp-servers live sandbox test; deleted by it.",
-            start: { dateTime: isoTime(tenUtc) },
-            end: { dateTime: isoTime(tenUtc + 3_600_000) },
-          });
-          expect(typeof created["id"]).toBe("string");
-          eventId = String(created["id"]);
-          expect(created["attendees"]).toBeUndefined();
+        await withCleanup(
+          () => `event ${eventId ?? "(id unknown: look for nimbus-sandbox-*)"} in ${calendarId}`,
+          async () => {
+            const created = await write(calendarId, "gcal_event_create", {
+              summary: sandboxName("timed"),
+              description: "Created by the nimbus-mcp-servers live sandbox test; deleted by it.",
+              start: { dateTime: isoTime(tenUtc) },
+              end: { dateTime: isoTime(tenUtc + 3_600_000) },
+            });
+            expect(typeof created["id"]).toBe("string");
+            eventId = String(created["id"]);
+            expect(created["attendees"]).toBeUndefined();
 
-          const renamedTo = sandboxName("renamed");
-          const renamed = await write(calendarId, "gcal_event_update", {
-            eventId,
-            summary: renamedTo,
-          });
-          expect(renamed["summary"]).toBe(renamedTo);
+            const renamedTo = sandboxName("renamed");
+            const renamed = await write(calendarId, "gcal_event_update", {
+              eventId,
+              summary: renamedTo,
+            });
+            expect(renamed["summary"]).toBe(renamedTo);
 
-          // Timed -> all day: the PATCH sends `dateTime: null` beside `date`. A live API that kept
-          // the dateTime, or refused the null, fails here.
-          const allDay = await write(calendarId, "gcal_event_update", {
-            eventId,
-            start: { date: isoDate(dayStart) },
-            end: { date: isoDate(dayStart + DAY_MS) },
-          });
-          expect(record(allDay["start"])["date"]).toBe(isoDate(dayStart));
-          expect(record(allDay["start"])["dateTime"]).toBeUndefined();
-          expect(record(allDay["end"])["date"]).toBe(isoDate(dayStart + DAY_MS));
-          expect(record(allDay["end"])["dateTime"]).toBeUndefined();
+            // Timed -> all day: the PATCH sends `dateTime: null` beside `date`. A live API that kept
+            // the dateTime, or refused the null, fails here.
+            const allDay = await write(calendarId, "gcal_event_update", {
+              eventId,
+              start: { date: isoDate(dayStart) },
+              end: { date: isoDate(dayStart + DAY_MS) },
+            });
+            expect(record(allDay["start"])["date"]).toBe(isoDate(dayStart));
+            expect(record(allDay["start"])["dateTime"]).toBeUndefined();
+            expect(record(allDay["end"])["date"]).toBe(isoDate(dayStart + DAY_MS));
+            expect(record(allDay["end"])["dateTime"]).toBeUndefined();
 
-          // All day -> timed: `date: null` beside `dateTime`.
-          const timed = await write(calendarId, "gcal_event_update", {
-            eventId,
-            start: { dateTime: isoTime(tenUtc), timeZone: "UTC" },
-            end: { dateTime: isoTime(tenUtc + 3_600_000), timeZone: "UTC" },
-          });
-          const start = record(timed["start"]);
-          expect(start["date"]).toBeUndefined();
-          expect(Date.parse(String(start["dateTime"]))).toBe(tenUtc);
-          expect(record(timed["end"])["date"]).toBeUndefined();
+            // All day -> timed: `date: null` beside `dateTime`.
+            const timed = await write(calendarId, "gcal_event_update", {
+              eventId,
+              start: { dateTime: isoTime(tenUtc), timeZone: "UTC" },
+              end: { dateTime: isoTime(tenUtc + 3_600_000), timeZone: "UTC" },
+            });
+            const start = record(timed["start"]);
+            expect(start["date"]).toBeUndefined();
+            expect(Date.parse(String(start["dateTime"]))).toBe(tenUtc);
+            expect(record(timed["end"])["date"]).toBeUndefined();
 
-          const fetched = await read("gcal_event_get", { calendarId, eventId });
-          expect(fetched["summary"]).toBe(renamedTo);
+            const fetched = await read("gcal_event_get", { calendarId, eventId });
+            expect(fetched["summary"]).toBe(renamedTo);
 
-          expect(await write(calendarId, "gcal_event_delete", { eventId })).toEqual({
-            deleted: true,
-            calendarId,
-            eventId,
-          });
-          deleted = true;
+            expect(await write(calendarId, "gcal_event_delete", { eventId })).toEqual({
+              deleted: true,
+              calendarId,
+              eventId,
+            });
+            deleted = true;
 
-          // Google answers 410 Gone for an event that is already deleted.
-          expect(await write(calendarId, "gcal_event_delete", { eventId })).toMatchObject({
-            deleted: false,
-            alreadyDeleted: true,
-            calendarId,
-            eventId,
-          });
-        },
-        async () => {
-          if (!deleted) await deleteIfPresent(calendarId, eventId);
-        },
-      );
-    }));
+            // Google answers 410 Gone for an event that is already deleted.
+            expect(await write(calendarId, "gcal_event_delete", { eventId })).toMatchObject({
+              deleted: false,
+              alreadyDeleted: true,
+              calendarId,
+              eventId,
+            });
+          },
+          async () => {
+            if (!deleted) await deleteIfPresent(calendarId, eventId);
+          },
+        );
+      }),
+    LIVE_TEST_TIMEOUT_MS,
+  );
 
-  it("creates a recurring event with an RRULE and an EXDATE;TZID line, then deletes it", () =>
-    standalone(async () => {
-      const calendarId = throwawayCalendar();
-      const timeZone = "Europe/Berlin";
-      // Three daily occurrences; the EXDATE removes the second, named in Berlin wall-clock time.
-      const second = tenUtc + DAY_MS;
-      const exdate = `EXDATE;TZID=${timeZone}:${icalLocal(second, timeZone)}`;
-      let eventId: string | undefined;
-      let deleted = false;
+  it(
+    "creates a recurring event with an RRULE and an EXDATE;TZID line, then deletes it",
+    () =>
+      standalone(async () => {
+        const calendarId = throwawayCalendar();
+        const timeZone = "Europe/Berlin";
+        // Three daily occurrences; the EXDATE removes the second, named in Berlin wall-clock time.
+        // A daily series keeps its local clock time, so the second occurrence is the next local
+        // calendar day at the first one's local time, not 24 elapsed hours later: across a DST
+        // change those differ by an hour and the EXDATE would exclude nothing.
+        const exdate = `EXDATE;TZID=${timeZone}:${nextLocalDay(icalLocal(tenUtc, timeZone))}`;
+        let eventId: string | undefined;
+        let deleted = false;
 
-      await withCleanup(
-        () =>
-          `recurring event ${eventId ?? "(id unknown: look for nimbus-sandbox-*)"} in ${calendarId}`,
-        async () => {
-          const created = await write(calendarId, "gcal_event_create", {
-            summary: sandboxName("recurring"),
-            start: { dateTime: isoTime(tenUtc), timeZone },
-            end: { dateTime: isoTime(tenUtc + 3_600_000), timeZone },
-            recurrence: ["RRULE:FREQ=DAILY;COUNT=3", exdate],
-          });
-          expect(typeof created["id"]).toBe("string");
-          eventId = String(created["id"]);
-          console.error(`[live sandbox] google-calendar: recurring event ${eventId} created`);
-          const lines = created["recurrence"];
-          expect(Array.isArray(lines)).toBe(true);
-          expect(
-            (lines as unknown[]).some((l) => typeof l === "string" && l.startsWith("EXDATE")),
-          ).toBe(true);
+        await withCleanup(
+          () =>
+            `recurring event ${eventId ?? "(id unknown: look for nimbus-sandbox-*)"} in ${calendarId}`,
+          async () => {
+            const created = await write(calendarId, "gcal_event_create", {
+              summary: sandboxName("recurring"),
+              start: { dateTime: isoTime(tenUtc), timeZone },
+              end: { dateTime: isoTime(tenUtc + 3_600_000), timeZone },
+              recurrence: ["RRULE:FREQ=DAILY;COUNT=3", exdate],
+            });
+            expect(typeof created["id"]).toBe("string");
+            eventId = String(created["id"]);
+            console.error(`[live sandbox] google-calendar: recurring event ${eventId} created`);
+            const lines = created["recurrence"];
+            expect(Array.isArray(lines)).toBe(true);
+            expect(
+              (lines as unknown[]).some((l) => typeof l === "string" && l.startsWith("EXDATE")),
+            ).toBe(true);
 
-          // The expanded instances in the window: three occurrences less the excluded one.
-          const listed = await read("gcal_event_list", {
-            calendarId,
-            timeMin: isoTime(tenUtc - 3_600_000),
-            timeMax: isoTime(tenUtc + 3 * DAY_MS),
-          });
-          const items = Array.isArray(listed["items"]) ? (listed["items"] as unknown[]) : [];
-          const instances = items.filter(
-            (i) => (i as Record<string, unknown> | null)?.["recurringEventId"] === eventId,
-          );
-          expect(instances).toHaveLength(2);
+            // The expanded instances in the window: three occurrences less the excluded one.
+            const listed = await read("gcal_event_list", {
+              calendarId,
+              timeMin: isoTime(tenUtc - 3_600_000),
+              timeMax: isoTime(tenUtc + 3 * DAY_MS),
+            });
+            const items = Array.isArray(listed["items"]) ? (listed["items"] as unknown[]) : [];
+            const instances = items.filter(
+              (i) => (i as Record<string, unknown> | null)?.["recurringEventId"] === eventId,
+            );
+            expect(instances).toHaveLength(2);
 
-          expect(await write(calendarId, "gcal_event_delete", { eventId })).toMatchObject({
-            deleted: true,
-          });
-          deleted = true;
-        },
-        async () => {
-          if (!deleted) await deleteIfPresent(calendarId, eventId);
-        },
-      );
-    }));
+            expect(await write(calendarId, "gcal_event_delete", { eventId })).toMatchObject({
+              deleted: true,
+            });
+            deleted = true;
+          },
+          async () => {
+            if (!deleted) await deleteIfPresent(calendarId, eventId);
+          },
+        );
+      }),
+    LIVE_TEST_TIMEOUT_MS,
+  );
 });

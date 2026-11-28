@@ -7,7 +7,11 @@ import {
   captureStandaloneTools,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
-import { liveSandboxGate, withCleanup } from "../../../scripts/sandbox-live-env.ts";
+import {
+  LIVE_TEST_TIMEOUT_MS,
+  liveSandboxGate,
+  withCleanup,
+} from "../../../scripts/sandbox-live-env.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerUnleashTools } from "../src/tools.ts";
 
@@ -91,46 +95,51 @@ describe.skipIf(!live.enabled)(live.title, () => {
     }).length;
   }
 
-  it("toggles the throwaway flag to the opposite state, confirms it, and restores it", () =>
-    standalone(async () => {
-      const before = await readState();
-      const original = before["enabled"];
-      expect(typeof original).toBe("boolean");
-      const flipped = original !== true;
+  it(
+    "toggles the throwaway flag to the opposite state, confirms it, and restores it",
+    () =>
+      standalone(async () => {
+        const before = await readState();
+        const original = before["enabled"];
+        expect(typeof original).toBe("boolean");
+        const flipped = original !== true;
 
-      await withCleanup(
-        `Unleash flag ${scope.NIMBUS_MCP_UNLEASH_WRITE_SCOPE} should be enabled=${String(original)}`,
-        async () => {
-          const answer = await toggle(flipped);
-          expect(answer).toMatchObject({ ok: true, confirmed: true, enabled: flipped });
-          const during = await readState();
-          expect(during["enabled"]).toBe(flipped);
-          if (flipped) {
-            // The README's open question: does enabling an environment with no active strategy make
-            // Unleash add a default one? Recorded, not asserted: either answer is a valid server.
-            const had = activeStrategies(before);
-            const has = activeStrategies(during);
-            let verdict =
-              "the environment already had an active strategy, so the question was not exercised";
-            if (had === 0) {
-              verdict = has > 0 ? "a default strategy WAS added" : "NO default strategy was added";
+        await withCleanup(
+          `Unleash flag ${scope.NIMBUS_MCP_UNLEASH_WRITE_SCOPE} should be enabled=${String(original)}`,
+          async () => {
+            const answer = await toggle(flipped);
+            expect(answer).toMatchObject({ ok: true, confirmed: true, enabled: flipped });
+            const during = await readState();
+            expect(during["enabled"]).toBe(flipped);
+            if (flipped) {
+              // The README's open question: does enabling an environment with no active strategy make
+              // Unleash add a default one? Recorded, not asserted: either answer is a valid server.
+              const had = activeStrategies(before);
+              const has = activeStrategies(during);
+              let verdict =
+                "the environment already had an active strategy, so the question was not exercised";
+              if (had === 0) {
+                verdict =
+                  has > 0 ? "a default strategy WAS added" : "NO default strategy was added";
+              }
+              console.error(
+                `[live sandbox] unleash: enabling an environment with ${String(had)} active strategies left ${String(has)}; ${verdict}`,
+              );
+            } else {
+              console.error(
+                "[live sandbox] unleash: the flag started enabled, so this run toggled it off and on; the default-strategy question was not exercised (start it disabled with no strategies to answer it)",
+              );
             }
-            console.error(
-              `[live sandbox] unleash: enabling an environment with ${String(had)} active strategies left ${String(has)}; ${verdict}`,
-            );
-          } else {
-            console.error(
-              "[live sandbox] unleash: the flag started enabled, so this run toggled it off and on; the default-strategy question was not exercised (start it disabled with no strategies to answer it)",
-            );
-          }
-        },
-        async () => {
-          const back = await toggle(original === true);
-          expect(back).toMatchObject({ ok: true, confirmed: true });
-        },
-      );
+          },
+          async () => {
+            const back = await toggle(original === true);
+            expect(back).toMatchObject({ ok: true, confirmed: true });
+          },
+        );
 
-      const after = await readState();
-      expect(after["enabled"]).toBe(original);
-    }));
+        const after = await readState();
+        expect(after["enabled"]).toBe(original);
+      }),
+    LIVE_TEST_TIMEOUT_MS,
+  );
 });

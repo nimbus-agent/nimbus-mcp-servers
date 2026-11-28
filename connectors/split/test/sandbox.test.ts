@@ -7,7 +7,11 @@ import {
   captureStandaloneTools,
   withEnv,
 } from "../../../scripts/connector-tool-harness.ts";
-import { liveSandboxGate, withCleanup } from "../../../scripts/sandbox-live-env.ts";
+import {
+  LIVE_TEST_TIMEOUT_MS,
+  liveSandboxGate,
+  withCleanup,
+} from "../../../scripts/sandbox-live-env.ts";
 import { resetConnectorModeForTests, setConnectorMode } from "../../../shared/connector-mode.ts";
 import { registerSplitTools } from "../src/tools.ts";
 
@@ -108,9 +112,13 @@ describe.skipIf(!live.enabled)(live.title, () => {
     expect((await read())["killed"]).toBe(false);
   }
 
-  it("kills the throwaway split in SPLIT_SANDBOX_ENVIRONMENT, confirms it, and restores it", async () => {
-    await standalone(() => killAndRestore(live.values["SPLIT_SANDBOX_ENVIRONMENT"] ?? ""));
-  });
+  it(
+    "kills the throwaway split in SPLIT_SANDBOX_ENVIRONMENT, confirms it, and restores it",
+    async () => {
+      await standalone(() => killAndRestore(live.values["SPLIT_SANDBOX_ENVIRONMENT"] ?? ""));
+    },
+    LIVE_TEST_TIMEOUT_MS,
+  );
 
   it.skipIf(spacedName === "")(
     spacedName === ""
@@ -120,5 +128,6 @@ describe.skipIf(!live.enabled)(live.title, () => {
       expect(spacedName).toContain(" ");
       await standalone(() => killAndRestore(spacedName));
     },
+    LIVE_TEST_TIMEOUT_MS,
   );
 });
