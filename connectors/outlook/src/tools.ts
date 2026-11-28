@@ -2,6 +2,7 @@ import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { headerLine } from "../../../shared/header-safe.ts";
 import { mailSendConsent } from "../../../shared/imap-tool-kit.ts";
+import { recipientScopeTargets } from "../../../shared/mail-recipients.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -237,6 +238,7 @@ export function registerOutlookTools(
         // The draft sits in Drafts until the owner deletes or sends it, and nothing is sent.
         recoverable: true,
         scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
+        scopeTargetsOf: recipientScopeTargets,
       },
       "Save an email as a DRAFT in the owner's Drafts folder via Microsoft Graph; it is not sent, and the owner reviews and sends it from Outlook.",
       outlookDraftCreateArgs,

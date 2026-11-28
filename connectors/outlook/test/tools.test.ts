@@ -428,4 +428,38 @@ describe("outlook calendar writes", () => {
     expect(run?.audit[2]?.detail["preState"]).toEqual({ eventId: "AAMk/9" });
     expect(run?.chain).toEqual({ ok: true, count: 3 });
   });
+
+  it("mail_send checks every recipient: a cc outside the scope is refused before any prompt or send", async () => {
+    resetConnectorModeForTests();
+    setConnectorMode("standalone");
+    const stub = serve({ status: 202, body: "" });
+    const scope = { NIMBUS_MCP_OUTLOOK_WRITE_SCOPE: "recipient:ada@example.com" };
+    let refused: ApprovedWrite | undefined;
+    let allowed: ApprovedWrite | undefined;
+    await withEnv(
+      { MICROSOFT_OAUTH_ACCESS_TOKEN: "graph-token", MICROSOFT_OAUTH_SCOPES: undefined },
+      async () => {
+        refused = await approvedStandaloneWrite(registerOutlookTools, scope, "outlook_mail_send", {
+          to: "ada@example.com",
+          cc: "eve@elsewhere.example",
+          subject: "hi",
+          body: "b",
+        });
+        expect(stub.calls).toEqual([]);
+        allowed = await approvedStandaloneWrite(
+          registerOutlookTools,
+          { NIMBUS_MCP_OUTLOOK_WRITE_SCOPE: "recipient:ada@example.com,recipient:bob@example.com" },
+          "outlook_mail_send",
+          { to: "ada@example.com, bob@example.com", subject: "hi", body: "b" },
+        );
+      },
+    );
+    expect(JSON.stringify(refused?.answer)).toContain(
+      "out of scope: recipient:eve@elsewhere.example is not in NIMBUS_MCP_OUTLOOK_WRITE_SCOPE",
+    );
+    expect(refused?.audit.map((e) => e.outcome)).toEqual(["refused"]);
+    // A two-recipient `to` could never be scoped before: now each address is its own term.
+    expect(allowed?.answer).toEqual({ ok: true });
+    expect(stub.calls).toHaveLength(1);
+  });
 });

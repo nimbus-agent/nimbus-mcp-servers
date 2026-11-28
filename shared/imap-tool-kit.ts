@@ -20,6 +20,7 @@ import { z } from "zod";
 
 import { headerLine } from "./header-safe.ts";
 import { capPreview, clampLimit } from "./imap-mail-core.ts";
+import { recipientScopeTargets } from "./mail-recipients.ts";
 import { createRegisterSimpleTool, type McpListResult, mcpJsonResult } from "./mcp-tool-kit.ts";
 
 // ---------------------------------------------------------------------------
@@ -94,16 +95,23 @@ export function outgoingMail(args: {
 /**
  * The consent declaration every mail-send tool shares, given its action type (`mutates`).
  * A sent mail cannot be recalled and nothing remains to query, so the recipient and
- * subject ARE the pre-state; the recipient is what the write scope is checked against.
+ * subject ARE the pre-state. The write scope is checked against EVERY address in `to`, `cc`
+ * and `bcc` ({@link recipientScopeTargets}); `to` alone names the call in the audit log.
  */
-export function mailSendConsent<T extends { readonly to: string; readonly subject: string }>(
-  mutates: string,
-): WriteToolConfig<T> {
+export function mailSendConsent<
+  T extends {
+    readonly to: string;
+    readonly subject: string;
+    readonly cc?: string | undefined;
+    readonly bcc?: string | undefined;
+  },
+>(mutates: string): WriteToolConfig<T> {
   return {
     mutates,
     recoverable: false,
     capturePreState: (p) => Promise.resolve({ to: p.to, subject: p.subject }),
     scopeTargetOf: (p) => ({ kind: "recipient", value: p.to }),
+    scopeTargetsOf: recipientScopeTargets,
   };
 }
 

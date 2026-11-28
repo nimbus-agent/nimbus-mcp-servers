@@ -80,6 +80,14 @@ export type WriteToolConfig<T> = {
   /** The scope target this invocation would touch, checked against the allow-list. */
   readonly scopeTargetOf: (args: T) => { kind: string; value: string };
   /**
+   * For a write that touches SEVERAL targets: every one of them, each checked against the
+   * allow-list, and the write is refused unless all are in scope (an empty list is refused too).
+   * When set, scope is checked against these and not `scopeTargetOf`, which then only names the
+   * call in the audit log. A mail send is the case: `to`, `cc` and `bcc` each name recipients,
+   * and checking `to` alone let one in-scope recipient carry any number of others.
+   */
+  readonly scopeTargetsOf?: (args: T) => ReadonlyArray<{ kind: string; value: string }>;
+  /**
    * A refusal no consent can lift (an input the tool will reject, a tool that is refused outright),
    * as its message, or `undefined` to proceed. Standalone only, and checked FIRST, before scope,
    * budget and prompt: asking a human to approve a call that is certain to fail trains them to
@@ -429,9 +437,15 @@ export function createWriteToolRegistrar(
       // SCOPE before prompting. Asking a human to approve something the operator already forbade
       // cannot change the outcome, and training people to click through prompts that do not
       // matter is how you make the prompts that do matter ineffective.
-      if (!scopeAllows(scope, target.kind, target.value)) {
+      const checked = toolCfg.scopeTargetsOf?.(args) ?? [target];
+      if (checked.length === 0) {
         await record(name, "refused", { reason: "out of scope", target });
-        return refused(`out of scope: ${target.kind}:${target.value} is not in ${cfg.scopeEnv}`);
+        return refused(`out of scope: ${name} names no target to check against ${cfg.scopeEnv}`);
+      }
+      const outside = checked.find((t) => !scopeAllows(scope, t.kind, t.value));
+      if (outside !== undefined) {
+        await record(name, "refused", { reason: "out of scope", target: outside });
+        return refused(`out of scope: ${outside.kind}:${outside.value} is not in ${cfg.scopeEnv}`);
       }
       return undefined;
     }
