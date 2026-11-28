@@ -76,4 +76,20 @@ describe("postGraphql", () => {
     }
     expect(message).toBe(`Svc 500: ${"z".repeat(400)}`);
   });
+
+  it("refuses a 3xx instead of replaying the credentialed POST", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response("", { status: 307, headers: { location: "https://evil.example/steal" } });
+    }) as typeof globalThis.fetch;
+    await expect(postGraphql(base)).rejects.toThrow("Svc answered a POST with a redirect (307)");
+    expect(calls).toEqual(["https://graphql.test/graphql"]);
+  });
+
+  it("still allows a plain-http base from the environment", async () => {
+    const { calls } = stubFetch({ body: '{"data":{"ok":true}}' });
+    await postGraphql({ ...base, url: "http://dagster.internal:3000/graphql" });
+    expect(calls[0]?.url).toBe("http://dagster.internal:3000/graphql");
+  });
 });

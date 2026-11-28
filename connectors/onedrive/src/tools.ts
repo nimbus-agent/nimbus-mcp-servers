@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type ConsentServer, createWriteToolRegistrar } from "../../../shared/consent-kit.ts";
 import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import {
   createRegisterSimpleTool,
   createZodToolRegistrar,
@@ -11,6 +12,7 @@ import {
   makeRestToolRegistrar,
   makeRestWriteToolRegistrar,
 } from "../../../shared/rest-tool-kit.ts";
+import { fetchWithSignedHandoff } from "../../../shared/signed-download.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -27,7 +29,7 @@ async function graphRequest(
       mergedHeaders.set(k, v);
     }
   }
-  const res = await fetch(url, {
+  const res = await guardedFetch("Graph", url, {
     ...init,
     headers: mergedHeaders,
   });
@@ -148,11 +150,12 @@ export function registerOnedriveTools(
       if (folder !== undefined && folder !== null) {
         throw new Error("Item is a folder; download applies to files only");
       }
-      const res = await fetch(
+      // Graph answers /content with a 302 to a pre-authenticated download URL on another origin.
+      // The token goes to Graph only; that URL is fetched without it.
+      const res = await fetchWithSignedHandoff(
+        "Graph",
         `${GRAPH}/me/drive/items/${encodeURIComponent(data.itemId)}/content`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
+        { headers: { Authorization: `Bearer ${token}` } },
       );
       const buf = await res.arrayBuffer();
       if (!res.ok) {

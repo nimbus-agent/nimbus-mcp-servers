@@ -11,6 +11,8 @@
  * must be non-empty, messages joined, a result union) and keep their own clients.
  */
 
+import { guardedFetch } from "./guarded-fetch.ts";
+
 /** Body-snippet length in the thrown errors. The value both connectors used. */
 const SNIPPET_MAX = 400;
 
@@ -34,15 +36,22 @@ export interface GraphqlRequest {
  * and `"<label> GraphQL: response missing \`data\` field"` when it carries no `data`.
  */
 export async function postGraphql<T>(request: GraphqlRequest): Promise<T> {
-  const res = await fetch(request.url, {
-    method: "POST",
-    headers: {
-      ...request.headers,
-      "Content-Type": "application/json",
-      Accept: "application/json",
+  // A 3xx is refused rather than replayed (the credential must not follow it). The URL may come
+  // from the environment, so a plain-http self-hosted endpoint stays allowed.
+  const res = await guardedFetch(
+    request.label,
+    request.url,
+    {
+      method: "POST",
+      headers: {
+        ...request.headers,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ query: request.query, variables: request.variables }),
     },
-    body: JSON.stringify({ query: request.query, variables: request.variables }),
-  });
+    { requireSecureBase: false },
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`${request.label} ${String(res.status)}: ${text.slice(0, SNIPPET_MAX)}`);

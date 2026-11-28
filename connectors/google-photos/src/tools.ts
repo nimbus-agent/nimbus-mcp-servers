@@ -1,8 +1,6 @@
 import { z } from "zod";
-import {
-  fetchBearerAuthorizedJson,
-  resolveUrlWithBase,
-} from "../../../shared/fetch-bearer-json.ts";
+import { resolveUrlWithBase } from "../../../shared/fetch-bearer-json.ts";
+import { guardedBearerJson } from "../../../shared/guarded-bearer-json.ts";
 import { createRegisterSimpleTool, createZodToolRegistrar } from "../../../shared/mcp-tool-kit.ts";
 import { makeRestToolRegistrar } from "../../../shared/rest-tool-kit.ts";
 
@@ -14,7 +12,9 @@ async function photosFetch(
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
   const url = resolveUrlWithBase(PHOTOS_BASE, path);
-  return fetchBearerAuthorizedJson(url, token, init, { "Content-Type": "application/json" });
+  return guardedBearerJson("Google Photos", url, token, init, {
+    "Content-Type": "application/json",
+  });
 }
 
 /**

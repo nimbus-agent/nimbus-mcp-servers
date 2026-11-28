@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { matchesResult, searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import { mcpJsonResult as jsonResult } from "../../../shared/mcp-tool-kit.ts";
 import type { ZodToolRegistrar } from "../../../shared/run-read-only-mcp-connector.ts";
@@ -14,7 +15,9 @@ function withToken(path: string): string {
 }
 
 async function pipedriveGet(path: string, resourceLabel: string): Promise<unknown> {
-  const res = await fetch(withToken(path), { headers: { Accept: "application/json" } });
+  const res = await guardedFetch("Pipedrive", withToken(path), {
+    headers: { Accept: "application/json" },
+  });
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Pipedrive ${resourceLabel} ${String(res.status)}: ${text.slice(0, 400)}`);

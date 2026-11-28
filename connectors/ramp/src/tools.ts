@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { createAccessTokenCache } from "../../../shared/access-token-cache.ts";
 import { requiredEnv } from "../../../shared/env-json-api.ts";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { searchToolInputSchema } from "../../../shared/mcp-search-tool.ts";
 import {
   encodeBasicAuthHeader,
@@ -20,7 +21,8 @@ const token = createAccessTokenCache({
     const clientId = requiredEnv("RAMP_CLIENT_ID");
     const clientSecret = requiredEnv("RAMP_CLIENT_SECRET");
     const body = new URLSearchParams({ grant_type: "client_credentials", scope: TOKEN_SCOPE });
-    const res = await fetch(`${BASE}${TOKEN_PATH}`, {
+    // A 3xx on this POST is refused: the client secret must never be replayed to a redirect target.
+    const res = await guardedFetch("Ramp", `${BASE}${TOKEN_PATH}`, {
       method: "POST",
       headers: {
         Authorization: encodeBasicAuthHeader(clientId, clientSecret),
@@ -40,7 +42,7 @@ export function __resetRampTokenForTests(): void {
 
 async function rampGet(path: string): Promise<unknown> {
   const t = await token();
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await guardedFetch("Ramp", `${BASE}${path}`, {
     headers: { Authorization: `Bearer ${t}`, Accept: "application/json" },
   });
   const text = await res.text();

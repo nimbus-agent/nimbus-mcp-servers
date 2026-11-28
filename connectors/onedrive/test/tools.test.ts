@@ -89,7 +89,9 @@ describe("onedrive tools", () => {
 
   it("item_search escapes quotes in the query, and follows a nextLink when given", async () => {
     expect((await request("onedrive_item_search", { query: "o'brien notes" })).url).toBe(
-      `${GRAPH}/me/drive/root/search(q='o''brien notes')?$top=25`,
+      // The guarded fetch hands the transport the parsed URL, so the space is already %20 here;
+      // fetch would have put the same bytes on the wire.
+      `${GRAPH}/me/drive/root/search(q='o''brien%20notes')?$top=25`,
     );
     expect((await request("onedrive_item_search", { query: "x", pageSize: 5 })).url).toBe(
       `${GRAPH}/me/drive/root/search(q='x')?$top=5`,

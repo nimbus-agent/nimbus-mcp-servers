@@ -23,6 +23,7 @@
  * The token is only ever an `Authorization` header value: no response, log or error carries it.
  */
 import type { SyncResponse } from "@nimbus-dev/sdk/sync";
+import { guardedFetch } from "../../../shared/guarded-fetch.ts";
 import { mapReadwiseBookToItem } from "./book-mapping.ts";
 import { mapReadwiseHighlightToItem } from "./highlight-mapping.ts";
 import { READWISE_BASE } from "./readwise-base.ts";
@@ -140,7 +141,7 @@ export type ReadwiseFetch = (url: string, init: RequestInit) => Promise<Response
 export interface ReadwiseSyncDeps {
   /** `READWISE_TOKEN` as the process received it; blank or absent → `unauthenticated`. */
   readonly token: string | undefined;
-  /** Defaults to the global `fetch`. */
+  /** Defaults to `guardedFetch`: a redirect never carries the token to another origin. */
   readonly fetch?: ReadwiseFetch;
   /** Defaults to `Date.now`. The mappers' `modifiedAt` fallback and the Retry-After clock. */
   readonly now?: () => number;
@@ -311,7 +312,7 @@ export async function readwiseSyncPage(
   }
   const position = decodeReadwiseCursor(cursor) ?? { stream: "highlights", page: 1 };
   const now = (deps.now ?? Date.now)();
-  const fetchFn: ReadwiseFetch = deps.fetch ?? ((url, init) => fetch(url, init));
+  const fetchFn: ReadwiseFetch = deps.fetch ?? ((url, init) => guardedFetch("Readwise", url, init));
 
   const outcome = await getPage(pageUrl(position), token, fetchFn);
   if (outcome.kind === "http_error") {
