@@ -55,6 +55,22 @@ added to the sandbox network allow-list at spawn time.
 - `imap_mail_send` — send a new message over SMTP. Requires Gateway HITL
   `email.send`.
 
+### The writes
+
+One tool writes, `imap_mail_send`, registered through the consent registrar. Outside the gateway it
+is gated by owner consent, a write-scope allow-list, a mutation budget and an audit record; in the
+gateway the executor is the gate.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `imap_mail_send` | Sends a new message over SMTP. | `false`; `capturePreState` records `{to, subject}`, since a sent mail cannot be recalled. | `recipient:<address>` |
+
+Scope it with `NIMBUS_MCP_IMAP_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched
+exactly. The only kind is `recipient`; an unknown kind fails at startup, and an unset or empty scope
+refuses every write. Scope: one `recipient:<address>` term per address; every address in `to`, `cc`
+and `bcc` must be in scope (a display name is dropped; the address inside `<>` is what is checked;
+an entry that is not exactly one simple address is checked as written).
+
 ## See also
 
 - [Email Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)

@@ -61,10 +61,19 @@ needs owner approval. Each is the other's inverse. Both send a `comment` that
 says the change was made by Nimbus after owner approval, then read the
 definition back and return `confirmed: true` only when that read shows the
 requested `killed` state (a failed read-back is reported as `confirmError`, and
-the write is not retried). Outside the gateway, scope them with
-`NIMBUS_MCP_SPLIT_WRITE_SCOPE=flag:<workspaceId>/<environment>/<splitName>`,
-where `<environment>` is written exactly as the tool is called with it (id or
-name).
+the write is not retried).
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_SPLIT_WRITE_SCOPE`, a comma-separated list of `kind:value` terms
+with exact matching. One kind exists, `flag:<workspaceId>/<environment>/<splitName>`, where
+`<environment>` is written exactly as the tool is called with it (id or name). An unset or empty
+scope refuses every write, and an unknown kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `split_kill` | Kills a split in one environment, so it serves its default treatment. | `true` (undone by `split_restore`). |
+| `split_restore` | Restores a killed split in one environment, so its rules apply again. | `true` (undone by `split_kill`). |
 
 ### Sandbox test
 

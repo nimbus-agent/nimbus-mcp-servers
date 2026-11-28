@@ -109,6 +109,28 @@ nimbus ask "Summarize my recent activity in Kubernetes"
 - `permissions.network` stays empty: the API-server host lives in the kubeconfig and is the gateway's
   grant.
 
+### The writes
+
+Four tools mutate the cluster and register through the consent registrar. Outside the gateway each
+is gated by owner consent, a write-scope allow-list, a mutation budget and an audit record; in the
+gateway the executor is the gate. Scope them with `NIMBUS_MCP_KUBERNETES_WRITE_SCOPE`, a
+comma-separated list of `kind:value` terms with exact matching. One kind exists, `namespace:<ns>`,
+matched against the `namespace` argument of every tool below. An unset or empty scope refuses every
+write, and an unknown kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `k8s_rollout_restart` | Restarts a rollout of `resourceType`/`name` in `namespace`. | `true` |
+| `k8s_pod_delete` | Deletes the pod `podName` in `namespace`. | `false`; `capturePreState` records `{context, namespace, podName}`, the only thing left of a deleted pod. |
+| `k8s_deployment_scale` | Sets a deployment's replica count (`replicas`, an integer of 0 or more). | `true` |
+| `k8s_manifest_apply` | Server-side applies a manifest of allowlisted namespaced kinds. | `false`; `capturePreState` records `{context, namespace, planSha256, diffSha256, objects}`, the objects the manifest names. |
+
+`k8s_manifest_plan` is not a write. It is a prepare tool: a read the gateway calls before the apply's
+approval prompt, and it changes nothing. It is registered through the prepare registrar, so it has a
+scope target (`namespace:<ns>`, the same variable) and no `recoverable` flag. `k8s_manifest_apply`
+also has a standalone `refuseBefore` check that refuses an unsafe manifest before any consent
+prompt.
+
 ## Further bounds (security review, round 2)
 
 - **A Secret withholds its part of the diff.** When the manifest holds a `Secret`, the plan's

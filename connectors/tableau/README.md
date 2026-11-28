@@ -55,7 +55,7 @@ Tools exposed:
 
 | Tool | Purpose |
 | --- | --- |
-| `tableau_list` | List views/dashboards; optional `limit` cap (default 200, max 500). |
+| `tableau_list` | List views/dashboards; optional 1-based page `cursor` and `limit` (default 200, max 500); returns `{ items, nextCursor }`. |
 | `tableau_get` | Fetch one view by luid. |
 | `tableau_search` | Substring search across views (name, luid). |
 | `tableau_datasource_refresh` | Trigger an extract refresh for a published datasource. Async — returns the job id. HITL-gated. |
@@ -64,6 +64,20 @@ Tools exposed:
 The three list/get/search tools are read-only; the two refresh tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`). Workbook-level metadata
 is deferred.
+
+### The writes
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_TABLEAU_WRITE_SCOPE`, a comma-separated list of `kind:value`
+terms with exact matching. One kind exists, `resource:<id>`, matched against the `id` argument of
+both tools (a datasource id or a workbook id; the tool name is not part of the target). An unset or
+empty scope refuses every write, and an unknown kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `tableau_datasource_refresh` | Queues an extract refresh of a published datasource and returns the job id. | `true` |
+| `tableau_workbook_refresh` | Queues an extract refresh of a workbook and returns the job id. | `true` |
 
 ## See also
 

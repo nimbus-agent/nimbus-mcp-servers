@@ -66,6 +66,20 @@ The three list/get/search tools are read-only; the two stage-transition tools
 require Gateway HITL approval (`hitlRequired` is `["write"]`). Experiments,
 runs, metrics, params, and artifacts are a deferred follow-up.
 
+### The writes
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_MLFLOW_WRITE_SCOPE`, a comma-separated list of `kind:value` terms
+with exact matching. One kind exists, `model:<registered model name>`, matched against the `name`
+argument of both tools (the version and stage are not part of the target). An unset or empty scope
+refuses every write, and an unknown kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `mlflow_model_promote` | Moves a model version to `Production`; by default it archives the other Production versions. | `true` |
+| `mlflow_model_transition_stage` | Moves a model version to `None`, `Staging`, `Production` or `Archived`; archives the incumbents only if `archiveExisting` is true. | `true` |
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)

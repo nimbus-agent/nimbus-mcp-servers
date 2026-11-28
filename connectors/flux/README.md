@@ -88,6 +88,22 @@ The three list/get/search tools are read-only; the two reconcile tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`). The `flux suspend` /
 `resume` write tools are deferred.
 
+### The writes
+
+Both reconcile tools go through the consent registrar and are declared `recoverable: true`, so
+neither has a `capturePreState`. Outside the gateway each is gated by owner consent, a write-scope
+allow-list, a mutation budget and an audit record; in the gateway the executor is the gate.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `flux_kustomization_reconcile` | Sets the `reconcile.fluxcd.io/requestedAt` annotation on one Kustomization (`PATCH`). | `true` | `namespace:<namespace>` |
+| `flux_helmrelease_reconcile` | Sets the same annotation on one HelmRelease (`PATCH`). | `true` | `namespace:<namespace>` |
+
+Scope them with `NIMBUS_MCP_FLUX_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched
+exactly. The only kind is `namespace`, matched against the `namespace` argument, so a term covers
+every resource in that namespace, not one by name; an unknown kind fails at startup, and an unset or
+empty scope refuses every write.
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)

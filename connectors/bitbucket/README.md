@@ -33,6 +33,17 @@ Outside the Nimbus gateway, every write tool asks for consent and is limited to 
 `repo:myteam/my-service` (a `workspace/repo_slug` full name, matched exactly). Unset authorises
 nothing. See the repository's `docs/configuration.md` for the syntax and the mutation budget.
 
+### The writes
+
+Both write tools go through the consent registrar and are declared `recoverable: true`, so neither
+has a `capturePreState`. Both are scoped to `repo:<workspace/repo_slug>`, matched against the
+`repoFull` argument; an unknown kind fails at startup.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `bitbucket_pr_merge` | Merges a pull request (`POST .../pullrequests/{id}/merge`), with an optional `mergeStrategy` and `message`. | `true` | `repo:<repoFull>` |
+| `bitbucket_pr_comment_create` | Posts a comment on a pull request, inline when `path` (and `line`) is given. A `line` without a `path` is refused before the scope check and the consent prompt. | `true` | `repo:<repoFull>` |
+
 ## License
 
 AGPL-3.0-only

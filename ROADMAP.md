@@ -42,8 +42,11 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   land here one connector at a time, and so would the raw cloud-billing intake its
   [Phase 30](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-30--the-cost-pack)
   plans. Sync and indexing stay in the gateway.
-- [ ] **Per-connector READMEs.** Some, `github`, `slack` and `jira` among them, are still only a
-  short gateway quickstart. Each should document its tools, its credentials and its write scopes.
+- [x] **Per-connector READMEs.** *Done in 0.23.2 (#123, #124, #131).* Every one of the 100 READMEs now
+  names every tool its connector registers, every environment variable it reads, and, for each
+  write, what it changes, whether it is declared recoverable, and its standalone write-scope kinds;
+  each was checked against the source. They live in the repository: the npm package ships only the
+  root README.
 - [ ] **Re-measure the client-support matrix.** It is a dated observation (2026-08-24): one client
   measured, two rows taken from vendor documentation. Measure the two unmeasured clients, and
   measure again when a client adopts the newer protocol revision.

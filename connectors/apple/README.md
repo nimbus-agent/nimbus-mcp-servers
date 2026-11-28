@@ -107,6 +107,7 @@ nimbus ask "What meetings do I have next week in my iCloud Calendar?"
   window. Returns summary, start/end, location, organizer, attendee emails, and
   a ≤2000-char notes preview. Never returns full event descriptions beyond the
   capped preview.
+- `apple_calendar_event_get` — get one event by its object href, with its ETag (see Behaviour notes).
 
 ### Calendar write tools (HITL-gated)
 
@@ -120,6 +121,30 @@ nimbus ask "What meetings do I have next week in my iCloud Calendar?"
   1-200 characters of `A-Z a-z 0-9 . _ @ -`.
 - `apple_calendar_event_delete` — delete an event from iCloud Calendar via
   CalDAV DELETE by href. Requires Gateway HITL `calendar.event.delete`.
+
+### The writes
+
+Four tools write, and every one is registered through the one consent registrar, so mail and
+calendar share one write budget. Outside the gateway each is gated by owner consent, a write-scope
+allow-list, a mutation budget and an audit record; in the gateway the executor is the gate. Scope
+them with `NIMBUS_MCP_APPLE_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched
+exactly. Two kinds exist, `recipient` and `calendar`; an unknown kind fails at startup, and an unset
+or empty scope refuses every write.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `apple_mail_send` | Sends a new email over iCloud SMTP. | `false`; `capturePreState` records `{to, subject}`, since a sent mail cannot be recalled. | `recipient:<address>` |
+| `apple_mail_draft_create` | Appends a draft to the iCloud Drafts folder over IMAP. | `true`; a draft can be edited or deleted afterwards. | `recipient:<address>` |
+| `apple_calendar_event_create` | Creates an event with a CalDAV PUT. | `true` | `calendar:<name>`; the target is the `calendar` argument, or `default` when it is omitted. |
+| `apple_calendar_event_delete` | Deletes an event with a CalDAV DELETE. | `false`; `capturePreState` records `{href}`, which is all that identifies the event afterwards (`apple_calendar_event_get` reads it first). | `calendar:<href>` |
+
+Mail scope: one `recipient:<address>` term per address; every address in `to`, `cc` and `bcc` must
+be in scope (a display name is dropped; the address inside `<>` is what is checked; an entry that is
+not exactly one simple address is checked as written).
+
+Note that the delete's target value is the event `href`, not a calendar name, so a
+`calendar:<name>` term that allows a create does not allow a delete: scope a delete with the exact
+href.
 
 ### Privacy contract
 
