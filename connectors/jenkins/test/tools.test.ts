@@ -261,11 +261,36 @@ describe("jenkins never sends its credential across a redirect", () => {
     expect(fetchStub.calls).toHaveLength(1);
   });
 
-  it("a write refuses a 3xx instead of replaying it", async () => {
-    const stub = jenkins({ status: 302 });
-    await expect(tools.call("jenkins_build_trigger", { jobName: "app" })).rejects.toThrow(
-      "Jenkins answered a POST with a redirect (302)",
+  it("a write's same-origin 302, Jenkins's answer to a successful /stop, is success and is not followed", async () => {
+    fetchStub?.restore();
+    fetchStub = stubFetch((req) =>
+      req.url === `${BASE}/crumbIssuer/api/json`
+        ? CRUMB
+        : { status: 302, headers: { location: `${BASE}/job/app/3/` } },
     );
-    expect(stub.calls.map((c) => c.method)).toEqual(["GET", "POST"]);
+    expect(await tools.callJson("jenkins_build_abort", { jobName: "app", buildNumber: 3 })).toEqual(
+      { ok: true, jobName: "app", buildNumber: 3 },
+    );
+    expect(fetchStub.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      `GET ${BASE}/crumbIssuer/api/json`,
+      `POST ${BASE}/job/app/3/stop`,
+    ]);
+    expect(fetchStub.calls[1]?.redirect).toBe("manual");
+  });
+
+  it("a write's redirect to another origin, or one with no Location, is refused and not followed", async () => {
+    for (const headers of [{ location: EVIL }, undefined]) {
+      __resetJenkinsCrumbCacheForTests();
+      fetchStub?.restore();
+      fetchStub = stubFetch((req) =>
+        req.url === `${BASE}/crumbIssuer/api/json`
+          ? CRUMB
+          : { status: 302, ...(headers === undefined ? {} : { headers }) },
+      );
+      await expect(tools.call("jenkins_build_trigger", { jobName: "app" })).rejects.toThrow(
+        "Jenkins answered a POST with a redirect (302) off its own origin; the write may or may not have been applied",
+      );
+      expect(fetchStub.calls.map((c) => c.method)).toEqual(["GET", "POST"]);
+    }
   });
 });
