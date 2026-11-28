@@ -162,6 +162,14 @@ export async function jenkinsPost(
   // this same Jenkins is the server saying "done", and is read as success. Any other 3xx (another
   // origin, or no Location) is refused: the POST reached Jenkins, so it may have run.
   const res = await fetchWithTimeout(url, { method: "POST", headers, redirect: "manual" }, 15_000);
+  if (res.status === 307 || res.status === 308) {
+    // Unlike 301/302/303 (the POST was handled; go see the result), a 307 or 308 asks for the SAME
+    // POST to be sent again at Location. Jenkins has not said the write happened, and replaying it
+    // would carry the credential, so it is neither followed nor reported as success.
+    throw new Error(
+      `Jenkins answered a POST with a ${String(res.status)}, which asks for it to be sent again; it was not, and the write may not have been applied`,
+    );
+  }
   if (res.status >= 300 && res.status < 400) {
     const location = res.headers.get("location");
     let sameOrigin = false;
