@@ -30,9 +30,12 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
   2026-07-28 application (an SDK client has been run; no shipped application has). A gateway-started connector stays on the
   upstream SDK by design. The gateway's roadmap carries the matching row for its own MCP server
   ([Phase 28](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-28--the-agent-door)).
-- [ ] **Audit connector error text.** A tool's thrown message reaches the standalone client
-  verbatim, as it did on the upstream SDK. No one has checked the 100 connectors' error paths for
-  an upstream reply that could carry a path or a token into that text.
+- [x] **Audit connector error text.** *Shipped in 0.23.0.* A tool's thrown message reached the
+  standalone client verbatim. The audit found reply bodies (token endpoints among them), CLI
+  stderr and stdout, and fs errors carrying credentials and local paths into it; every message
+  now passes through `shared/error-text.ts` first, and a CLI's stdout is no longer quoted. What it
+  leaves open is in [SECURITY](./SECURITY.md): a derived credential with no known shape, and the
+  gateway path, which keeps the upstream server.
 - [ ] **Cost connectors.** `vantage` shipped in 0.14.0, read-only. The other platforms named in
   the gateway's *FinOps connectors* row
   ([Phase 10](https://github.com/nimbus-agent/Nimbus/blob/main/docs/roadmap.md#phase-10--the-autonomous-agent))
@@ -53,9 +56,11 @@ them, which [`NOTICE`](./NOTICE) states exactly. Nothing below changes that spli
     assignee, Linear labels. *Shipped: the Bitbucket PR comment in 0.18.0, the rest in 0.19.0.*
   - [x] **Google Calendar writes:** create, update, delete. This is the first write on the
     connector, and the gateway must pass the granted scopes at spawn. *Shipped in 0.20.0.*
-  - [ ] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
+  - [x] **Infra reads and fixes:** `aws_lambda_get`; Snowflake `TAG_REFERENCES` selecting
     `tag_database` and `tag_schema`; `iac_terraform_init`; a read of a stack's change sets.
-  - [ ] **Flag connectors:** Unleash and Split, as new connectors with writes.
+    *Shipped in 0.21.0.*
+  - [x] **Flag connectors:** Unleash and Split, as new connectors with writes. *Shipped in
+    0.22.0.*
   - [x] **Investigate:** a head-commit precondition for `bitbucket_pr_merge`. *Closed
     2026-11-27: impossible upstream.* Bitbucket Cloud's merge body
     (`pullrequest_merge_parameters`) has only `type`, `message`, `close_source_branch` and

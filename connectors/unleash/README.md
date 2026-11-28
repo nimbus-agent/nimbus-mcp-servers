@@ -75,6 +75,18 @@ it with `NIMBUS_MCP_UNLEASH_WRITE_SCOPE=flag:<projectId>/<environment>/<featureN
 `unleash_feature_state_get` shows the strategies before and after. Unverified
 against a live server.
 
+### Sandbox test
+
+`test/sandbox.test.ts` holds an opt-in live test of `unleash_feature_toggle`, run only by
+`bun run test:sandbox` and only when `UNLEASH_API_URL`, `UNLEASH_API_TOKEN`,
+`UNLEASH_SANDBOX_PROJECT`, `UNLEASH_SANDBOX_FEATURE` and `UNLEASH_SANDBOX_ENVIRONMENT` are all set;
+otherwise it is skipped and says which are missing. It changes ONE throwaway flag you created, in
+ONE environment: it reads the state, toggles it to the opposite, confirms that, and toggles it back
+(even when a step fails). The write scope it runs under names only that flag. It does not remove a
+strategy Unleash added, and it reports on stderr whether enabling an environment with no active
+strategy added one, which answers the question above for your server: start the flag disabled, with
+no strategy in that environment, to exercise it.
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)

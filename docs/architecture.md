@@ -103,7 +103,9 @@ and approves writes itself. Standalone it is the layer server (`shared/layer-ser
 the MCP server layer of `@nimbus-dev/sdk`, which answers a client of MCP revision 2026-07-28 and a
 client that opens with `initialize` from one process. The layer server offers the registration
 surface connectors already used, checks arguments against each tool's zod shape before the tool
-runs, and passes a tool's own error text on to the client as the upstream server did.
+runs, and passes a tool's own error text on to the client as the upstream server did, after
+`shared/error-text.ts` has removed any credential or local path the text picked up
+([SECURITY](../SECURITY.md)).
 `scripts/connector-server-chokepoint.test.ts` fails any other shipped file that imports an upstream
 server module or constructs either server.
 
@@ -199,7 +201,11 @@ All run by CI on Ubuntu, macOS and Windows:
 
 `bun run test:sandbox` is deliberately not among them. It runs the 85 per-connector
 `test/sandbox.test.ts` files, which open real connections to each connector's first declared
-network host, so it is an explicit opt-in and runs in no workflow.
+network host, so it is an explicit opt-in and runs in no workflow. Three of those files
+(`google-calendar`, `unleash` and `split`) also hold live tests of the connector's writes, against
+a throwaway resource the owner creates and names by environment variable; each is skipped, naming
+the missing variables, unless every one is set (the gate is `scripts/sandbox-live-env.ts`). Those
+connectors' READMEs list the variables and what each test changes.
 
 ### The connector contract
 

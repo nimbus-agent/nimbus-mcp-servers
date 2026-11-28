@@ -78,9 +78,18 @@ Stated plainly, because the difference is the whole point of [`NOTICE`](./NOTICE
   elicitation request. The state is signed, not encrypted; it holds a nonce and nothing else.
 - **At most 256 approval prompts are open at once.** A further write is refused until one is
   answered or five minutes pass. An open prompt is never dropped to make room.
-- **A tool's own error text reaches the client**, as it always has. Connector errors are written
-  to be read (an API status, an out-of-scope target), but they have not been audited for paths
-  or tokens an upstream service might echo back.
+- **A tool's own error text reaches the standalone client, scrubbed.** Connector errors are
+  written to be read (an API status, an out-of-scope target), but much of the text is not the
+  connector's own: a kit quotes the start of an upstream reply body, a CLI's stderr, or a
+  library's error. Before it is sent, `shared/error-text.ts` replaces the value of every
+  credential variable in the environment, credential shapes with no variable to match (an
+  `Authorization` value, a secret query parameter or JSON member, URL userinfo, a PEM private key,
+  published GitHub, GitLab, Slack, Stripe, AWS and JWT token forms), every configured path (shown
+  as `$VARIABLE`), and the home and temporary directories (`~`, `<tmp>`). Its limits: a credential
+  the connector *derived* (an access token it exchanged for) and that has none of those shapes is
+  not recognised, and data that is not a credential is not touched. A CLI's stdout is never
+  quoted, since for `kubectl get secret` it is the secret itself. A connector started by the
+  Nimbus gateway keeps the upstream server, and its error text goes to the gateway unscrubbed.
 - **The audit log's chain shows its lines are consistent and in order, not that they are the
   originals or all of them.** The chain is unkeyed, so anyone who can write the file can change an
   entry and recompute every hash after it, cut lines off its end, or rewrite it from scratch, and
