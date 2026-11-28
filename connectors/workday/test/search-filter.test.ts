@@ -2,13 +2,15 @@ import { describe, expect, test } from "bun:test";
 
 import { filterWorkdayWorkers } from "../src/search-filter.ts";
 
-function worker(fields: {
-  descriptor?: string;
-  title?: string;
-  team?: string;
-  department?: string;
-  location?: string;
-} = {}): Record<string, unknown> {
+function worker(
+  fields: {
+    descriptor?: string;
+    title?: string;
+    team?: string;
+    department?: string;
+    location?: string;
+  } = {},
+): Record<string, unknown> {
   return {
     descriptor: fields.descriptor ?? "Avery Example",
     title: fields.title ?? "Platform Engineer",
