@@ -179,7 +179,11 @@ export function registerLookerTools(reg: ZodToolRegistrar, server: unknown): voi
     "looker_schedule_run_once",
     {
       mutates: "looker.schedule.run_once",
-      recoverable: true,
+      // The plan can deliver a report to its recipients, and a delivery cannot be recalled. What
+      // the audit record holds is which plan was run; no request is made to capture more.
+      // (looker_datagroup_trigger stays recoverable: a stale cache just rebuilds.)
+      recoverable: false,
+      capturePreState: (p) => Promise.resolve({ scheduledPlanId: p.scheduledPlanId }),
       scopeTargetOf: (p) => ({ kind: "resource", value: p.scheduledPlanId }),
     },
     "Run a Looker scheduled plan immediately (`POST /api/4.0/scheduled_plans/{scheduledPlanId}/run_once`). Triggers a one-off execution of the plan outside its normal schedule. Requires HITL approval.",

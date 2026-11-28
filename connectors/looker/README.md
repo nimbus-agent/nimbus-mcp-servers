@@ -77,7 +77,7 @@ An unset or empty scope refuses every write, and an unknown kind fails at startu
 | Tool | Changes | Recoverable |
 | --- | --- | --- |
 | `looker_datagroup_trigger` | Sets the datagroup's `stale_before` to the current epoch, marking its cached results stale. | `true` |
-| `looker_schedule_run_once` | Runs a scheduled plan once, outside its schedule. | `true` |
+| `looker_schedule_run_once` | Runs a scheduled plan once, outside its schedule. | `false`: it can deliver a report to recipients, which cannot be recalled; the `scheduledPlanId` is recorded first, with no extra request |
 
 ## See also
 
