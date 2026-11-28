@@ -228,6 +228,26 @@ describe("jira tools", () => {
     });
   });
 
+  it("epic_list takes a project key or numeric id, never JQL, before any request", async () => {
+    // The key is spliced into `project = <key> AND ...`; anything but a key or an id would widen
+    // the search beyond that project.
+    expect(
+      JSON.parse((await request("jira_epic_list", { projectKey: "AB_1" })).body ?? "null").jql,
+    ).toBe("project = AB_1 AND issuetype = Epic ORDER BY updated DESC");
+    expect(
+      JSON.parse((await request("jira_epic_list", { projectKey: "10000" })).body ?? "null").jql,
+    ).toBe("project = 10000 AND issuetype = Epic ORDER BY updated DESC");
+    const stub = serve("{}");
+    await onSite(async () => {
+      for (const projectKey of ["OPS OR project = HR", "OPS) OR (1 = 1", 'OPS"', "1OPS", "OPS-1"]) {
+        await expect(tools.call("jira_epic_list", { projectKey })).rejects.toThrow(
+          "a Jira project key is a letter then letters, digits or '_', or a numeric project id",
+        );
+      }
+    });
+    expect(stub.calls).toEqual([]);
+  });
+
   it("surfaces a failed read with its status, and an unparseable success by name", async () => {
     serve({ status: 401, body: "Unauthorized" });
     await onSite(async () => {
