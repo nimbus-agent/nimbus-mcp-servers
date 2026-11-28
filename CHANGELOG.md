@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.23.1](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.0...connectors-v0.23.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* check every mail recipient against the write scope ([#127](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/127)) ([4f72be6](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/4f72be67a3c2d88ee5c9dea0cd32894e4cbd8b11))
+* declare jira_issue_update and aws_lambda_invoke unrecoverable, with a pre-state ([#128](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/128)) ([6029903](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/6029903ac27ffc8cefabc1c1ce30fbbc66f1a304))
+* encode non-ASCII Gmail subjects; refuse an unknown Obsidian vault ([#129](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/129)) ([e52ee94](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e52ee94b065f3b917280fca5982e6b9735c09aa1))
+* keep grafana, sentry and circleci requests on their own endpoints ([#122](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/122)) ([dcfca2f](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/dcfca2f23b826f69da38d557a0bb4aed097de1c6))
+* refuse a base URL that carries credentials ([#121](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/121)) ([cde5b7a](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/cde5b7a4d76d59fe21868ec2a77870239f9eabb3))
+* refuse a dot segment or JQL where the model names a path or a project ([#125](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/125)) ([365817e](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/365817e78036deaf817d6ca3b25f8ff8cb8842f4))
+* route the direct-fetch connectors through the guarded fetch ([#130](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/130)) ([dc6a5d3](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/dc6a5d3097d820642816b47778710e627fb35d65))
+
 ## [0.23.0](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.22.0...connectors-v0.23.0) (2026-11-28)
 
 
