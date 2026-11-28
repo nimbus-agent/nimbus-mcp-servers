@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.23.3](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.2...connectors-v0.23.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* declare argocd sync/rollback, looker run_once and pulumi up unrecoverable ([#134](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/134)) ([3e001ba](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/3e001ba3ab8b5b49318119b24c277072bd12f0f0))
+* route the remaining direct-fetch connectors through the guarded fetch ([#136](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/136)) ([e1b3210](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/e1b3210f781a82635e753786cc52c2ed2641d48a))
+* scope apple calendar delete by calendar name and normalise snowflake object scope ([#135](https://github.com/nimbus-agent/nimbus-mcp-servers/issues/135)) ([f83b652](https://github.com/nimbus-agent/nimbus-mcp-servers/commit/f83b6520d0b34901ae57030fcf2e944545d4d560))
+
 ## [0.23.2](https://github.com/nimbus-agent/nimbus-mcp-servers/compare/connectors-v0.23.1...connectors-v0.23.2) (2026-11-28)
 
 
