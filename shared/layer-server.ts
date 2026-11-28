@@ -20,6 +20,7 @@ import {
   serveStdio,
 } from "@nimbus-dev/sdk/mcp-server";
 import { z } from "zod";
+import { scrubErrorText } from "./error-text.ts";
 
 /** What a tool callback may return: a result, or (the consent kit only) a request for input. */
 export type LayerToolReturn = McpToolResult | McpInputRequired;
@@ -154,8 +155,10 @@ export function createLayerServer(
           // Everything else reaches the client with its own message, as it did on the upstream
           // server: a connector's thrown text is its diagnostic ("GitHub API 404"), and for a
           // write it can be the only word that the write RAN ("ran, but recording that it ran
-          // failed"). The layer's default, `Tool failed`, would hide exactly that.
-          throw new McpToolError(messageOf(e));
+          // failed"). The layer's default, `Tool failed`, would hide exactly that. What it does
+          // not keep is a credential or a local path the text picked up from an upstream reply,
+          // a CLI's stderr or a library's error: `scrubErrorText` replaces those.
+          throw new McpToolError(scrubErrorText(messageOf(e)));
         }
       },
     };
