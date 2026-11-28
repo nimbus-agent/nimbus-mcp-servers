@@ -49,12 +49,25 @@ Tools exposed:
 | `launchdarkly_flag_toggle` (write) | Turn a flag on or off in one environment (semantic patch `turnFlagOn`/`turnFlagOff`). |
 | `launchdarkly_flag_rollout_set` (write) | Set the fallthrough to a percentage rollout in one environment; weights must sum to exactly 100 with at most 3 decimals. The previous state is recorded first. |
 
+### The writes
+
 The two write tools declare `hitlRequired: ["write"]`: each needs owner approval, and the token
 needs a role that can update flags. They send a semantic patch
 (`Content-Type: application/json; domain-model=launchdarkly.semanticpatch`, body `{ environmentKey,
 comment, instructions }`) for ONE environment, and never set `ignoreConflicts`. An environment that
-requires approvals answers 405 and nothing changes. Outside the gateway, scope them with
-`NIMBUS_MCP_LAUNCHDARKLY_WRITE_SCOPE=flag:<projectKey>/<environmentKey>/<flagKey>`.
+requires approvals answers 405 and nothing changes.
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_LAUNCHDARKLY_WRITE_SCOPE`, a comma-separated list of `kind:value`
+terms with exact matching. One kind exists, `flag:<projectKey>/<environmentKey>/<flagKey>`, built
+from the call's three key arguments. An unset or empty scope refuses every write, and an unknown
+kind fails at startup.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `launchdarkly_flag_toggle` | Turns a flag on or off in one environment. | `true` (toggle back). |
+| `launchdarkly_flag_rollout_set` | Replaces the environment's fallthrough with a percentage rollout. | `false`; `capturePreState` reads the flag's state in that environment first (the previous fallthrough variation or weights, bucketBy, context kind). The tool does not restore it. |
 
 Unverified against a live account: LaunchDarkly's schema calls `offVariation` both an "ID" and an
 "index"; the read treats variation references as indices into `variations` and returns the raw

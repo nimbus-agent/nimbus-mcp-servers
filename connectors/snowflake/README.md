@@ -63,15 +63,34 @@ Tools exposed:
 
 | Tool | Purpose |
 | --- | --- |
-| `snowflake_list` | List tables; optional `limit` cap (default 200, max 500). |
+| `snowflake_list` | List tables with their columns; optional `cursor` and `limit` (default 200, max 500); returns `{ items, nextCursor }`. |
 | `snowflake_get` | Fetch one table by fully-qualified id (`database.schema.table`). |
 | `snowflake_search` | Substring search across tables (name, schema, database). |
+| `snowflake_object_metadata_get` | Read a table's or view's comment and tags (direct and inherited); see Behaviour notes. |
 | `snowflake_tag_set` | Set or unset a governance TAG on a table (`ALTER TABLE <object> SET TAG <tag> = '<value>'`; omit `value` to UNSET). HITL-gated. |
 | `snowflake_comment_set` | Set a COMMENT on a table (`COMMENT ON TABLE <object> IS '<comment>'`). HITL-gated. |
 
 The three list/get/search tools are read-only; the two governance write tools
 require Gateway HITL approval (`hitlRequired` is `["write"]`). Column
 statistics and query history are deferred.
+
+### The writes
+
+Both go through the consent registrar. Outside the gateway each is gated by owner consent, a
+write-scope allow-list, a mutation budget and an audit record; in the gateway the executor is the
+gate. Scope them with `NIMBUS_MCP_SNOWFLAKE_WRITE_SCOPE`, a comma-separated list of `kind:value`
+terms with exact matching. One kind exists, `object:<fully qualified name>`, matched against the
+`object` argument exactly as the caller wrote it (no case folding or quoting normalisation). An
+unset or empty scope refuses every write, and an unknown kind fails at startup. Both tools reject
+an `object` or `tag` that is not a valid identifier before running any statement.
+
+| Tool | Changes | Recoverable |
+| --- | --- | --- |
+| `snowflake_tag_set` | Sets a governance tag on a table (`ALTER TABLE ... SET TAG`), or unsets it when `value` is omitted. | `true` |
+| `snowflake_comment_set` | Replaces a table's comment (`COMMENT ON TABLE ... IS`). | `true` |
+
+`snowflake_object_metadata_get` reads a table's or view's comment and tags, the before-state of
+both writes.
 
 ## Behaviour notes
 

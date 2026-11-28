@@ -73,6 +73,23 @@ request (a standalone update or delete first reads the event, below): the connec
   applies.
 - No Meet link is added: `conferenceData` is never sent, and neither is `conferenceDataVersion`.
 
+### The writes
+
+All three go through the consent registrar, and register only when the token holds a calendar write
+scope (see Credentials). Outside the gateway each is gated by owner consent, a write-scope
+allow-list, a mutation budget and an audit record; in the gateway the executor is the gate.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `gcal_event_create` | Creates an event. | `true`; its inverse is `gcal_event_delete` of the id it returns. | `calendar:<calendarId>` |
+| `gcal_event_update` | Patches the fields given on one event. | `false`; `capturePreState` reads the event first and records its fields (a `{resolved: false, status}` record when the read fails). | `calendar:<calendarId>` |
+| `gcal_event_delete` | Deletes one event. | `false`; the API has no undelete, so `capturePreState` records the event's fields first. | `calendar:<calendarId>` |
+
+Scope them with `NIMBUS_MCP_GOOGLE_CALENDAR_WRITE_SCOPE`, a comma-separated list of `kind:value`
+terms matched exactly. The only kind is `calendar`, matched against `calendarId`, which is `primary`
+when the argument is left out. An unknown kind fails at startup, and an unset or empty scope
+refuses every write.
+
 ### Safety
 
 Every write needs the gateway's HITL approval. Standalone, it needs the consent kit's prompt and a

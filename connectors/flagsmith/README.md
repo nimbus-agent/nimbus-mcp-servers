@@ -55,13 +55,22 @@ Tools exposed:
 | `flagsmith_list` | List projects (no `projectId`), or feature flags for a project. |
 | `flagsmith_get` | Fetch one flag by `projectId` + `featureName` (search + exact-name narrow). |
 | `flagsmith_search` | Substring search across a project's flags (name, description, tags). |
-
 | `flagsmith_feature_state_get` | Read one feature in ONE environment: `environment_default` and `segment_overrides` (capped at 50, the rest counted). |
 | `flagsmith_feature_state_set` (write) | Enable or disable a feature in ONE environment, optionally with a typed value (`string`, `integer` or `boolean`, value sent as a string). Segment and identity overrides are untouched. |
 
-`flagsmith_feature_state_set` declares `hitlRequired: ["write"]` and records the previous state
-before it writes. Outside the gateway, scope it with
-`NIMBUS_MCP_FLAGSMITH_WRITE_SCOPE=flag:<environmentKey>/<featureId>`.
+### The writes
+
+One tool writes, `flagsmith_feature_state_set`, registered through the consent registrar. Outside
+the gateway it is gated by owner consent, a write-scope allow-list, a mutation budget and an audit
+record; in the gateway the executor is the gate.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `flagsmith_feature_state_set` | Enables or disables one feature in one environment, optionally setting its typed value (`PATCH` of `environment_default`). | `false`; `capturePreState` reads the feature's current state first (`environment_default` and up to 50 `segment_overrides`) and the audit record keeps it. The tool does not restore it. | `flag:<environmentKey>/<featureId>` |
+
+Scope it with `NIMBUS_MCP_FLAGSMITH_WRITE_SCOPE`, a comma-separated list of `kind:value` terms
+matched exactly, for example `flag:ENVKEY123/42`. The only kind is `flag`; an unknown kind fails at
+startup, and an unset or empty scope refuses every write.
 
 ### Which endpoint, and why
 

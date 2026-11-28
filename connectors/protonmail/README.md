@@ -62,6 +62,21 @@ host:port entries are added to the sandbox network allow-list at spawn time.
 - `protonmail_mail_send` — send a new message over the Bridge SMTP relay. Requires
   Gateway HITL `email.send`.
 
+### The writes
+
+`protonmail_mail_send` is the only write. It goes through the consent registrar (via the shared
+mail-send declaration), so outside the gateway it is gated by owner consent, a write-scope
+allow-list, a mutation budget and an audit record; in the gateway the executor is the gate.
+
+- **Changes:** sends a new message over the Bridge SMTP relay.
+- **Recoverable:** `false`. A sent mail cannot be recalled and nothing remains to query, so
+  `capturePreState` records `{to, subject}` first.
+- **Scope:** `NIMBUS_MCP_PROTONMAIL_WRITE_SCOPE`, a comma-separated list of `kind:value` terms with
+  exact matching. One kind exists, `recipient`: one `recipient:<address>` term per address; every
+  address in `to`, `cc` and `bcc` must be in scope (a display name is dropped; the address inside
+  `<>` is what is checked; an entry that is not exactly one simple address is checked as written).
+  An unset or empty scope refuses every write, and an unknown kind fails at startup.
+
 ## See also
 
 - [Email Connector Documentation](https://nimbus-agent.dev/user-guide/connectors/)

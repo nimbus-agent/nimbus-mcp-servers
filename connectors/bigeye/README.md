@@ -47,12 +47,28 @@ Tools exposed:
 | --- | --- |
 | `bigeye_list` | List Bigeye data-quality issues; optional `limit` cap (default 200, max 500). |
 | `bigeye_get` | Fetch one issue by id. |
-| `bigeye_search` | Substring search across issues by summary. |
+| `bigeye_search` | Substring search across issues by summary, title and description. |
 | `bigeye_issue_acknowledge` | Acknowledge a Bigeye issue. HITL-gated. |
 | `bigeye_issue_resolve` | Resolve (close) a Bigeye issue. HITL-gated. |
 
 The three list/get/search tools are read-only; the two write tools require
 Gateway HITL approval (`hitlRequired` is `["write"]`).
+
+### The writes
+
+Both write tools go through the consent registrar and are declared `recoverable: true`, so neither
+has a `capturePreState`: an issue's status can be set again. Outside the gateway each is gated by
+owner consent, a write-scope allow-list, a mutation budget and an audit record; in the gateway the
+executor is the gate.
+
+| Tool | Changes | Recoverable | Scope target |
+| --- | --- | --- | --- |
+| `bigeye_issue_acknowledge` | Sets one issue's status to `ISSUE_STATUS_ACKNOWLEDGED` (`POST /api/v1/issues`). | `true` | `issue:<issueId>` |
+| `bigeye_issue_resolve` | Sets one issue's status to `ISSUE_STATUS_CLOSED` (`POST /api/v1/issues`). | `true` | `issue:<issueId>` |
+
+Scope them with `NIMBUS_MCP_BIGEYE_WRITE_SCOPE`, a comma-separated list of `kind:value` terms matched
+exactly. The only kind is `issue`, matched against the `issueId` argument; an unknown kind fails at
+startup, and an unset or empty scope refuses every write.
 
 ## See also
 
