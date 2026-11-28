@@ -118,11 +118,19 @@ export function registerCircleciTools(
     fetch: circleciFetch,
   });
 
+  // A '.' or '..' segment is refused here, before a write's consent prompt: encodeURIComponent
+  // leaves both alone and the URL parser collapses them, so 'gh/../../me' left /project/<slug>/
+  // for another endpoint, with the token. The refine adds nothing to the listed schema.
   const projectSlugSchema = z.object({
     projectSlug: z
       .string()
       .min(3)
-      .describe("CircleCI project slug, e.g. gh/org/repo or bb/workspace/repo"),
+      .describe("CircleCI project slug, e.g. gh/org/repo or bb/workspace/repo")
+      .refine(
+        (slug) =>
+          !slug.split("/").some((segment) => segment.trim() === "." || segment.trim() === ".."),
+        { message: "a CircleCI project slug has no '.' or '..' segment" },
+      ),
   });
 
   registerCciTool(
