@@ -47,6 +47,11 @@ export interface GuardedFetchOptions {
    * what a redirect points at is the new decision.
    */
   readonly requireSecureBase?: boolean;
+  /**
+   * The request is a READ sent as a POST (a search or filter endpoint). Its redirect is refused
+   * exactly as a write's is; only the message differs, since nothing was written.
+   */
+  readonly read?: boolean;
 }
 
 type Transport = (url: string, init: RequestInit) => Promise<Response>;
@@ -57,11 +62,12 @@ function sendHop(doFetch: Transport, url: URL, init: RequestInit): Promise<Respo
 }
 
 /** Phase 3a: a redirect on a mutation is never followed, and the credential never goes along. */
-function assertReadRedirect(label: string, method: string, status: number): void {
+function assertReadRedirect(label: string, method: string, status: number, read = false): void {
   if (method === "GET" || method === "HEAD") return;
-  throw new Error(
-    `${label} answered a ${method} with a redirect (${String(status)}); the write may or may not have been applied`,
-  );
+  const outcome = read
+    ? "refused (a read: nothing was written)"
+    : "the write may or may not have been applied";
+  throw new Error(`${label} answered a ${method} with a redirect (${String(status)}); ${outcome}`);
 }
 
 /** Phase 3b: the `Location` the redirect names. */
@@ -130,7 +136,7 @@ export async function guardedFetch(
   for (let hop = 0; ; hop += 1) {
     const res = await sendHop(doFetch, current, init);
     if (!REDIRECT_STATUSES.has(res.status)) return res;
-    assertReadRedirect(label, method, res.status);
+    assertReadRedirect(label, method, res.status, options.read === true);
     const location = requireLocation(label, res);
     assertHopBudget(label, hop);
     const next = resolveNext(label, location, current);

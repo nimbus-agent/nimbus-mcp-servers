@@ -151,6 +151,31 @@ module-not-found error. The rest are unaffected.
 Each entry is something a standalone setup has to change when it moves to that release. Changes
 that need nothing from you are only in the [changelog](../CHANGELOG.md).
 
+### To 0.23.3
+
+**`apple_calendar_event_delete` is scoped by calendar name.** Earlier versions checked a delete
+against `calendar:<event href>`; from 0.23.3 it is checked against the name of the calendar the
+event is in, the same `calendar:<name>` term `apple_calendar_event_create` uses. Replace each
+`calendar:<href>` term with `calendar:<name>`. One term now allows creating and deleting in that
+calendar. A calendar created after the connector started is refused for a delete until
+`apple_calendar_list` or a create refreshes the list of known calendars.
+
+**Snowflake object scopes match the resolved name.** `snowflake_tag_set` and
+`snowflake_comment_set` are checked against the object as Snowflake resolves it: unquoted parts
+upper-cased, quoted parts exactly as written without the quotes. Write terms that way, e.g.
+`object:DB.SCH.T`, which now covers `db.sch.t`, `DB.SCH.T` and `"DB"."SCH"."T"`. A lower-case or
+quoted term such as `object:db.sch.t` no longer matches.
+
+### To 0.23.1
+
+**Mail writes check every recipient.** A mail send or draft is checked against one
+`recipient:<address>` term per address in `to`, `cc` and `bcc`, not against the whole `to` string.
+List each address you allow. A term written with a display name, such as
+`recipient:Ada <ada@example.com>`, no longer matches: scope `recipient:ada@example.com`.
+
+**A base URL may not carry credentials.** A connector refuses to start with a base URL such as
+`JENKINS_BASE_URL=https://user:token@host`. Put the credential in the connector's own variables.
+
 ### To 0.2.3
 
 **The audit log's directory must be writable.** Releases up to 0.2.2 needed only the log file to

@@ -12,9 +12,15 @@ async function photosFetch(
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; json: unknown; text: string }> {
   const url = resolveUrlWithBase(PHOTOS_BASE, path);
-  return guardedBearerJson("Google Photos", url, token, init, {
-    "Content-Type": "application/json",
-  });
+  // Every Photos call is a read (`mediaItems:search` is a POST), so a refused redirect says so.
+  return guardedBearerJson(
+    "Google Photos",
+    url,
+    token,
+    init,
+    { "Content-Type": "application/json" },
+    { read: true },
+  );
 }
 
 /**
