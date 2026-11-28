@@ -199,7 +199,11 @@ All run by CI on Ubuntu, macOS and Windows:
 
 `bun run test:sandbox` is deliberately not among them. It runs the 85 per-connector
 `test/sandbox.test.ts` files, which open real connections to each connector's first declared
-network host, so it is an explicit opt-in and runs in no workflow.
+network host, so it is an explicit opt-in and runs in no workflow. Three of those files
+(`google-calendar`, `unleash` and `split`) also hold live tests of the connector's writes, against
+a throwaway resource the owner creates and names by environment variable; each is skipped, naming
+the missing variables, unless every one is set (the gate is `scripts/sandbox-live-env.ts`). Those
+connectors' READMEs list the variables and what each test changes.
 
 ### The connector contract
 

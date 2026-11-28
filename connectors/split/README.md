@@ -66,6 +66,17 @@ the write is not retried). Outside the gateway, scope them with
 where `<environment>` is written exactly as the tool is called with it (id or
 name).
 
+### Sandbox test
+
+`test/sandbox.test.ts` holds an opt-in live test of `split_kill` and `split_restore`, run only by
+`bun run test:sandbox` and only when `SPLIT_ADMIN_API_KEY`, `SPLIT_SANDBOX_WORKSPACE_ID`,
+`SPLIT_SANDBOX_SPLIT` and `SPLIT_SANDBOX_ENVIRONMENT` are all set; otherwise it is skipped and says
+which are missing. It changes ONE throwaway split you created, in ONE environment: it reads the
+definition, kills it, confirms that, and restores it (the restore runs even when a step fails). It
+refuses to start from a split that is already killed. With `SPLIT_SANDBOX_ENVIRONMENT_NAME` also set
+(the same kind of throwaway environment, named with a space, such as `Sandbox EU`), it repeats the
+kill and restore by that name. The write scope it runs under names only that split.
+
 ## See also
 
 - [Nimbus Connectors Overview](https://nimbus-agent.dev/user-guide/connectors/)
