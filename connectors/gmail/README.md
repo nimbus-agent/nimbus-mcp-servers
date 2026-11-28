@@ -50,11 +50,13 @@ is the gate. The standalone scope variable is `NIMBUS_MCP_GMAIL_WRITE_SCOPE`, wi
 matching.
 
 - `gmail_draft_create` is registered as recoverable: the draft sits in Drafts and nothing is sent.
-  Scope: `recipient:<to>`. Addresses in `cc` and `bcc` are not scope-checked.
+  Scope: one `recipient:<address>` term per address in `to`, `cc` and `bcc`;
+  every address must be in scope (a display name is dropped, the address inside `<>` is checked).
 - `gmail_draft_send` sends a draft, which cannot be recalled, so it is registered as not
   recoverable; the `draftId` is recorded first. Scope: `draft:<draftId>`.
 - `gmail_message_send` is registered as not recoverable; the recipient and subject are recorded
-  first. Scope: `recipient:<to>`, matched against the whole `to` string as given.
+  first. Scope: one `recipient:<address>` term per address in `to`, `cc` and `bcc`;
+  every address must be in scope (a display name is dropped, the address inside `<>` is checked).
 - `gmail_thread_archive` removes the `INBOX` label from every message of the thread. Nothing is
   deleted, and every other label stays. It is registered as recoverable. Scope: `thread:<threadId>`.
   It is registered only when the token holds `https://www.googleapis.com/auth/gmail.modify` (or the
