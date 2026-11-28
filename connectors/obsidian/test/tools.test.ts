@@ -152,6 +152,16 @@ describe("obsidian_list", () => {
     const only = (await multi.callJson("obsidian_list", { vault: second })) as { path: string }[];
     expect(only.map((n) => n.path)).toEqual(["gamma.md"]);
   });
+
+  it("refuses an unknown vault rather than listing every vault", async () => {
+    const err = await tools.call("obsidian_list", { vault: "no-such-vault" }).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toContain("Unknown vault");
+    expect(err?.message).toMatch(/Configured vault ids: [0-9a-f]{12} \(/u);
+    expect(err?.message).not.toContain(roots[0] ?? "<unset>");
+  });
 });
 
 describe("obsidian_get", () => {
@@ -233,12 +243,25 @@ describe("obsidian_search", () => {
     expect(hits).toHaveLength(1);
   });
 
-  it("returns nothing for an unknown vault rather than searching them all", async () => {
-    const hits = (await tools.callJson("obsidian_search", {
+  it("refuses an unknown vault, naming the configured vault ids and no path", async () => {
+    const err = await tools.call("obsidian_search", { query: "note", vault: "/nowhere" }).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toContain("Unknown vault");
+    expect(err?.message).toMatch(/Configured vault ids: [0-9a-f]{12} \(/u);
+    expect(err?.message).not.toContain(roots[0] ?? "<unset>");
+  });
+
+  it("searches the named vault, and all of them when none is named", async () => {
+    const id = ((await tools.callJson("obsidian_list", {})) as { vault_id: string }[])[0]?.vault_id;
+    const named = (await tools.callJson("obsidian_search", {
       query: "note",
-      vault: "/nowhere",
+      vault: id,
     })) as unknown[];
-    expect(hits).toEqual([]);
+    const all = (await tools.callJson("obsidian_search", { query: "note" })) as unknown[];
+    expect(named.length).toBeGreaterThan(0);
+    expect(named).toHaveLength(all.length);
   });
 });
 

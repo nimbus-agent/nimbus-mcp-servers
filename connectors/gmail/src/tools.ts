@@ -25,12 +25,42 @@ function gmailFetch(
   return makeRestFetcher({ apiBase: GMAIL_BASE, token })(path, init);
 }
 
+/** 45 bytes of UTF-8 encode to 60 base64 characters; with the 12 of `=?UTF-8?B?` and `?=`, 72 <= 75. */
+const SUBJECT_WORD_MAX_BYTES = 45;
+
+/**
+ * A header is ASCII (RFC 5322), so a subject with any other character goes out as RFC 2047
+ * encoded-words, folded onto continuation lines (RFC 2047 section 2: each word at most 75
+ * characters). Words are cut on code-point boundaries, so no UTF-8 sequence is ever split.
+ * A pure-ASCII subject is returned unchanged.
+ */
+function encodeSubject(subject: string): string {
+  if (!/\P{ASCII}/u.test(subject)) return subject;
+  const words: string[] = [];
+  let chunk = "";
+  let bytes = 0;
+  for (const ch of subject) {
+    const size = Buffer.byteLength(ch, "utf-8");
+    if (bytes + size > SUBJECT_WORD_MAX_BYTES) {
+      words.push(chunk);
+      chunk = "";
+      bytes = 0;
+    }
+    chunk += ch;
+    bytes += size;
+  }
+  words.push(chunk);
+  return words
+    .map((w) => `=?UTF-8?B?${Buffer.from(w, "utf-8").toString("base64")}?=`)
+    .join("\r\n ");
+}
+
 function buildRfc822Message(params: OutgoingMail): string {
   const lines: string[] = [
     `To: ${params.to}`,
     ...(params.cc !== undefined && params.cc !== "" ? [`Cc: ${params.cc}`] : []),
     ...(params.bcc !== undefined && params.bcc !== "" ? [`Bcc: ${params.bcc}`] : []),
-    `Subject: ${params.subject}`,
+    `Subject: ${encodeSubject(params.subject)}`,
     "Content-Type: text/plain; charset=UTF-8",
     "",
     params.body,

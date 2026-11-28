@@ -261,6 +261,23 @@ function noteIdFor(vaultId: string, relPath: string): string {
   return `obsidian:${vaultId}#${relPath}`;
 }
 
+const VAULT_NOT_FOUND = "Vault not found in OBSIDIAN_VAULT_PATHS_JSON discovery";
+
+/** The configured vaults as the `vault` / `vault_id` arguments name them: by id, never by path. */
+function configuredVaultIds(vaults: readonly VaultEntry[]): string {
+  return vaults.length === 0 ? "none" : vaults.map((v) => `${v.id} (${v.name})`).join(", ");
+}
+
+/**
+ * The vault a `vault` / `vault_id` argument names, or an error listing the configured vault ids
+ * (what the argument accepts) so the caller can correct itself. Never a vault root path.
+ */
+function requireVault(vaults: readonly VaultEntry[], needle: string, message: string): VaultEntry {
+  const found = findVaultByIdOrPathPrefix(vaults, needle);
+  if (found !== undefined) return found;
+  throw new Error(`${message}. Configured vault ids: ${configuredVaultIds(vaults)}`);
+}
+
 function findVaultByIdOrPathPrefix(
   vaults: readonly VaultEntry[],
   needle: string,
@@ -377,7 +394,9 @@ export function registerObsidianTools(
     syncToolHandler((parsed) => {
       const limit = parsed.limit ?? 200;
       const filterVault =
-        parsed.vault === undefined ? undefined : findVaultByIdOrPathPrefix(VAULTS, parsed.vault);
+        parsed.vault === undefined
+          ? undefined
+          : requireVault(VAULTS, parsed.vault, "Unknown vault");
       const targetVaults = filterVault === undefined ? VAULTS : [filterVault];
       const out: Array<{
         id: string;
@@ -428,13 +447,13 @@ export function registerObsidianTools(
         v = VAULTS.find((x) => x.id === m[1]);
         rel = m[2] ?? "";
       } else if (parsed.vault !== undefined && parsed.path !== undefined) {
-        v = findVaultByIdOrPathPrefix(VAULTS, parsed.vault);
+        v = requireVault(VAULTS, parsed.vault, VAULT_NOT_FOUND);
         rel = parsed.path;
       } else {
         throw new Error("obsidian_get requires either `id` or both `vault` and `path`");
       }
       if (v === undefined) {
-        throw new Error("Vault not found in OBSIDIAN_VAULT_PATHS_JSON discovery");
+        throw new Error(`${VAULT_NOT_FOUND}. Configured vault ids: ${configuredVaultIds(VAULTS)}`);
       }
       const note = readNote(v.root, rel);
       return jsonResult({
@@ -462,11 +481,7 @@ export function registerObsidianTools(
       const limit = parsed.limit ?? 50;
       const needle = parsed.query.toLowerCase();
       const targets =
-        parsed.vault === undefined
-          ? VAULTS
-          : [findVaultByIdOrPathPrefix(VAULTS, parsed.vault)].filter(
-              (v): v is VaultEntry => v !== undefined,
-            );
+        parsed.vault === undefined ? VAULTS : [requireVault(VAULTS, parsed.vault, "Unknown vault")];
       const out: Array<{
         id: string;
         vault_id: string;
@@ -506,10 +521,7 @@ export function registerObsidianTools(
     rel: string;
     abs: string;
   } {
-    const v = findVaultByIdOrPathPrefix(VAULTS, parsed.vault_id);
-    if (v === undefined) {
-      throw new Error("Unknown vault_id");
-    }
+    const v = requireVault(VAULTS, parsed.vault_id, "Unknown vault_id");
     const date =
       parsed.date_iso === undefined ? new Date() : new Date(`${parsed.date_iso}T00:00:00Z`);
     const rel = resolveDailyNoteRelativePath(v.root, date);
