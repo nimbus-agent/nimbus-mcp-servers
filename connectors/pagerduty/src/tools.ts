@@ -164,7 +164,16 @@ export function registerPagerdutyTools(
   registerPdTool(
     "pd_incident_get",
     "Get a single incident by id.",
-    z.object({ incidentId: z.string().min(1) }),
+    z.object({
+      // The writes' rule, as a refine so the listed schema stays `minLength: 1`: encoding leaves
+      // '.' and '..' alone and the URL parser collapses them out of /incidents/<id>.
+      incidentId: z
+        .string()
+        .min(1)
+        .refine((id) => /^[A-Za-z0-9]{1,64}$/.test(id), {
+          message: "a PagerDuty incident id is 1-64 letters or digits",
+        }),
+    }),
     (parsed) => `/incidents/${encodeURIComponent(parsed.incidentId)}`,
   );
 

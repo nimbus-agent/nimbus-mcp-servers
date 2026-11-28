@@ -168,10 +168,16 @@ export function registerGithubActionsTools(
     },
     "Dispatch a workflow (workflow_dispatch).",
     repoSlugArgs.extend({
+      // '.' and '..' survive encodeURIComponent and the URL parser collapses them out of
+      // /actions/workflows/<id>/dispatches, so the POST would land on another endpoint. A
+      // refine, so the listed schema is unchanged.
       workflowId: z
         .string()
         .min(1)
-        .describe("Numeric workflow id or workflow file name (e.g. ci.yml)"),
+        .describe("Numeric workflow id or workflow file name (e.g. ci.yml)")
+        .refine((id) => id !== "." && id !== "..", {
+          message: "a workflow id or file name is not '.' or '..'",
+        }),
       ref: z.string().min(1).optional(),
       inputs: z.record(z.string(), z.string()).optional(),
     }),
